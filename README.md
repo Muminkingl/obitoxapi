@@ -1,119 +1,86 @@
-# API Key Validation Service
+# SubDub Upload API
 
-A simple API service that validates API keys against your Supabase database and returns user information.
+Upload files in **3-7 lines of code** with zero bandwidth costs! 🚀
+
+## Quick Start
+
+```bash
+npm install @subdub/upload
+```
+
+```javascript
+import SubDub from '@subdub/upload';
+
+const subdub = new SubDub({
+  apiKey: 'ox_your_api_key_here'
+});
+
+// Upload a file in 3 lines!
+const fileUrl = await subdub.uploadFile(file, {
+  vercelToken: 'vercel_blob_rw_your_token_here'
+});
+
+console.log('File uploaded:', fileUrl);
+```
 
 ## Features
 
-- Validates API keys in the format `ox_<random_string>`
-- Checks against the `api_keys` table in your Supabase database
-- Returns user information and profile data associated with the API key
-- Updates the `last_used_at` timestamp when an API key is used
+- ✅ **3-7 lines of code** - No complex AWS SDK setup
+- ✅ **Zero bandwidth costs** - Files never touch your servers
+- ✅ **Multiple providers** - Vercel Blob, AWS S3 (coming soon)
+- ✅ **TypeScript support** - Full type safety
+- ✅ **Usage tracking** - Built-in analytics for billing
+- ✅ **Simple pricing** - $4/month for unlimited uploads
 
-## Setup
+## Documentation
 
-1. Set up your environment variables:
+- 📖 [SDK Documentation](README-SDK.md)
+- 🔧 [API Reference](README-API.md)
+- 🚀 [Quick Examples](API-EXAMPLES.md)
 
-```
-# Server configuration
-PORT=5500
+## Development
 
-# Supabase Configuration
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-```
+### Setup
 
-2. Install dependencies:
+1. Clone the repository
+2. Install dependencies: `npm install`
+3. Set up environment variables (see `env-example.txt`)
+4. Run development server: `npm run dev`
 
-```bash
-npm install
-```
-
-3. Start the server:
+### Build SDK
 
 ```bash
-npm start
+npm run build
+```
+
+### Deploy
+
+```bash
+./deploy.sh
 ```
 
 ## API Endpoints
 
-### Validate API Key
+### Authentication
+- `GET /api/v1/apikeys/validate` - Validate API key
+- `POST /api/v1/apikeys/validate` - Validate API key (POST)
 
-```
-GET /api/v1/apikeys/validate?apiKey=ox_your_key_here
-```
+### Upload
+- `POST /api/v1/upload/signed-url` - Generate upload URL
+- `POST /api/v1/upload/vercel-upload` - Server-side upload
+- `POST /api/v1/upload/vercel-direct-url` - Direct upload URL
 
-or
+### Analytics
+- `POST /api/v1/analytics/track` - Track upload events
 
-```
-POST /api/v1/apikeys/validate
-Content-Type: application/json
+## Database Schema
 
-{
-  "apiKey": "ox_your_key_here"
-}
-```
+See `supabase-setup.sql` for the complete database schema including:
+- API keys management
+- Upload logs and analytics
+- Subscription tiers and billing
+- Storage provider configurations
 
-You can also pass the API key in the header:
+## License
 
-```
-GET /api/v1/apikeys/validate
-x-api-key: ox_your_key_here
-```
-
-### Response
-
-A successful response will look like:
-
-```json
-{
-  "success": true,
-  "message": "Valid API key",
-  "data": {
-    "api_key": {
-      "id": "api-key-uuid",
-      "name": "My API Key",
-      "status": "active",
-      "created_at": "2023-05-01T12:00:00Z",
-      "last_used_at": "2023-05-15T15:30:00Z"
-    },
-    "user": {
-      "id": "user-uuid",
-      "email": "user@example.com",
-      "first_name": "John",
-      "last_name": "Doe"
-    },
-    "plan": "pro",
-    "profile": {
-      "id": "profile-uuid",
-      "subscription_plan": "pro",
-      "other_profile_data": "..."
-    }
-  }
-}
-```
-
-## Database Structure
-
-This service expects your Supabase database to have the following structure:
-
-### api_keys Table
-
-```sql
-CREATE TABLE IF NOT EXISTS public.api_keys (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id UUID REFERENCES auth.users(id) NOT NULL,
-  name TEXT NOT NULL,
-  key_value TEXT NOT NULL UNIQUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  last_used_at TIMESTAMP WITH TIME ZONE
-);
-```
-
-The API key validation endpoint will look for the `key_value` field to match the provided API key.
-
-## Error Handling
-
-- **401**: Invalid or missing API key
-- **404**: User not found
-- **500**: Server error
+MIT License - see [LICENSE](LICENSE) for details.

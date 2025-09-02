@@ -59,6 +59,12 @@ export const generateVercelSignedUrl = async (req, res) => {
         'Authorization': `Bearer ${vercelToken}`,
         'Content-Type': contentType || 'application/octet-stream',
         'x-vercel-filename': finalFilename
+      },
+      // Add instructions for proper upload
+      instructions: {
+        note: 'Use the Vercel Blob SDK put() method instead of direct HTTP upload',
+        sdkExample: `import { put } from '@vercel/blob';
+const blob = await put(finalFilename, fileBuffer, { token: vercelToken });`
       }
     });
 
@@ -80,12 +86,12 @@ export const generateVercelSignedUrl = async (req, res) => {
  */
 export const uploadToVercelBlob = async (req, res) => {
   try {
-    const { vercelToken } = req.body;
+    const { token } = req.body;
     
-    if (!vercelToken) {
+    if (!token) {
       return res.status(400).json({
         success: false,
-        error: 'vercelToken is required'
+        error: 'token is required'
       });
     }
 
@@ -112,7 +118,7 @@ export const uploadToVercelBlob = async (req, res) => {
     // Upload to Vercel Blob using the SDK
     const blob = await put(finalFilename, fileBuffer, {
       access: 'public',
-      token: vercelToken
+      token: token
     });
 
     // Log successful upload
@@ -125,7 +131,8 @@ export const uploadToVercelBlob = async (req, res) => {
           file_name: finalFilename,
           file_type: contentType,
           file_url: blob.url,
-          status: 'completed'
+          status: 'completed',
+          provider: 'vercel'
         });
     } catch (logError) {
       console.error('Error logging upload completion:', logError);
