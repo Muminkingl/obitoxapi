@@ -1,172 +1,119 @@
-<div align="center">
-  <br />
-    <a href="https://youtu.be/rOpEN1JDaD0?si=WfOjLV57WfR9x6QK" target="_blank">
-      <img src="https://i.ibb.co/xtTbHkfs/Readme-Thumbnail.png" alt="Project Banner">
-    </a>
-  <br />
-  
-  <div>
-    <img src="https://img.shields.io/badge/node.js-339933?style=for-the-badge&logo=Node.js&logoColor=white" alt="node.js" />
-    <img src="https://img.shields.io/badge/express.js-000000?style=for-the-badge&logo=express&logoColor=white" alt="express.js" />
-    <img src="https://img.shields.io/badge/-MongoDB-13aa52?style=for-the-badge&logo=mongodb&logoColor=white" alt="mongodb" />
-  </div>
+# API Key Validation Service
 
-  <h3 align="center">A Subscription Management System API</h3>
+A simple API service that validates API keys against your Supabase database and returns user information.
 
-   <div align="center">
-     Build this project step by step with our detailed tutorial on <a href="https://www.youtube.com/@javascriptmastery/videos" target="_blank"><b>JavaScript Mastery</b></a> YouTube. Join the JSM family!
-    </div>
-</div>
+## Features
 
-## 📋 <a name="table">Table of Contents</a>
+- Validates API keys in the format `ox_<random_string>`
+- Checks against the `api_keys` table in your Supabase database
+- Returns user information and profile data associated with the API key
+- Updates the `last_used_at` timestamp when an API key is used
 
-1. 🤖 [Introduction](#introduction)
-2. ⚙️ [Tech Stack](#tech-stack)
-3. 🔋 [Features](#features)
-4. 🤸 [Quick Start](#quick-start)
-5. 🕸️ [Snippets (Code to Copy)](#snippets)
-6. 🔗 [Assets](#links)
-7. 🚀 [More](#more)
+## Setup
 
-## 🚨 Tutorial
+1. Set up your environment variables:
 
-This repository contains the code corresponding to an in-depth tutorial available on our YouTube channel, <a href="https://www.youtube.com/@javascriptmastery/videos" target="_blank"><b>JavaScript Mastery</b></a>.
+```
+# Server configuration
+PORT=5500
 
-If you prefer visual learning, this is the perfect resource for you. Follow our tutorial to learn how to build projects like these step-by-step in a beginner-friendly manner!
-
-<a href="https://youtu.be/rOpEN1JDaD0?si=WfOjLV57WfR9x6QK" target="_blank"><img src="https://github.com/sujatagunale/EasyRead/assets/151519281/1736fca5-a031-4854-8c09-bc110e3bc16d" /></a>
-
-## <a name="introduction">🤖 Introduction</a>
-
-Build a **production-ready Subscription Management System API** that handles **real users, real money, and real business logic**.  
-
-Authenticate users using JWTs, connect a database, create models and schemas, and integrate it with ORMs. Structure the architecture of your API to ensure scalability and seamless communication with the frontend.  
-
-If you're getting started and need assistance or face any bugs, join our active Discord community with over **50k+** members. It's a place where people help each other out.
-
-<a href="https://discord.com/invite/n6EdbFJ" target="_blank"><img src="https://github.com/sujatagunale/EasyRead/assets/151519281/618f4872-1e10-42da-8213-1d69e486d02e" /></a>
-
-## <a name="tech-stack">⚙️ Tech Stack</a>
-
-- Node.js
-- Express.js
-- MongoDB
-
-## <a name="features">🔋 Features</a>
-
-👉 **Advanced Rate Limiting and Bot Protection**: with Arcjet that helps you secure the whole app.
-
-👉 **Database Modeling**: Models and relationships using MongoDB & Mongoose.
-
-👉 **JWT Authentication**: User CRUD operations and subscription management.
-
-👉 **Global Error Handling**: Input validation and middleware integration.
-
-👉 **Logging Mechanisms**: For better debugging and monitoring.
-
-👉 **Email Reminders**: Automating smart email reminders with workflows using Upstash.
-
-and many more, including code architecture and reusability
-
-## <a name="quick-start">🤸 Quick Start</a>
-
-Follow these steps to set up the project locally on your machine.
-
-**Prerequisites**
-
-Make sure you have the following installed on your machine:
-
-- [Git](https://git-scm.com/)
-- [Node.js](https://nodejs.org/en)
-- [npm](https://www.npmjs.com/) (Node Package Manager)
-
-**Cloning the Repository**
-
-```bash
-git clone https://github.com/adrianhajdin/subscription-tracker-api.git
-cd subscription-tracker-api
+# Supabase Configuration
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 ```
 
-**Installation**
-
-Install the project dependencies using npm:
+2. Install dependencies:
 
 ```bash
 npm install
 ```
 
-**Set Up Environment Variables**
-
-Create a new file named `.env.local` in the root of your project and add the following content:
-
-```env
-# PORT
-PORT=5500
-SERVER_URL="http://localhost:5500"
-
-# ENVIRONMENT
-NODE_ENV=development
-
-# DATABASE
-DB_URI=
-
-# JWT AUTH
-JWT_SECRET=
-JWT_EXPIRES_IN="1d"
-
-# ARCJET
-ARCJET_KEY=
-ARCJET_ENV="development"
-
-# UPSTASH
-QSTASH_URL=http://127.0.0.1:8080
-QSTASH_TOKEN=
-
-# NODEMAILER
-EMAIL_PASSWORD=
-```
-
-**Running the Project**
+3. Start the server:
 
 ```bash
-npm run dev
+npm start
 ```
 
-Open [http://localhost:5500](http://localhost:5500) in your browser or any HTTP client to test the project.
+## API Endpoints
 
-## <a name="snippets">🕸️ Snippets</a>
+### Validate API Key
 
-<details>
-<summary><code>Dummy JSON Data</code></summary>
+```
+GET /api/v1/apikeys/validate?apiKey=ox_your_key_here
+```
 
-```json
+or
+
+```
+POST /api/v1/apikeys/validate
+Content-Type: application/json
+
 {
-  "name": "Javascript Mastery Elite Membership",
-  "price": 139.00,
-  "currency": "USD",
-  "frequency": "monthly",
-  "category": "Entertainment",
-  "startDate": "2025-01-20T00:00:00.000Z",
-  "paymentMethod": "Credit Card"
+  "apiKey": "ox_your_key_here"
 }
 ```
 
-</details>
+You can also pass the API key in the header:
 
-## <a name="links">🔗 Links</a>
+```
+GET /api/v1/apikeys/validate
+x-api-key: ox_your_key_here
+```
 
-- **Arcjet** - [https://launch.arcjet.com/4g2R2e4](https://launch.arcjet.com/4g2R2e4)  
-- **Upstash** - [https://bit.ly/42ealiN](https://bit.ly/42ealiN)  
-- **Hostinger** - [https://hostinger.com/mastery10](https://hostinger.com/mastery10)  
-- **WebStorm** - [https://jb.gg/GetWebStormFree](https://jb.gg/GetWebStormFree)  
+### Response
 
-## <a name="more">🚀 More</a>
+A successful response will look like:
 
-**Advance your skills with Next.js Pro Course**
+```json
+{
+  "success": true,
+  "message": "Valid API key",
+  "data": {
+    "api_key": {
+      "id": "api-key-uuid",
+      "name": "My API Key",
+      "status": "active",
+      "created_at": "2023-05-01T12:00:00Z",
+      "last_used_at": "2023-05-15T15:30:00Z"
+    },
+    "user": {
+      "id": "user-uuid",
+      "email": "user@example.com",
+      "first_name": "John",
+      "last_name": "Doe"
+    },
+    "plan": "pro",
+    "profile": {
+      "id": "profile-uuid",
+      "subscription_plan": "pro",
+      "other_profile_data": "..."
+    }
+  }
+}
+```
 
-Enjoyed creating this project? Dive deeper into our PRO courses for a richer learning adventure. They're packed with
-detailed explanations, cool features, and exercises to boost your skills. Give it a go!
+## Database Structure
 
-<a href="https://jsmastery.pro/next15" target="_blank">
-   <img src="https://github.com/user-attachments/assets/b8760e69-1f81-4a71-9108-ceeb1de36741" alt="Project Banner">
-</a>
+This service expects your Supabase database to have the following structure:
+
+### api_keys Table
+
+```sql
+CREATE TABLE IF NOT EXISTS public.api_keys (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES auth.users(id) NOT NULL,
+  name TEXT NOT NULL,
+  key_value TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  last_used_at TIMESTAMP WITH TIME ZONE
+);
+```
+
+The API key validation endpoint will look for the `key_value` field to match the provided API key.
+
+## Error Handling
+
+- **401**: Invalid or missing API key
+- **404**: User not found
+- **500**: Server error
