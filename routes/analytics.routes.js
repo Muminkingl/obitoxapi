@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { trackUploadEvent } from '../controllers/upload.controller.js';
+import { trackUploadEvent } from '../controllers/providers/vercel.controller.js';
 import apiKeyMiddleware from '../middlewares/apikey.middleware.js';
 
 const analyticsRouter = Router();

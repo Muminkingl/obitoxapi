@@ -1,23 +1,70 @@
-import { Router } from 'express';
-import { generateVercelSignedUrl, uploadToVercelBlob, generateDirectUploadUrl, trackUploadEvent } from '../controllers/upload.controller.js';
-import apiKeyMiddleware from '../middlewares/apikey.middleware.js';
+import express from 'express';
+import multer from 'multer';
+import validateApiKey from '../middlewares/apikey.middleware.js';
+import { 
+  generateVercelSignedUrl, 
+  uploadToVercelBlob, 
+  trackUploadEvent, 
+  vercelHealthCheck 
+} from '../controllers/providers/vercel.controller.js';
 
-const uploadRouter = Router();
+const router = express.Router();
 
-// Apply API key validation middleware to all upload routes
-uploadRouter.use(apiKeyMiddleware);
+// Configure multer for file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Allow all file types for now, validation happens in controller
+    cb(null, true);
+  }
+});
 
-// Main API endpoint - matches your planned architecture
-// POST /upload/signed-url (as per your plan.md)
-uploadRouter.post('/signed-url', generateVercelSignedUrl);
+// ===== VERCEL PROVIDER ROUTES =====
 
-// Legacy endpoint for backward compatibility
-uploadRouter.post('/vercel-signed-url', generateVercelSignedUrl);
+// Generate signed URL for Vercel Blob (recommended approach)
+router.post('/vercel/signed-url', validateApiKey, generateVercelSignedUrl);
 
-// Server-side upload to Vercel Blob (alternative method)
-uploadRouter.post('/vercel-upload', uploadToVercelBlob);
+// Direct upload to Vercel Blob (alternative approach)
+router.post('/vercel/upload', validateApiKey, upload.single('file'), uploadToVercelBlob);
 
-// Generate direct upload URL (alternative method)
-uploadRouter.post('/vercel-direct-url', generateDirectUploadUrl);
+// Track upload events for analytics
+router.post('/vercel/track', validateApiKey, trackUploadEvent);
 
-export default uploadRouter;
+// Vercel provider health check
+router.get('/vercel/health', vercelHealthCheck);
+
+// ===== LEGACY ROUTES (for backward compatibility) =====
+
+// Legacy signed URL endpoint (redirects to Vercel)
+router.post('/signed-url', validateApiKey, generateVercelSignedUrl);
+
+// Legacy upload endpoint (redirects to Vercel)
+router.post('/upload', validateApiKey, upload.single('file'), uploadToVercelBlob);
+
+// ===== ANALYTICS & TRACKING =====
+
+// Track any upload event
+router.post('/track', validateApiKey, trackUploadEvent);
+
+// Get upload statistics for the current API key
+router.get('/stats', validateApiKey, async (req, res) => {
+  try {
+    // This would typically fetch from your analytics tables
+    res.json({
+      success: true,
+      message: 'Upload statistics endpoint - implement based on your analytics needs',
+      apiKeyId: req.apiKeyId,
+      userId: req.userId
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch upload statistics'
+    });
+  }
+});
+
+export default router;

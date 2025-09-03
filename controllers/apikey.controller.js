@@ -21,10 +21,10 @@ export const validateApiKey = async (req, res, next) => {
       });
     }
     
-    // Validate API key in database
+    // Validate API key in database with tracking metrics
     const { data: apiKeyData, error } = await supabaseAdmin
       .from('api_keys')
-      .select('id, user_id, name, created_at, last_used_at')
+      .select('id, user_id, name, created_at, last_used_at, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded, file_type_counts')
       .eq('key_value', apiKey)
       .single();
       
@@ -58,6 +58,37 @@ export const validateApiKey = async (req, res, next) => {
       .eq('id', apiKeyData.user_id)
       .single();
     
+    // Get provider usage statistics
+    const { data: providerUsage, error: providerError } = await supabaseAdmin
+      .from('provider_usage')
+      .select('provider, upload_count, total_file_size')
+      .eq('api_key_id', apiKeyData.id);
+    
+    // Calculate success rate
+    const successRate = apiKeyData.total_requests > 0 
+      ? Math.round((apiKeyData.successful_requests / apiKeyData.total_requests) * 100 * 100) / 100
+      : 0;
+    
+    // Format file size in human-readable format
+    const formatFileSize = (bytes) => {
+      if (bytes === 0) return '0 bytes';
+      const k = 1024;
+      const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+    
+    // Format provider usage data
+    const providerStats = {};
+    if (providerUsage && !providerError) {
+      providerUsage.forEach(usage => {
+        providerStats[usage.provider] = {
+          uploads: usage.upload_count,
+          totalSize: usage.total_file_size
+        };
+      });
+    }
+    
     return res.status(200).json({
       success: true,
       message: 'Valid API key',
@@ -67,7 +98,15 @@ export const validateApiKey = async (req, res, next) => {
           name: apiKeyData.name,
           status: 'active',
           created_at: apiKeyData.created_at,
-          last_used_at: apiKeyData.last_used_at
+          last_used_at: apiKeyData.last_used_at,
+          total_requests: apiKeyData.total_requests || 0,
+          successful_requests: apiKeyData.successful_requests || 0,
+          failed_requests: apiKeyData.failed_requests || 0,
+          success_rate: `${successRate}%`,
+          total_file_size: apiKeyData.total_file_size || 0,
+          total_file_size_formatted: formatFileSize(apiKeyData.total_file_size || 0),
+          total_files_uploaded: apiKeyData.total_files_uploaded || 0,
+          file_type_counts: apiKeyData.file_type_counts || {}
         },
         user: {
           id: user.id,
@@ -76,6 +115,7 @@ export const validateApiKey = async (req, res, next) => {
           last_name: user.user_metadata?.last_name
         },
         plan: profile?.plan || 'free',
+        provider_usage: providerStats,
         profile: profile || null
       }
     });
