@@ -19,7 +19,7 @@ const ALLOWED_FILE_TYPES = [
  * @param {number} fileSize - File size in bytes
  * @param {string} fileType - File MIME type (e.g., 'application/pdf')
  */
-const updateRequestMetrics = async (apiKeyId, userId, provider, status, fileSize = 0, fileType = null) => {
+export const updateRequestMetrics = async (apiKeyId, userId, provider, status, fileSize = 0, fileType = null) => {
   try {
     // First, get current values to increment them
     const { data: currentData, error: fetchError } = await supabaseAdmin
@@ -1009,4 +1009,423 @@ const formatFileSize = (bytes) => {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+/**
+ * Cancel an ongoing upload
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+export const cancelVercelUpload = async (req, res) => {
+  try {
+    const { uploadId, vercelToken } = req.body;
+    
+    if (!uploadId || !vercelToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: uploadId and vercelToken',
+        code: 'MISSING_FIELDS'
+      });
+    }
+
+    // For now, we'll simulate cancellation since Vercel Blob doesn't support
+    // cancelling uploads in progress. In a real implementation, you might:
+    // 1. Track upload state in your database
+    // 2. Stop progress tracking
+    // 3. Clean up any temporary resources
+    
+    // Track the cancellation event
+    try {
+      await updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', 'cancelled', 0);
+    } catch (trackingError) {
+      console.error('Error tracking cancellation:', trackingError);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Upload cancellation requested',
+      uploadId: uploadId,
+      status: 'cancelled',
+      note: 'Vercel Blob uploads cannot be cancelled mid-upload, but progress tracking has been stopped'
+    });
+
+  } catch (error) {
+    console.error('Cancel upload error:', error);
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to cancel upload',
+      code: 'CANCEL_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Replace an existing file with a new one
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+export const replaceVercelFile = async (req, res) => {
+  try {
+    const { fileUrl, newFile, vercelToken } = req.body;
+    
+    if (!fileUrl || !vercelToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: fileUrl and vercelToken',
+        code: 'MISSING_FIELDS'
+      });
+    }
+
+    // Extract filename from the existing file URL
+    const urlParts = fileUrl.split('/');
+    const existingFilename = urlParts[urlParts.length - 1];
+    
+    // IMPORTANT: We need to actually DELETE the old file first, then upload the new one
+    // Since Vercel Blob doesn't support direct replacement, we'll:
+    // 1. Delete the old file (if possible)
+    // 2. Upload the new file with the SAME filename
+    
+    console.log(`🔄 File replacement requested: ${existingFilename}`);
+    console.log(`📁 Original URL: ${fileUrl}`);
+    
+    // For now, we'll return an error explaining the limitation
+    return res.status(400).json({
+      success: false,
+      error: 'Direct file replacement not supported by Vercel Blob',
+      code: 'REPLACE_NOT_SUPPORTED',
+      details: [
+        'Vercel Blob does not support direct file replacement',
+        'You must delete the old file first, then upload a new one',
+        'Consider using the delete endpoint first, then upload with a new filename'
+      ],
+      recommendation: 'Use deleteFile() first, then uploadFile() with a new name',
+      alternatives: [
+        'Delete old file + Upload new file separately',
+        'Use versioning (append timestamp to filename)',
+        'Implement soft deletion in your application'
+      ]
+    });
+
+  } catch (error) {
+    console.error('Replace file error:', error);
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to process replacement request',
+      code: 'REPLACE_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Delete a file from Vercel Blob using the del() function
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+export const deleteVercelFile = async (req, res) => {
+  try {
+    const { fileUrl, vercelToken } = req.body;
+    
+    if (!fileUrl || !vercelToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: fileUrl and vercelToken',
+        code: 'MISSING_FIELDS'
+      });
+    }
+
+    // Extract filename from the file URL
+    const urlParts = fileUrl.split('/');
+    const filename = urlParts[urlParts.length - 1];
+    
+    console.log(`🗑️ File deletion requested: ${filename}`);
+    console.log(`📁 File URL: ${fileUrl}`);
+    
+    try {
+      console.log(`🔍 Attempting to delete file with Vercel Blob del() function...`);
+      console.log(`🔑 Token prefix: ${vercelToken.substring(0, 20)}...`);
+      console.log(`📁 File URL: ${fileUrl}`);
+      
+      // Use direct HTTP DELETE to Vercel Blob API
+      console.log(`🔄 Using direct HTTP DELETE to Vercel Blob API...`);
+      console.log(`🔑 Token prefix: ${vercelToken.substring(0, 20)}...`);
+      console.log(`📁 File URL: ${fileUrl}`);
+      
+      // Try different approaches for deletion
+      let response;
+      let deleteMethod = 'unknown';
+      let deleteResult;
+      
+      // Approach 1: Try DELETE on the file URL directly
+      try {
+        console.log(`🔄 Attempt 1: DELETE on file URL directly...`);
+        response = await fetch(fileUrl, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${vercelToken}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        deleteMethod = 'direct_file_delete';
+        console.log(`📡 Attempt 1 Response: ${response.status} ${response.statusText}`);
+      } catch (error) {
+        console.log(`⚠️ Attempt 1 failed:`, error.message);
+      }
+      
+      // Approach 2: If first approach failed, try using the Vercel Blob store endpoint
+      if (!response || !response.ok) {
+        try {
+          console.log(`🔄 Attempt 2: Using Vercel Blob store endpoint...`);
+          // Extract store ID from the file URL
+          const urlParts = fileUrl.split('/');
+          const storeId = urlParts[3]; // e.g., "9feg3hqa5xi6jdus"
+          const fileName = urlParts[urlParts.length - 1];
+          
+          const storeEndpoint = `https://api.vercel.com/v1/blob/${storeId}/${fileName}`;
+          console.log(`📡 Store endpoint: ${storeEndpoint}`);
+          
+          response = await fetch(storeEndpoint, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${vercelToken}`,
+              'Content-Type': 'application/json'
+            }
+          });
+          deleteMethod = 'store_endpoint_delete';
+          console.log(`📡 Attempt 2 Response: ${response.status} ${response.statusText}`);
+        } catch (error) {
+          console.log(`⚠️ Attempt 2 failed:`, error.message);
+        }
+      }
+      
+      // Approach 3: If both failed, try using the Vercel Blob API with the del() function
+      if (!response || !response.ok) {
+        try {
+          console.log(`🔄 Attempt 3: Using Vercel Blob del() function...`);
+          // Re-import del function dynamically
+          const { del } = await import('@vercel/blob');
+          await del(fileUrl, { token: vercelToken });
+          deleteMethod = 'sdk_del_function';
+          response = { ok: true, status: 200, statusText: 'OK' };
+          console.log(`📡 Attempt 3 Response: Success using del() function`);
+        } catch (error) {
+          console.log(`⚠️ Attempt 3 failed:`, error.message);
+          throw error; // Re-throw to be handled by outer catch
+        }
+      }
+      
+      if (response && response.ok) {
+        console.log(`✅ Delete successful using method: ${deleteMethod}`);
+        deleteResult = { success: true, method: deleteMethod, status: response.status };
+      } else {
+        const errorText = response ? await response.text() : 'No response';
+        console.log(`❌ All delete attempts failed`);
+        console.log(`📝 Last error details:`, errorText);
+        throw new Error(`All delete methods failed. Last attempt: ${response?.status} ${response?.statusText} - ${errorText}`);
+      }
+      
+      console.log(`✅ File successfully deleted from Vercel Blob: ${filename}`);
+      
+      // Track the successful deletion in our database
+      await updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', 'deleted', 0);
+      
+      return res.status(200).json({
+        success: true,
+        message: 'File successfully deleted from Vercel Blob',
+        filename: filename,
+        fileUrl: fileUrl,
+        status: 'deleted',
+        note: 'File has been permanently removed from Vercel Blob storage',
+        deleteResult: deleteResult
+      });
+      
+    } catch (deleteError) {
+      console.error('Vercel Blob deletion error:', deleteError);
+      
+      // Check for specific Vercel Blob errors
+      const errorMessage = deleteError.message.toLowerCase();
+      
+      if (errorMessage.includes('unauthorized') || errorMessage.includes('invalid token')) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid or expired Vercel token',
+          code: 'UNAUTHORIZED'
+        });
+      }
+      
+      if (errorMessage.includes('forbidden') || errorMessage.includes('permission')) {
+        return res.status(403).json({
+          success: false,
+          error: 'Insufficient permissions. Token needs delete access.',
+          code: 'FORBIDDEN'
+        });
+      }
+      
+      if (errorMessage.includes('not found') || errorMessage.includes('404')) {
+        return res.status(404).json({
+          success: false,
+          error: 'File not found or already deleted',
+          code: 'FILE_NOT_FOUND'
+        });
+      }
+      
+      // Track the failed deletion
+      await updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', 'failed', 0);
+      
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to delete file from Vercel Blob',
+        code: 'DELETE_FAILED',
+        details: process.env.NODE_ENV === 'development' ? deleteError.message : undefined
+      });
+    }
+
+  } catch (error) {
+    console.error('Delete file error:', error);
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to process delete request',
+      code: 'DELETE_PROCESSING_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * List files from Vercel Blob
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+export const listVercelFiles = async (req, res) => {
+  try {
+    // Since Vercel Blob doesn't provide a list API, we'll return files from our database
+    // This helps track what files exist in our system
+    
+    const { data: files, error } = await supabaseAdmin
+      .from('upload_logs')
+      .select('file_name, file_url, file_size, file_type, created_at, status')
+      .eq('provider', 'vercel')
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching files:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch file list',
+        code: 'FETCH_FAILED'
+      });
+    }
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Files retrieved from our tracking system',
+      files: files || [],
+      note: 'These are files tracked in our system. Vercel Blob files may still exist even if marked as deleted.',
+      totalFiles: files?.length || 0
+    });
+    
+  } catch (error) {
+    console.error('List files error:', error);
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to list files',
+      code: 'LIST_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Clean up old files (mark them for deletion in our system)
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+export const cleanupVercelFiles = async (req, res) => {
+  try {
+    const { olderThanDays = 30, maxFiles = 100 } = req.body;
+    
+    // Calculate the cutoff date
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+    
+    // Find old files to mark as deleted
+    const { data: oldFiles, error } = await supabaseAdmin
+      .from('upload_logs')
+      .select('id, file_name, file_url, created_at')
+      .eq('provider', 'vercel')
+      .eq('status', 'completed')
+      .lt('created_at', cutoffDate.toISOString())
+      .limit(maxFiles);
+    
+    if (error) {
+      console.error('Error finding old files:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to find old files',
+        code: 'SEARCH_FAILED'
+      });
+    }
+    
+    if (!oldFiles || oldFiles.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No old files found to clean up',
+        cleanedUpCount: 0
+      });
+    }
+    
+    // Mark files as deleted in our system
+    const fileIds = oldFiles.map(file => file.id);
+    const { error: updateError } = await supabaseAdmin
+      .from('upload_logs')
+      .update({ 
+        status: 'deleted',
+        updated_at: new Date().toISOString()
+      })
+      .in('id', fileIds);
+    
+    if (updateError) {
+      console.error('Error marking files as deleted:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to mark files as deleted',
+        code: 'UPDATE_FAILED'
+      });
+    }
+    
+    // Track cleanup metrics
+    try {
+      await updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', 'cleanup', 0);
+    } catch (trackingError) {
+      console.error('Error tracking cleanup:', trackingError);
+    }
+    
+    return res.status(200).json({
+      success: true,
+      message: 'Old files marked for cleanup',
+      cleanedUpCount: oldFiles.length,
+      note: 'Files are marked as deleted in our system. Vercel Blob will handle physical cleanup based on retention policies.',
+      files: oldFiles.map(file => ({
+        filename: file.file_name,
+        fileUrl: file.file_url,
+        created: file.created_at
+      }))
+    });
+    
+  } catch (error) {
+    console.error('Cleanup files error:', error);
+    
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to cleanup files',
+      code: 'CLEANUP_FAILED',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
 };

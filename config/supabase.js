@@ -7,6 +7,11 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+// Validate required environment variables
+if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceKey) {
+  console.warn('⚠️  Supabase environment variables not fully configured');
+}
+
 // Client for authenticated user operations (uses anon key)
 export const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
