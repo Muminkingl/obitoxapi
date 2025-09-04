@@ -7,7 +7,8 @@ import {
   trackUploadEvent, 
   vercelHealthCheck,
   cancelVercelUpload,
-  deleteVercelFile
+  deleteVercelFile,
+  downloadVercelFile
 } from '../controllers/providers/vercel.controller.js';
 import {
   uploadToSupabaseStorage,
@@ -52,6 +53,9 @@ router.post('/vercel/cancel', validateApiKey, cancelVercelUpload);
 
 // Delete files from Vercel Blob
 router.delete('/vercel/delete', validateApiKey, deleteVercelFile);
+
+// Download files from Vercel Blob
+router.post('/vercel/download', validateApiKey, downloadVercelFile);
 
 // ===== SUPABASE PROVIDER ROUTES =====
 

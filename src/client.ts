@@ -143,8 +143,8 @@ export class ObitoX {
 
     // All providers now use signed URLs for zero bandwidth cost
     const signedUrlResult = await this.upload({
-      filename,
-      contentType,
+        filename,
+        contentType,
       provider: options.provider,
       vercelToken: options.vercelToken,
       supabaseToken: options.supabaseToken,
@@ -171,8 +171,17 @@ export class ObitoX {
         options.onProgress,
         options.onCancel
       );
+    } else if (options.provider === 'VERCEL') {
+      // For Vercel, use the Vercel Blob SDK directly (bypass server URL generation)
+      uploadResponse = await this.uploadToVercelBlob(
+        signedUrlResult.data.filename, // Use filename instead of uploadUrl
+        file,
+        options.vercelToken!,
+        options.onProgress,
+        options.onCancel
+      );
     } else {
-      // For other providers (Vercel, AWS, etc.), use direct PUT
+      // For other providers (AWS, etc.), use direct PUT
       uploadResponse = await this.uploadWithProgress(
         signedUrlResult.data.uploadUrl,
         file,
@@ -187,15 +196,22 @@ export class ObitoX {
     }
 
     // Track completion for analytics
+    let finalFileUrl = signedUrlResult.data.fileUrl;
+    
+    // For Vercel, use the actual blob URL from the SDK
+    if (options.provider === 'VERCEL' && (this as any).lastVercelBlobUrl) {
+      finalFileUrl = (this as any).lastVercelBlobUrl;
+    }
+    
     await this.track({
       event: 'completed',
-      fileUrl: signedUrlResult.data.fileUrl,
+      fileUrl: finalFileUrl,
       filename,
       fileSize: file instanceof File ? file.size : file.size || 0,
       provider: options.provider.toLowerCase(),
     });
 
-    return signedUrlResult.data.fileUrl;
+    return finalFileUrl;
   }
 
   /**
@@ -257,6 +273,81 @@ export class ObitoX {
       body: file,
       signal: abortController.signal
     });
+  }
+
+  /**
+   * Upload to Vercel Blob using the Vercel Blob SDK (zero bandwidth cost)
+   * @param filename - Target filename
+   * @param file - File or Blob to upload
+   * @param vercelToken - Vercel Blob token
+   * @param onProgress - Progress callback function
+   * @param onCancel - Cancel callback function
+   * @returns Promise<Response> - Upload response
+   */
+  private async uploadToVercelBlob(
+    filename: string,
+    file: File | Blob,
+    vercelToken: string,
+    onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+    onCancel?: () => void
+  ): Promise<Response> {
+    // For Node.js environments, we'll use the Vercel Blob SDK
+    // In a real browser environment, you would use the Vercel Blob SDK
+    
+    // Create AbortController for cancellation
+    const abortController = new AbortController();
+    
+    // Store the abort controller for potential cancellation
+    (this as any).currentUploadController = abortController;
+    
+    if (onProgress) {
+      // Simulate progress updates for Node.js
+      const totalBytes = file.size;
+      let bytesUploaded = 0;
+      
+      // Start progress simulation
+      const progressInterval = setInterval(() => {
+        bytesUploaded += Math.ceil(totalBytes / 10); // Simulate 10% increments
+        if (bytesUploaded >= totalBytes) {
+          bytesUploaded = totalBytes;
+          clearInterval(progressInterval);
+        }
+        
+        const progress = (bytesUploaded / totalBytes) * 100;
+        onProgress(progress, bytesUploaded, totalBytes);
+      }, 100); // Update every 100ms
+      
+      // Clean up interval after upload completes
+      setTimeout(() => clearInterval(progressInterval), 5000);
+    }
+    
+    // Use the Vercel Blob SDK to upload
+    try {
+      // Import the Vercel Blob SDK dynamically
+      const { put } = await import('@vercel/blob');
+      
+      // Upload using the Vercel Blob SDK
+      const blob = await put(filename, file, {
+        token: vercelToken,
+        access: 'public' // Make the blob publicly accessible
+      });
+      
+      // Store the actual blob URL for later use
+      (this as any).lastVercelBlobUrl = blob.url;
+      
+      // Return a proper Response object
+      return new Response(JSON.stringify({ url: blob.url }), {
+        status: 200,
+        statusText: 'OK',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+    } catch (error) {
+      // If the SDK fails, throw an error
+      throw new Error(`Vercel Blob upload failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**

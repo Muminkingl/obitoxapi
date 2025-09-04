@@ -425,9 +425,12 @@ export const generateVercelSignedUrl = async (req, res) => {
     const baseName = filename.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
     const finalFilename = `upl${timestamp}_${randomSuffix}.${baseName}.${fileExtension}`;
 
-    // 6. Create the final file URL
-    const fileUrl = `https://blob.vercel-storage.com/${finalFilename}`;
-    const uploadUrl = fileUrl;
+    // 6. For Vercel, we don't need to generate URLs - the client will use the SDK directly
+    // Just return the filename and let the client handle the upload
+    const fileUrl = `vercel://${finalFilename}`; // Placeholder URL
+    const uploadUrl = `vercel://${finalFilename}`; // Placeholder URL
+    
+    console.log(`✅ Vercel upload prepared: ${finalFilename}`);
 
     // 7. Track usage for analytics and billing
     try {
@@ -537,10 +540,12 @@ const blob = await put('${finalFilename}', fileBuffer, { token: '${vercelToken.s
  */
 export const uploadToVercelBlob = async (req, res) => {
   try {
-    const { token, filename, contentType } = req.body;
+    const { vercelToken, filename, contentType } = req.body;
+
+    
     
     // 1. Token validation
-    if (!token) {
+    if (!vercelToken) {
       // Track failed request due to missing token
       try {
         await updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', 'failed', 0);
@@ -1125,6 +1130,97 @@ export const replaceVercelFile = async (req, res) => {
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  */
+/**
+ * Download file from Vercel Blob (returns the public URL)
+ */
+export const downloadVercelFile = async (req, res) => {
+  try {
+    console.log('📥 Downloading file from Vercel Blob...');
+    
+    const { fileUrl, vercelToken } = req.body;
+    
+    if (!fileUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_FILE_URL',
+        message: 'File URL is required'
+      });
+    }
+
+    if (!vercelToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_VERCEL_TOKEN',
+        message: 'Vercel token is required'
+      });
+    }
+
+    // Extract filename from URL
+    const urlParts = fileUrl.split('/');
+    const filename = urlParts[urlParts.length - 1];
+    
+    console.log(`📁 Downloading file: ${filename}`);
+    console.log(`🔗 File URL: ${fileUrl}`);
+
+    // For Vercel Blob, files are publicly accessible by default
+    // We just need to verify the file exists and return the URL
+    try {
+      const response = await fetch(fileUrl, { method: 'HEAD' });
+      
+      if (!response.ok) {
+        return res.status(404).json({
+          success: false,
+          error: 'FILE_NOT_FOUND',
+          message: 'File not found or not accessible'
+        });
+      }
+
+      const fileSize = response.headers.get('content-length') || 0;
+      const contentType = response.headers.get('content-type') || 'application/octet-stream';
+
+      console.log(`✅ File accessible: ${filename} (${fileSize} bytes)`);
+
+      res.status(200).json({
+        success: true,
+        message: 'File download URL generated successfully',
+        data: {
+          filename: filename,
+          downloadUrl: fileUrl,
+          downloadMethod: 'direct',
+          isPrivate: false,
+          fileSize: parseInt(fileSize),
+          contentType: contentType,
+          provider: 'vercel',
+          instructions: {
+            note: 'Vercel Blob files are publicly accessible by default',
+            curlExample: `curl -o "${filename}" "${fileUrl}"`,
+            browserExample: `window.open("${fileUrl}", "_blank")`
+          }
+        }
+      });
+
+    } catch (error) {
+      console.error('❌ Error checking file accessibility:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'FILE_CHECK_ERROR',
+        message: 'Failed to verify file accessibility',
+        details: error.message
+      });
+    }
+
+  } catch (error) {
+    console.error('💥 Vercel Blob download error:', error);
+    
+    res.status(500).json({
+      success: false,
+      error: 'SERVER_ERROR',
+      message: 'Internal server error during file download',
+      details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+};
+
 export const deleteVercelFile = async (req, res) => {
   try {
     const { fileUrl, vercelToken } = req.body;
