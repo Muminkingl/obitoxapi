@@ -17,39 +17,31 @@ const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null
     // Get current values to increment them
     const { data: currentData, error: fetchError } = await supabaseAdmin
       .from('api_keys')
-      .select('total_requests, successful_requests, failed_requests, rate_limit_count, quota_used')
+      .select('total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
       .eq('id', apiKey)
       .single();
     
     if (fetchError) {
-      console.error('Error fetching current metrics:', fetchError);
+      console.error('❌ Error fetching current metrics:', fetchError);
       return;
     }
     
     const currentTotal = currentData?.total_requests || 0;
     const currentSuccess = currentData?.successful_requests || 0;
     const currentFailed = currentData?.failed_requests || 0;
-    const currentRateLimit = currentData?.rate_limit_count || 0;
-    const currentQuota = currentData?.quota_used || 0;
-    
-    // Calculate new quota usage based on file size
-    const fileSizeInMB = (additionalData.fileSize || 0) / (1024 * 1024);
-    const newQuotaUsed = success ? currentQuota + fileSizeInMB : currentQuota;
+    const currentFileSize = currentData?.total_file_size || 0;
+    const currentFileCount = currentData?.total_files_uploaded || 0;
     
     // Update main api_keys table metrics
     const updateData = {
       total_requests: currentTotal + 1,
       successful_requests: success ? currentSuccess + 1 : currentSuccess,
       failed_requests: success ? currentFailed : currentFailed + 1,
-      last_request_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      quota_used: newQuotaUsed
+      total_file_size: success ? currentFileSize + (additionalData.fileSize || 0) : currentFileSize,
+      total_files_uploaded: success ? currentFileCount + 1 : currentFileCount,
+      last_used_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     };
-
-    // Handle rate limiting
-    if (errorType === 'RATE_LIMIT') {
-      updateData.rate_limit_count = currentRateLimit + 1;
-    }
 
     await supabaseAdmin
       .from('api_keys')
@@ -59,16 +51,16 @@ const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null
     // Update provider usage
     const { data: providerData, error: providerError } = await supabaseAdmin
       .from('provider_usage')
-      .select('upload_count, total_size, last_upload_at')
+      .select('upload_count, total_file_size, last_used_at')
       .eq('api_key_id', apiKey)
       .eq('provider', provider)
       .single();
 
     if (providerError && providerError.code !== 'PGRST116') {
-      console.error('Error fetching provider metrics:', providerError);
+      console.error('❌ Error fetching provider metrics:', providerError);
     } else {
       const currentCount = providerData?.upload_count || 0;
-      const currentSize = providerData?.total_size || 0;
+      const currentSize = providerData?.total_file_size || 0;
       
       if (providerError?.code === 'PGRST116') {
         // Insert new record
@@ -78,8 +70,8 @@ const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null
             api_key_id: apiKey,
             provider: provider,
             upload_count: success ? 1 : 0,
-            total_size: success ? fileSizeInMB : 0,
-            last_upload_at: success ? new Date().toISOString() : null,
+            total_file_size: success ? additionalData.fileSize || 0 : 0,
+            last_used_at: success ? new Date().toISOString() : null,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           });
@@ -87,12 +79,12 @@ const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null
         // Update existing record
         const updateProviderData = {
           upload_count: success ? currentCount + 1 : currentCount,
-          total_size: success ? currentSize + fileSizeInMB : currentSize,
+          total_file_size: success ? currentSize + (additionalData.fileSize || 0) : currentSize,
           updated_at: new Date().toISOString()
         };
 
         if (success) {
-          updateProviderData.last_upload_at = new Date().toISOString();
+          updateProviderData.last_used_at = new Date().toISOString();
         }
 
         await supabaseAdmin
@@ -323,7 +315,7 @@ const checkUserQuota = async (apiKey, fileSize = 0) => {
   try {
     const { data: usage, error } = await supabaseAdmin
       .from('provider_usage')
-      .select('upload_count, total_size')
+      .select('upload_count, total_file_size')
       .eq('api_key_id', apiKey)
       .eq('provider', 'supabase')
       .single();
@@ -334,7 +326,7 @@ const checkUserQuota = async (apiKey, fileSize = 0) => {
     }
 
     const currentFiles = usage?.upload_count || 0;
-    const currentSize = (usage?.total_size || 0) * 1024 * 1024; // Convert MB to bytes
+    const currentSize = usage?.total_file_size || 0; // Already in bytes
     const newTotalSize = currentSize + fileSize;
 
     if (currentFiles >= MAX_FILES_PER_USER) {
@@ -989,6 +981,11 @@ export const generateSupabaseSignedUrl = async (req, res) => {
     }
 
     console.log(`✅ Generated signed upload URL for: ${uniqueFilename}`);
+
+    // Update metrics for successful signed URL generation
+    await updateSupabaseMetrics(apiKey, 'supabase', true, 'SIGNED_URL_SUCCESS', {
+      fileSize: fileSize
+    });
 
     // Get the final public URL (for after upload completion)
     let finalUrl;
@@ -2877,6 +2874,125 @@ export const checkSupabaseHealth = async (req, res) => {
   }
 };
 
+
+/**
+ * Complete Supabase upload and update metrics with real file size
+ */
+export const completeSupabaseUpload = async (req, res) => {
+  let apiKey;
+  
+  try {
+    const { 
+      filename, 
+      originalFilename,
+      fileSize, 
+      fileUrl,
+      contentType,
+      bucket = SUPABASE_BUCKET,
+      supabaseToken,
+      supabaseUrl
+    } = req.body;
+    
+    apiKey = req.apiKeyId;
+
+    // Validate developer's Supabase credentials
+    if (!supabaseToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_SUPABASE_TOKEN',
+        message: 'Supabase service key is required. Please provide your Supabase service role key.'
+      });
+    }
+
+    if (!supabaseUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_SUPABASE_URL',
+        message: 'Supabase project URL is required. Please provide your Supabase project URL.'
+      });
+    }
+
+    // Create Supabase client using developer's credentials
+    const developerSupabase = createClient(supabaseUrl, supabaseToken);
+
+    if (!apiKey) {
+      return res.status(401).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'API key is required'
+      });
+    }
+
+    // Validate required fields
+    if (!filename || !fileSize || !fileUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_PARAMETERS',
+        message: 'filename, fileSize, and fileUrl are required'
+      });
+    }
+
+    // Verify the file exists in Supabase storage
+    const { data: fileExists, error: existsError } = await developerSupabase.storage
+      .from(bucket)
+      .download(filename);
+
+    if (existsError || !fileExists) {
+      await updateSupabaseMetrics(apiKey, 'supabase', false, 'FILE_NOT_FOUND', { fileSize });
+      return res.status(404).json({
+        success: false,
+        error: 'FILE_NOT_FOUND',
+        message: 'File not found in Supabase storage',
+        details: existsError?.message
+      });
+    }
+
+    // Get actual file size from Supabase (more accurate than client-provided size)
+    const { data: fileList, error: listError } = await developerSupabase.storage
+      .from(bucket)
+      .list('', { search: filename });
+
+    const storageFile = fileList?.find(f => f.name === filename);
+    const actualFileSize = storageFile?.metadata?.size || fileSize;
+
+
+    // Update metrics with real file size
+    await updateSupabaseMetrics(apiKey, 'supabase', true, 'UPLOAD_COMPLETED', {
+      fileSize: actualFileSize
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Supabase upload completion recorded successfully',
+      data: {
+        filename: filename,
+        originalFilename: originalFilename || filename,
+        fileSize: actualFileSize,
+        fileUrl: fileUrl,
+        bucket: bucket,
+        provider: 'supabase',
+        completedAt: new Date().toISOString(),
+        metricsUpdated: true
+      }
+    });
+
+  } catch (error) {
+    console.error('💥 Supabase upload completion error:', error);
+    
+    if (apiKey) {
+      await updateSupabaseMetrics(apiKey, 'supabase', false, 'COMPLETION_ERROR', { 
+        errorDetails: error.message 
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'SERVER_ERROR',
+      message: 'Internal server error during upload completion',
+      details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+};
 
 /**
  * List available buckets for Supabase Storage

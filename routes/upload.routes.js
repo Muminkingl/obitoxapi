@@ -8,7 +8,8 @@ import {
   vercelHealthCheck,
   cancelVercelUpload,
   deleteVercelFile,
-  downloadVercelFile
+  downloadVercelFile,
+  completeVercelUpload
 } from '../controllers/providers/vercel.controller.js';
 import {
   uploadToSupabaseStorage,
@@ -17,8 +18,24 @@ import {
   listSupabaseFiles,
   cancelSupabaseUpload,
   downloadSupabaseFile,
-  listSupabaseBuckets
+  listSupabaseBuckets,
+  completeSupabaseUpload
 } from '../controllers/providers/supabase.controller.js';
+import { 
+  generateUploadcareSignedUrl, 
+  deleteUploadcareFile, 
+  downloadUploadcareFile, 
+  cancelUploadcareUpload, 
+  listUploadcareFiles, 
+  uploadcareHealthCheck,
+  scanUploadcareFileForMalware,
+  checkUploadcareMalwareScanStatus,
+  getUploadcareMalwareScanResults,
+  removeUploadcareInfectedFile,
+  validateUploadcareFile,
+  getUploadcareProjectSettings,
+  validateUploadcareSvg
+} from '../controllers/providers/uploadcare.controller.js';
 
 const router = express.Router();
 
@@ -57,6 +74,9 @@ router.delete('/vercel/delete', validateApiKey, deleteVercelFile);
 // Download files from Vercel Blob
 router.post('/vercel/download', validateApiKey, downloadVercelFile);
 
+// Complete Vercel upload and update metrics
+router.post('/vercel/complete', validateApiKey, completeVercelUpload);
+
 // ===== SUPABASE PROVIDER ROUTES =====
 
 // Generate signed URL for Supabase Storage
@@ -79,6 +99,40 @@ router.post('/supabase/download', validateApiKey, downloadSupabaseFile);
 
 // List available buckets in Supabase Storage
 router.post('/supabase/buckets', validateApiKey, listSupabaseBuckets);
+
+// Complete Supabase upload and update metrics
+router.post('/supabase/complete', validateApiKey, completeSupabaseUpload);
+
+// ===== UPLOADCARE PROVIDER ROUTES =====
+
+// Generate signed URL for Uploadcare (zero bandwidth cost)
+router.post('/uploadcare/signed-url', validateApiKey, generateUploadcareSignedUrl);
+
+// Cancel Uploadcare uploads (not applicable - uploads are immediate)
+router.post('/uploadcare/cancel', validateApiKey, cancelUploadcareUpload);
+
+// Delete files from Uploadcare
+router.delete('/uploadcare/delete', validateApiKey, deleteUploadcareFile);
+
+// Download files from Uploadcare
+router.post('/uploadcare/download', validateApiKey, downloadUploadcareFile);
+
+// List files from Uploadcare
+router.post('/uploadcare/list', validateApiKey, listUploadcareFiles);
+
+// Uploadcare provider health check
+router.get('/uploadcare/health', uploadcareHealthCheck);
+
+// Uploadcare malware scanning routes
+router.post('/uploadcare/scan-malware', validateApiKey, scanUploadcareFileForMalware);
+router.post('/uploadcare/scan-status', validateApiKey, checkUploadcareMalwareScanStatus);
+router.post('/uploadcare/scan-results', validateApiKey, getUploadcareMalwareScanResults);
+router.post('/uploadcare/remove-infected', validateApiKey, removeUploadcareInfectedFile);
+
+// Uploadcare validation routes
+router.post('/uploadcare/validate', validateApiKey, validateUploadcareFile);
+router.post('/uploadcare/project-settings', validateApiKey, getUploadcareProjectSettings);
+router.post('/uploadcare/validate-svg', validateApiKey, validateUploadcareSvg);
 
 // ===== LEGACY ROUTES (for backward compatibility) =====
 

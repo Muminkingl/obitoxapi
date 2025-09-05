@@ -6,10 +6,12 @@ export interface ObitoXConfig {
 export interface UploadOptions {
   filename: string;
   contentType?: string;
-  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY';
+  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY' | 'UPLOADCARE';
   vercelToken?: string; // Developer's Vercel token
   supabaseToken?: string; // Developer's Supabase service key
   supabaseUrl?: string; // Developer's Supabase project URL
+  uploadcarePublicKey?: string; // Developer's Uploadcare public key
+  uploadcareSecretKey?: string; // Developer's Uploadcare secret key
   bucket?: string; // Bucket name (for Supabase, AWS, etc.)
   onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void;
   onCancel?: () => void;
@@ -17,35 +19,41 @@ export interface UploadOptions {
 
 export interface CancelUploadOptions {
   uploadId: string;
-  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY';
+  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY' | 'UPLOADCARE';
   vercelToken?: string; // Developer's Vercel token
   supabaseToken?: string; // Developer's Supabase service key
   supabaseUrl?: string; // Developer's Supabase project URL
+  uploadcarePublicKey?: string; // Developer's Uploadcare public key
+  uploadcareSecretKey?: string; // Developer's Uploadcare secret key
   bucket?: string; // Bucket name (for Supabase, AWS, etc.)
 }
 
 export interface DeleteFileOptions {
   fileUrl: string;
-  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY';
+  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY' | 'UPLOADCARE';
   vercelToken?: string; // Developer's Vercel token
   supabaseToken?: string; // Developer's Supabase service key
   supabaseUrl?: string; // Developer's Supabase project URL
+  uploadcarePublicKey?: string; // Developer's Uploadcare public key
+  uploadcareSecretKey?: string; // Developer's Uploadcare secret key
   bucket?: string; // Bucket name (for Supabase, AWS, etc.)
 }
 
 export interface DownloadFileOptions {
   fileUrl?: string;
   filename?: string;
-  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY';
+  provider: 'VERCEL' | 'SUPABASE' | 'AWS' | 'CLOUDINARY' | 'UPLOADCARE';
   bucket?: string;
   expiresIn?: number; // For signed URLs (in seconds)
   vercelToken?: string; // Developer's Vercel token
   supabaseToken?: string; // Developer's Supabase service key
   supabaseUrl?: string; // Developer's Supabase project URL
+  uploadcarePublicKey?: string; // Developer's Uploadcare public key
+  uploadcareSecretKey?: string; // Developer's Uploadcare secret key
 }
 
 export interface ListBucketsOptions {
-  provider: 'SUPABASE' | 'AWS' | 'CLOUDINARY';
+  provider: 'SUPABASE' | 'AWS' | 'CLOUDINARY' | 'UPLOADCARE';
   supabaseToken?: string; // Developer's Supabase service key
   supabaseUrl?: string; // Developer's Supabase project URL
 }
@@ -69,6 +77,7 @@ export interface UploadResponse {
   method: string;
     token?: string; // For Supabase signed URLs
     bucket?: string; // For Supabase signed URLs
+    formData?: Record<string, string>; // For Uploadcare form data
   };
   upload: {
   headers: Record<string, string>;
@@ -141,17 +150,31 @@ export class ObitoX {
     const filename = file instanceof File ? file.name : 'uploaded-file';
     const contentType = file instanceof File ? file.type : 'application/octet-stream';
 
-    // All providers now use signed URLs for zero bandwidth cost
-    const signedUrlResult = await this.upload({
-        filename,
-        contentType,
-      provider: options.provider,
-      vercelToken: options.vercelToken,
-      supabaseToken: options.supabaseToken,
-      supabaseUrl: options.supabaseUrl,
-      bucket: options.bucket,
-      fileSize: file.size // Include file size for provider limit validation
-    });
+    // Most providers use signed URLs for zero bandwidth cost
+    let signedUrlResult;
+    if (options.provider === 'UPLOADCARE') {
+      // For Uploadcare, get signed URL for direct upload
+      signedUrlResult = await this.upload({
+          filename,
+          contentType,
+        provider: options.provider,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey,
+        fileSize: file.size // Include file size for provider limit validation
+      });
+    } else {
+      // For other providers, get signed URL
+      signedUrlResult = await this.upload({
+          filename,
+          contentType,
+        provider: options.provider,
+        vercelToken: options.vercelToken,
+        supabaseToken: options.supabaseToken,
+        supabaseUrl: options.supabaseUrl,
+        bucket: options.bucket,
+        fileSize: file.size // Include file size for provider limit validation
+      });
+    }
 
     // Upload directly to storage provider (bypasses your server completely)
     let uploadResponse;
@@ -163,10 +186,10 @@ export class ObitoX {
       }
       
       uploadResponse = await this.uploadToSupabaseSignedUrl(
-        signedUrlResult.data.uploadUrl,
-        signedUrlResult.data.token,
-        signedUrlResult.data.filename,
-        signedUrlResult.data.bucket,
+        signedUrlResult.data.uploadUrl || '',
+        signedUrlResult.data.token || '',
+        signedUrlResult.data.filename || filename,
+        signedUrlResult.data.bucket || '',
         file,
         options.onProgress,
         options.onCancel
@@ -174,18 +197,27 @@ export class ObitoX {
     } else if (options.provider === 'VERCEL') {
       // For Vercel, use the Vercel Blob SDK directly (bypass server URL generation)
       uploadResponse = await this.uploadToVercelBlob(
-        signedUrlResult.data.filename, // Use filename instead of uploadUrl
+        signedUrlResult.data.filename || filename, // Use filename instead of uploadUrl
         file,
         options.vercelToken!,
+        options.onProgress,
+        options.onCancel
+      );
+    } else if (options.provider === 'UPLOADCARE') {
+      // For Uploadcare, use direct upload to Uploadcare's API
+      uploadResponse = await this.uploadToUploadcare(
+        signedUrlResult.data.uploadUrl || '',
+        file,
+        signedUrlResult.data.formData || {},
         options.onProgress,
         options.onCancel
       );
     } else {
       // For other providers (AWS, etc.), use direct PUT
       uploadResponse = await this.uploadWithProgress(
-        signedUrlResult.data.uploadUrl,
+        signedUrlResult.data.uploadUrl || '',
         file,
-        signedUrlResult.upload.headers,
+        signedUrlResult.upload?.headers || {},
         options.onProgress,
         options.onCancel
       );
@@ -201,6 +233,11 @@ export class ObitoX {
     // For Vercel, use the actual blob URL from the SDK
     if (options.provider === 'VERCEL' && (this as any).lastVercelBlobUrl) {
       finalFileUrl = (this as any).lastVercelBlobUrl;
+    }
+    
+    // For Uploadcare, use the actual URL from the server response
+    if (options.provider === 'UPLOADCARE' && (this as any).lastUploadcareUrl) {
+      finalFileUrl = (this as any).lastUploadcareUrl;
     }
     
     await this.track({
@@ -351,6 +388,90 @@ export class ObitoX {
   }
 
   /**
+   * Upload to Uploadcare using direct API (zero bandwidth cost)
+   * @param uploadUrl - Upload URL from Uploadcare
+   * @param file - File or Blob to upload
+   * @param formData - Form data parameters for Uploadcare
+   * @param onProgress - Progress callback function
+   * @param onCancel - Cancel callback function
+   * @returns Promise<Response> - Upload response
+   */
+  private async uploadToUploadcare(
+    uploadUrl: string,
+    file: File | Blob,
+    formData: Record<string, string>,
+    onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+    onCancel?: () => void
+  ): Promise<Response> {
+    // Create AbortController for cancellation
+    const abortController = new AbortController();
+    
+    // Store the abort controller for potential cancellation
+    (this as any).currentUploadController = abortController;
+    
+    if (onProgress) {
+      // Simulate progress updates for Node.js
+      const totalBytes = file.size;
+      let bytesUploaded = 0;
+      
+      // Start progress simulation
+      const progressInterval = setInterval(() => {
+        bytesUploaded += Math.ceil(totalBytes / 10); // Simulate 10% increments
+        if (bytesUploaded >= totalBytes) {
+          bytesUploaded = totalBytes;
+          clearInterval(progressInterval);
+        }
+        
+        const progress = (bytesUploaded / totalBytes) * 100;
+        onProgress(progress, bytesUploaded, totalBytes);
+      }, 100); // Update every 100ms
+      
+      // Clean up interval after upload completes
+      setTimeout(() => clearInterval(progressInterval), 5000);
+    }
+    
+    try {
+      // Create FormData for Uploadcare upload
+      const uploadFormData = new FormData();
+      
+      // Add all form data parameters
+      Object.entries(formData).forEach(([key, value]) => {
+        if (key !== 'file') {
+          uploadFormData.append(key, value);
+        }
+      });
+      
+      // Add the file
+      uploadFormData.append('file', file);
+      
+      // Upload directly to Uploadcare using the correct endpoint
+      const response = await fetch('https://upload.uploadcare.com/base/', {
+        method: 'POST',
+        body: uploadFormData,
+        signal: abortController.signal
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Uploadcare upload failed: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+      
+      const result = await response.json();
+      
+      // Store the UUID for later use (actual URL will be determined via downloadFile)
+      (this as any).lastUploadcareUrl = `https://ucarecdn.com/${result.file}/`;
+      
+      return response;
+      
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error('Upload cancelled');
+      }
+      throw new Error(`Uploadcare upload failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
    * Upload with progress tracking using fetch for Node.js compatibility
    * @param url - Upload URL
    * @param file - File or Blob to upload
@@ -460,6 +581,8 @@ export class ObitoX {
     vercelToken?: string;
     supabaseToken?: string;
     supabaseUrl?: string;
+    uploadcarePublicKey?: string;
+    uploadcareSecretKey?: string;
     bucket?: string;
     fileSize?: number;
     replaceUrl?: string;
@@ -484,6 +607,12 @@ export class ObitoX {
     }
     if (options.supabaseUrl) {
       requestBody.supabaseUrl = options.supabaseUrl;
+    }
+    if (options.uploadcarePublicKey) {
+      requestBody.uploadcarePublicKey = options.uploadcarePublicKey;
+    }
+    if (options.uploadcareSecretKey) {
+      requestBody.uploadcareSecretKey = options.uploadcareSecretKey;
     }
     if (options.bucket) {
       requestBody.bucket = options.bucket;
@@ -606,6 +735,12 @@ export class ObitoX {
         return false;
       }
 
+      // For Uploadcare, cancellation is not applicable (uploads are immediate)
+      if (options.provider === 'UPLOADCARE') {
+        console.log('⚠️ Upload cancellation not applicable for Uploadcare (uploads are immediate)');
+        return true; // Return true since there's nothing to cancel
+      }
+
       // For other providers, use the backend cancel endpoint
       const requestBody: any = {
         uploadId: options.uploadId
@@ -620,6 +755,12 @@ export class ObitoX {
       }
       if (options.supabaseUrl) {
         requestBody.supabaseUrl = options.supabaseUrl;
+      }
+      if (options.uploadcarePublicKey) {
+        requestBody.uploadcarePublicKey = options.uploadcarePublicKey;
+      }
+      if (options.uploadcareSecretKey) {
+        requestBody.uploadcareSecretKey = options.uploadcareSecretKey;
       }
       if (options.bucket) {
         requestBody.bucket = options.bucket;
@@ -691,6 +832,12 @@ export class ObitoX {
       }
       if (options.supabaseUrl) {
         requestBody.supabaseUrl = options.supabaseUrl;
+      }
+      if (options.uploadcarePublicKey) {
+        requestBody.uploadcarePublicKey = options.uploadcarePublicKey;
+      }
+      if (options.uploadcareSecretKey) {
+        requestBody.uploadcareSecretKey = options.uploadcareSecretKey;
       }
       if (options.bucket) {
         requestBody.bucket = options.bucket;
@@ -794,6 +941,12 @@ export class ObitoX {
       if (options.supabaseUrl) {
         requestBody.supabaseUrl = options.supabaseUrl;
       }
+      if (options.uploadcarePublicKey) {
+        requestBody.uploadcarePublicKey = options.uploadcarePublicKey;
+      }
+      if (options.uploadcareSecretKey) {
+        requestBody.uploadcareSecretKey = options.uploadcareSecretKey;
+      }
       if (options.bucket) {
         requestBody.bucket = options.bucket;
       }
@@ -835,6 +988,234 @@ export class ObitoX {
       console.warn('Failed to delete file:', error);
       return false;
     }
+  }
+
+  /**
+   * Scan file for malware (Uploadcare only)
+   */
+  async scanFileForMalware(options: {
+    fileUrl?: string;
+    uuid?: string;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+  }): Promise<{ success: boolean; data: { requestId: string; uuid: string; status: string; provider: string; scanType: string; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/scan-malware`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        fileUrl: options.fileUrl,
+        uuid: options.uuid,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Malware scan initiation failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Check malware scan status (Uploadcare only)
+   */
+  async checkMalwareScanStatus(options: {
+    requestId: string;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+  }): Promise<{ success: boolean; data: { requestId: string; status: string; isComplete: boolean; provider: string; scanType: string; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/scan-status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        requestId: options.requestId,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Malware scan status check failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Get malware scan results (Uploadcare only)
+   */
+  async getMalwareScanResults(options: {
+    fileUrl?: string;
+    uuid?: string;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+  }): Promise<{ success: boolean; data: { uuid: string; hasScanResults: boolean; isInfected: boolean; infectedWith: string | null; scanDate: string | null; lastUpdated: string | null; scanVersion: string | null; provider: string; scanType: string; rawData: any; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/scan-results`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        fileUrl: options.fileUrl,
+        uuid: options.uuid,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Malware scan results retrieval failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Remove infected file (Uploadcare only)
+   */
+  async removeInfectedFile(options: {
+    fileUrl?: string;
+    uuid?: string;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+  }): Promise<{ success: boolean; data: { requestId: string; uuid: string; status: string; provider: string; scanType: string; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/remove-infected`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        fileUrl: options.fileUrl,
+        uuid: options.uuid,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Infected file removal failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Validate file before upload (Uploadcare only)
+   */
+  async validateFile(options: {
+    filename: string;
+    contentType: string;
+    fileSize: number;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+    maxFileSize?: number;
+    allowedMimeTypes?: string[];
+    blockMimeTypes?: string[];
+    enableSvgValidation?: boolean;
+  }): Promise<{ success: boolean; data: { isValid: boolean; errors: string[]; warnings: string[]; fileInfo: any; provider: string; validationType: string; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/validate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        filename: options.filename,
+        contentType: options.contentType,
+        fileSize: options.fileSize,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey,
+        maxFileSize: options.maxFileSize,
+        allowedMimeTypes: options.allowedMimeTypes,
+        blockMimeTypes: options.blockMimeTypes,
+        enableSvgValidation: options.enableSvgValidation
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'File validation failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Get Uploadcare project settings (Uploadcare only)
+   */
+  async getProjectSettings(options: {
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+  }): Promise<{ success: boolean; data: { projectSettings: any; provider: string; settingsType: string; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/project-settings`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Project settings retrieval failed');
+    }
+
+    return await response.json();
+  }
+
+  /**
+   * Validate SVG file for JavaScript content (Uploadcare only)
+   */
+  async validateSvg(options: {
+    fileUrl?: string;
+    uuid?: string;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+  }): Promise<{ success: boolean; data: { uuid: string; isValid: boolean; hasJavaScript: boolean; detectedPatterns: string[]; securityRisk: boolean; provider: string; validationType: string; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/validate-svg`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        fileUrl: options.fileUrl,
+        uuid: options.uuid,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'SVG validation failed');
+    }
+
+    return await response.json();
   }
 
 }

@@ -1,6 +1,102 @@
 import { supabaseAdmin } from '../../database/supabase.js';
 import { put } from '@vercel/blob';
 
+/**
+ * Update request metrics for Vercel Storage
+ */
+const updateVercelMetrics = async (apiKey, provider, success, errorType = null, additionalData = {}) => {
+  try {
+    if (!apiKey) {
+      console.warn('⚠️ No API key provided for metrics update');
+      return;
+    }
+
+    // Get current values to increment them
+    const { data: currentData, error: fetchError } = await supabaseAdmin
+      .from('api_keys')
+      .select('total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
+      .eq('id', apiKey)
+      .single();
+    
+    if (fetchError) {
+      console.error('❌ Error fetching current metrics:', fetchError);
+      return;
+    }
+    
+    const currentTotal = currentData?.total_requests || 0;
+    const currentSuccess = currentData?.successful_requests || 0;
+    const currentFailed = currentData?.failed_requests || 0;
+    const currentFileSize = currentData?.total_file_size || 0;
+    const currentFileCount = currentData?.total_files_uploaded || 0;
+    
+    // Update main api_keys table metrics
+    const updateData = {
+      total_requests: currentTotal + 1,
+      successful_requests: success ? currentSuccess + 1 : currentSuccess,
+      failed_requests: success ? currentFailed : currentFailed + 1,
+      total_file_size: success ? currentFileSize + (additionalData.fileSize || 0) : currentFileSize,
+      total_files_uploaded: success ? currentFileCount + 1 : currentFileCount,
+      last_used_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    await supabaseAdmin
+      .from('api_keys')
+      .update(updateData)
+      .eq('id', apiKey);
+
+    // Update provider usage
+    const { data: providerData, error: providerError } = await supabaseAdmin
+      .from('provider_usage')
+      .select('upload_count, total_file_size, last_used_at')
+      .eq('api_key_id', apiKey)
+      .eq('provider', provider)
+      .single();
+
+    if (providerError && providerError.code !== 'PGRST116') {
+      console.error('❌ Error fetching provider metrics:', providerError);
+    } else {
+      const currentCount = providerData?.upload_count || 0;
+      const currentSize = providerData?.total_file_size || 0;
+      
+      if (providerError?.code === 'PGRST116') {
+        // Insert new record
+        await supabaseAdmin
+          .from('provider_usage')
+          .insert({
+            api_key_id: apiKey,
+            provider: provider,
+            upload_count: success ? 1 : 0,
+            total_file_size: success ? additionalData.fileSize || 0 : 0,
+            last_used_at: success ? new Date().toISOString() : null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+      } else {
+        // Update existing record
+        const updateProviderData = {
+          upload_count: success ? currentCount + 1 : currentCount,
+          total_file_size: success ? currentSize + (additionalData.fileSize || 0) : currentSize,
+          updated_at: new Date().toISOString()
+        };
+
+        if (success) {
+          updateProviderData.last_used_at = new Date().toISOString();
+        }
+
+        await supabaseAdmin
+          .from('provider_usage')
+          .update(updateProviderData)
+          .eq('api_key_id', apiKey)
+          .eq('provider', provider);
+      }
+    }
+
+  } catch (error) {
+    console.error('Error updating Vercel metrics:', error);
+  }
+};
+
 // Configuration constants
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB (our service limit)
 const VERCEL_BLOB_LIMIT = 4.5 * 1024 * 1024; // 4.5MB (Vercel's per-request limit)
@@ -1522,6 +1618,89 @@ export const cleanupVercelFiles = async (req, res) => {
       error: 'Failed to cleanup files',
       code: 'CLEANUP_FAILED',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * Complete Vercel upload and update metrics with real file size
+ */
+export const completeVercelUpload = async (req, res) => {
+  let apiKey;
+  
+  try {
+    console.log('✅ Completing Vercel upload and updating metrics...');
+    
+    const { 
+      filename, 
+      originalFilename,
+      fileSize, 
+      fileUrl,
+      contentType,
+      vercelToken,
+      teamId
+    } = req.body;
+    
+    apiKey = req.apiKeyId;
+
+    if (!apiKey) {
+      return res.status(401).json({
+        success: false,
+        error: 'UNAUTHORIZED',
+        message: 'API key is required'
+      });
+    }
+
+    // Validate required fields
+    if (!filename || !fileSize || !fileUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_PARAMETERS',
+        message: 'filename, fileSize, and fileUrl are required'
+      });
+    }
+
+    // For Vercel, we can't easily verify the file exists since they don't provide a list API
+    // But we can validate the token format and trust the client's completion call
+    if (vercelToken && !vercelToken.startsWith('vercel_blob_rw_')) {
+      return res.status(400).json({
+        success: false,
+        error: 'INVALID_TOKEN_FORMAT',
+        message: 'Invalid Vercel token format'
+      });
+    }
+
+    // Update metrics with real file size
+    await updateVercelMetrics(apiKey, 'vercel', true, 'UPLOAD_COMPLETED', {
+      fileSize: fileSize
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Vercel upload completion recorded successfully',
+      data: {
+        filename: filename,
+        originalFilename: originalFilename || filename,
+        fileSize: fileSize,
+        fileUrl: fileUrl,
+        provider: 'vercel',
+        completedAt: new Date().toISOString(),
+        metricsUpdated: true
+      }
+    });
+
+  } catch (error) {
+    console.error('💥 Vercel upload completion error:', error);
+    
+    if (apiKey) {
+      await updateRequestMetrics(apiKey, req.userId, 'vercel', 'failed', 0);
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'SERVER_ERROR',
+      message: 'Internal server error during upload completion',
+      details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 };
