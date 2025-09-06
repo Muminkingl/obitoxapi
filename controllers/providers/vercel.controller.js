@@ -2,6 +2,47 @@ import { supabaseAdmin } from '../../database/supabase.js';
 import { put } from '@vercel/blob';
 
 /**
+ * Log individual file upload to granular tracking tables
+ */
+const logFileUpload = async (apiKeyId, userId, provider, fileName, fileType, fileSize, uploadStatus, fileUrl = null, errorMessage = null) => {
+  try {
+    // Insert into file_uploads table
+    await supabaseAdmin
+      .from('file_uploads')
+      .insert({
+        api_key_id: apiKeyId,
+        user_id: userId,
+        provider: provider,
+        file_name: fileName,
+        file_type: fileType,
+        file_size: fileSize,
+        upload_status: uploadStatus,
+        file_url: fileUrl,
+        error_message: errorMessage,
+        uploaded_at: new Date().toISOString()
+      });
+
+    // Insert into api_requests table
+    await supabaseAdmin
+      .from('api_requests')
+      .insert({
+        api_key_id: apiKeyId,
+        user_id: userId,
+        request_type: 'upload',
+        provider: provider,
+        status_code: uploadStatus === 'success' ? 200 : 400,
+        request_size_bytes: fileSize,
+        response_size_bytes: uploadStatus === 'success' ? fileSize : 0,
+        error_message: errorMessage,
+        requested_at: new Date().toISOString()
+      });
+
+  } catch (error) {
+    // Non-blocking - don't fail the main operation if logging fails
+  }
+};
+
+/**
  * Update request metrics for Vercel Storage
  */
 const updateVercelMetrics = async (apiKey, provider, success, errorType = null, additionalData = {}) => {
@@ -1674,6 +1715,18 @@ export const completeVercelUpload = async (req, res) => {
     await updateVercelMetrics(apiKey, 'vercel', true, 'UPLOAD_COMPLETED', {
       fileSize: fileSize
     });
+
+    // Log to granular tracking tables
+    await logFileUpload(
+      apiKey,
+      req.userId,
+      'vercel',
+      filename,
+      contentType || 'application/octet-stream',
+      fileSize,
+      'success',
+      fileUrl
+    );
 
     res.status(200).json({
       success: true,

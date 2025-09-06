@@ -5,6 +5,47 @@ import path from 'path';
 import crypto from 'crypto';
 
 /**
+ * Log individual file upload to granular tracking tables
+ */
+const logFileUpload = async (apiKeyId, userId, provider, fileName, fileType, fileSize, uploadStatus, fileUrl = null, errorMessage = null) => {
+  try {
+    // Insert into file_uploads table
+    await supabaseAdmin
+      .from('file_uploads')
+      .insert({
+        api_key_id: apiKeyId,
+        user_id: userId,
+        provider: provider,
+        file_name: fileName,
+        file_type: fileType,
+        file_size: fileSize,
+        upload_status: uploadStatus,
+        file_url: fileUrl,
+        error_message: errorMessage,
+        uploaded_at: new Date().toISOString()
+      });
+
+    // Insert into api_requests table
+    await supabaseAdmin
+      .from('api_requests')
+      .insert({
+        api_key_id: apiKeyId,
+        user_id: userId,
+        request_type: 'upload',
+        provider: provider,
+        status_code: uploadStatus === 'success' ? 200 : 400,
+        request_size_bytes: fileSize,
+        response_size_bytes: uploadStatus === 'success' ? fileSize : 0,
+        error_message: errorMessage,
+        requested_at: new Date().toISOString()
+      });
+
+  } catch (error) {
+    // Non-blocking - don't fail the main operation if logging fails
+  }
+};
+
+/**
  * Update request metrics for Supabase Storage
  */
 const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null, additionalData = {}) => {
@@ -536,8 +577,16 @@ export const uploadToSupabaseStorage = async (req, res) => {
   try {
     console.log('🚀 Starting Supabase Storage upload...');
     
-    const { file: fileData, bucket: customBucket, makePrivate = false, metadata = {}, supabaseToken } = req.body;
+    const { file: fileData, bucket: customBucket, makePrivate = false, metadata = {}, supabaseToken, supabaseUrl } = req.body;
     apiKey = req.apiKeyId;
+    
+    console.log('🔍 DEBUG: Request body parameters:', {
+      hasFile: !!fileData,
+      bucket: customBucket,
+      hasToken: !!supabaseToken,
+      hasUrl: !!supabaseUrl,
+      supabaseUrl: supabaseUrl
+    });
 
     // Validate developer's Supabase token
     if (!supabaseToken) {
@@ -549,20 +598,31 @@ export const uploadToSupabaseStorage = async (req, res) => {
     }
 
     // Create Supabase client using developer's token
-    // Extract URL from token (JWT contains the project URL)
+    // Use provided URL or extract from token (JWT contains the project URL)
     let developerSupabaseUrl;
-    try {
-      const tokenPayload = JSON.parse(Buffer.from(supabaseToken.split('.')[1], 'base64').toString());
-      developerSupabaseUrl = `https://${tokenPayload.iss.split('//')[1]}`;
-    } catch (error) {
-      return res.status(400).json({
-        success: false,
-        error: 'INVALID_SUPABASE_TOKEN',
-        message: 'Invalid Supabase service key format'
-      });
+    
+    if (supabaseUrl) {
+      // Use provided URL directly
+      developerSupabaseUrl = supabaseUrl;
+      console.log('📡 Using provided Supabase URL:', developerSupabaseUrl);
+    } else {
+      // Extract URL from token (JWT contains the project URL)
+      try {
+        const tokenPayload = JSON.parse(Buffer.from(supabaseToken.split('.')[1], 'base64').toString());
+        developerSupabaseUrl = `https://${tokenPayload.iss.split('//')[1]}`;
+        console.log('📡 Extracted Supabase URL from token:', developerSupabaseUrl);
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_SUPABASE_TOKEN',
+          message: 'Invalid Supabase service key format or provide supabaseUrl parameter'
+        });
+      }
     }
 
+    console.log('🔍 DEBUG: Creating Supabase client with URL:', developerSupabaseUrl);
     const developerSupabase = createClient(developerSupabaseUrl, supabaseToken);
+    console.log('🔍 DEBUG: Supabase client created successfully');
 
     if (!apiKey) {
       return res.status(401).json({
@@ -2960,6 +3020,18 @@ export const completeSupabaseUpload = async (req, res) => {
     await updateSupabaseMetrics(apiKey, 'supabase', true, 'UPLOAD_COMPLETED', {
       fileSize: actualFileSize
     });
+
+    // Log to granular tracking tables
+    await logFileUpload(
+      apiKey,
+      req.userId,
+      'supabase',
+      filename,
+      contentType || 'application/octet-stream',
+      actualFileSize,
+      'success',
+      fileUrl
+    );
 
     res.status(200).json({
       success: true,

@@ -18,6 +18,47 @@ const ALLOWED_FILE_TYPES = [
 ];
 
 /**
+ * Log individual file upload to granular tracking tables
+ */
+const logFileUpload = async (apiKeyId, userId, provider, fileName, fileType, fileSize, uploadStatus, fileUrl = null, errorMessage = null) => {
+  try {
+    // Insert into file_uploads table
+    await supabaseAdmin
+      .from('file_uploads')
+      .insert({
+        api_key_id: apiKeyId,
+        user_id: userId,
+        provider: provider,
+        file_name: fileName,
+        file_type: fileType,
+        file_size: fileSize,
+        upload_status: uploadStatus,
+        file_url: fileUrl,
+        error_message: errorMessage,
+        uploaded_at: new Date().toISOString()
+      });
+
+    // Insert into api_requests table
+    await supabaseAdmin
+      .from('api_requests')
+      .insert({
+        api_key_id: apiKeyId,
+        user_id: userId,
+        request_type: 'upload',
+        provider: provider,
+        status_code: uploadStatus === 'success' ? 200 : 400,
+        request_size_bytes: fileSize,
+        response_size_bytes: uploadStatus === 'success' ? fileSize : 0,
+        error_message: errorMessage,
+        requested_at: new Date().toISOString()
+      });
+
+  } catch (error) {
+    // Non-blocking - don't fail the main operation if logging fails
+  }
+};
+
+/**
  * Update file size for Uploadcare after getting file info
  */
 const updateUploadcareFileSize = async (apiKeyId, fileUuid, uploadcarePublicKey, uploadcareSecretKey) => {
@@ -625,6 +666,18 @@ export const downloadUploadcareFile = async (req, res) => {
 
     // Update metrics
     await updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0);
+
+    // Log to granular tracking tables (this represents when we first access the file)
+    await logFileUpload(
+      apiKeyId,
+      userId,
+      'uploadcare',
+      fileInfo.original_filename,
+      fileInfo.mime_type,
+      fileInfo.size,
+      'success',
+      publicUrl
+    );
 
     res.status(200).json({
       success: true,

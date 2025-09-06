@@ -36,6 +36,12 @@ import {
   getUploadcareProjectSettings,
   validateUploadcareSvg
 } from '../controllers/providers/uploadcare.controller.js';
+import {
+  getUploadAnalytics,
+  getDailyUsageAnalytics,
+  getProviderUsageAnalytics,
+  getFileTypeAnalytics
+} from '../controllers/analytics.controller.js';
 
 const router = express.Router();
 
@@ -147,13 +153,26 @@ router.post('/upload', validateApiKey, upload.single('file'), uploadToVercelBlob
 // Track any upload event
 router.post('/track', validateApiKey, trackUploadEvent);
 
-// Get upload statistics for the current API key
+// Get comprehensive upload analytics with all filter support
+router.get('/analytics', validateApiKey, getUploadAnalytics);
+
+// Get daily usage analytics
+router.get('/analytics/daily', validateApiKey, getDailyUsageAnalytics);
+
+// Get provider usage analytics
+router.get('/analytics/providers', validateApiKey, getProviderUsageAnalytics);
+
+// Get file type distribution analytics
+router.get('/analytics/file-types', validateApiKey, getFileTypeAnalytics);
+
+// Legacy stats endpoint (for backward compatibility)
 router.get('/stats', validateApiKey, async (req, res) => {
   try {
-    // This would typically fetch from your analytics tables
+    // Redirect to new analytics endpoint
     res.json({
       success: true,
-      message: 'Upload statistics endpoint - implement based on your analytics needs',
+      message: 'This endpoint is deprecated. Use /analytics instead.',
+      redirect: '/api/v1/upload/analytics',
       apiKeyId: req.apiKeyId,
       userId: req.userId
     });
