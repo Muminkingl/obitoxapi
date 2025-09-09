@@ -151,7 +151,6 @@ const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null
         .single();
     }
 
-    console.log(`📊 Metrics updated for ${provider}: ${success ? 'SUCCESS' : 'FAILED'} - ${errorType || 'N/A'}`);
   } catch (error) {
     console.error('Error updating metrics:', error);
   }
@@ -575,18 +574,10 @@ export const uploadToSupabaseStorage = async (req, res) => {
   let apiKey;
   
   try {
-    console.log('🚀 Starting Supabase Storage upload...');
     
     const { file: fileData, bucket: customBucket, makePrivate = false, metadata = {}, supabaseToken, supabaseUrl } = req.body;
     apiKey = req.apiKeyId;
     
-    console.log('🔍 DEBUG: Request body parameters:', {
-      hasFile: !!fileData,
-      bucket: customBucket,
-      hasToken: !!supabaseToken,
-      hasUrl: !!supabaseUrl,
-      supabaseUrl: supabaseUrl
-    });
 
     // Validate developer's Supabase token
     if (!supabaseToken) {
@@ -604,13 +595,11 @@ export const uploadToSupabaseStorage = async (req, res) => {
     if (supabaseUrl) {
       // Use provided URL directly
       developerSupabaseUrl = supabaseUrl;
-      console.log('📡 Using provided Supabase URL:', developerSupabaseUrl);
     } else {
       // Extract URL from token (JWT contains the project URL)
       try {
         const tokenPayload = JSON.parse(Buffer.from(supabaseToken.split('.')[1], 'base64').toString());
         developerSupabaseUrl = `https://${tokenPayload.iss.split('//')[1]}`;
-        console.log('📡 Extracted Supabase URL from token:', developerSupabaseUrl);
       } catch (error) {
         return res.status(400).json({
           success: false,
@@ -620,9 +609,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
       }
     }
 
-    console.log('🔍 DEBUG: Creating Supabase client with URL:', developerSupabaseUrl);
     const developerSupabase = createClient(developerSupabaseUrl, supabaseToken);
-    console.log('🔍 DEBUG: Supabase client created successfully');
 
     if (!apiKey) {
       return res.status(401).json({

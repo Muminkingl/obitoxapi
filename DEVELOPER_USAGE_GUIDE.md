@@ -55,11 +55,10 @@ Sign up at [ObitoX Dashboard](https://dashboard.obitox.com) to get your API key.
 ### 3. Initialize the SDK
 
 ```javascript
-import ObitoX from '@obitox/upload';
+import { ObitoX } from '@obitox/upload';
 
 const obitox = new ObitoX({
-  apiKey: 'ox_your_api_key_here',
-  baseUrl: 'https://api.obitox.com' // or your custom endpoint
+  apiKey: 'ox_your_api_key_here'
 });
 ```
 

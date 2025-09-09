@@ -567,7 +567,6 @@ export const generateVercelSignedUrl = async (req, res) => {
     const fileUrl = `vercel://${finalFilename}`; // Placeholder URL
     const uploadUrl = `vercel://${finalFilename}`; // Placeholder URL
     
-    console.log(`✅ Vercel upload prepared: ${finalFilename}`);
 
     // 7. Track usage for analytics and billing
     try {
@@ -814,7 +813,6 @@ export const uploadToVercelBlob = async (req, res) => {
           const progress = Math.min((uploadedChunks / totalChunks) * 100, 100);
           
           // Log progress (in production, you'd send this via WebSocket or Server-Sent Events)
-          console.log(`Upload Progress: ${progress.toFixed(1)}%`);
           
           if (uploadedChunks >= totalChunks) {
             clearInterval(progressInterval);
@@ -1052,30 +1050,69 @@ export const trackUploadEvent = async (req, res) => {
 
     // Log the event for analytics
     try {
-      await supabaseAdmin
-        .from('upload_logs')
-        .insert({
-          user_id: req.userId,
-          api_key_id: req.apiKeyId,
-          file_name: filename,
-          file_url: fileUrl,
-          file_size: fileSize || 0,
-          status: event,
-          provider: provider,
-          event_type: event,
-          error_message: error || null,
-          created_at: new Date(),
-          metadata: {
-            user_agent: req.headers['user-agent'],
-            ip_address: req.ip,
-            timestamp: Date.now()
-          }
-        });
+      // Only log 'completed' events to file_uploads table
+      if (event === 'completed') {
+        const fileUploadResult = await supabaseAdmin
+          .from('file_uploads')
+          .insert({
+            api_key_id: req.apiKeyId,
+            user_id: req.userId,
+            provider: provider,
+            file_name: filename,
+            file_type: 'application/octet-stream', // Default type
+            file_size: fileSize || 0,
+            upload_status: 'success',
+            file_url: fileUrl,
+            error_message: error || null,
+            uploaded_at: new Date().toISOString()
+          });
+
+        if (fileUploadResult.error) {
+          console.error('❌ File upload insert error:', fileUploadResult.error);
+          return res.status(500).json({
+            success: false,
+            error: 'DATABASE_ERROR',
+            message: 'Failed to insert file upload record',
+            details: fileUploadResult.error.message
+          });
+        }
+
+        // Also log to api_requests table
+        const apiRequestResult = await supabaseAdmin
+          .from('api_requests')
+          .insert({
+            api_key_id: req.apiKeyId,
+            user_id: req.userId,
+            request_type: 'upload',
+            provider: provider,
+            status_code: 200,
+            request_size_bytes: fileSize || 0,
+            response_size_bytes: fileSize || 0,
+            error_message: error || null,
+            requested_at: new Date().toISOString()
+          });
+
+        if (apiRequestResult.error) {
+          console.error('❌ API request insert error:', apiRequestResult.error);
+          return res.status(500).json({
+            success: false,
+            error: 'DATABASE_ERROR',
+            message: 'Failed to insert API request record',
+            details: apiRequestResult.error.message
+          });
+        }
+      }
 
       // Track analytics event
       await updateRequestMetrics(req.apiKeyId, req.userId, provider, 'success', fileSize || 0);
     } catch (logError) {
-      console.error('Error logging analytics event:', logError);
+      console.error('❌ Error logging analytics event:', logError);
+      return res.status(500).json({
+        success: false,
+        error: 'TRACKING_ERROR',
+        message: 'Failed to log analytics event',
+        details: logError.message
+      });
     }
 
     return res.status(200).json({
@@ -1229,8 +1266,6 @@ export const replaceVercelFile = async (req, res) => {
     // 1. Delete the old file (if possible)
     // 2. Upload the new file with the SAME filename
     
-    console.log(`🔄 File replacement requested: ${existingFilename}`);
-    console.log(`📁 Original URL: ${fileUrl}`);
     
     // For now, we'll return an error explaining the limitation
     return res.status(400).json({
@@ -1272,7 +1307,6 @@ export const replaceVercelFile = async (req, res) => {
  */
 export const downloadVercelFile = async (req, res) => {
   try {
-    console.log('📥 Downloading file from Vercel Blob...');
     
     const { fileUrl, vercelToken } = req.body;
     
@@ -1296,8 +1330,6 @@ export const downloadVercelFile = async (req, res) => {
     const urlParts = fileUrl.split('/');
     const filename = urlParts[urlParts.length - 1];
     
-    console.log(`📁 Downloading file: ${filename}`);
-    console.log(`🔗 File URL: ${fileUrl}`);
 
     // For Vercel Blob, files are publicly accessible by default
     // We just need to verify the file exists and return the URL
@@ -1315,7 +1347,6 @@ export const downloadVercelFile = async (req, res) => {
       const fileSize = response.headers.get('content-length') || 0;
       const contentType = response.headers.get('content-type') || 'application/octet-stream';
 
-      console.log(`✅ File accessible: ${filename} (${fileSize} bytes)`);
 
       res.status(200).json({
         success: true,
@@ -1374,93 +1405,14 @@ export const deleteVercelFile = async (req, res) => {
     const urlParts = fileUrl.split('/');
     const filename = urlParts[urlParts.length - 1];
     
-    console.log(`🗑️ File deletion requested: ${filename}`);
-    console.log(`📁 File URL: ${fileUrl}`);
-    
     try {
-      console.log(`🔍 Attempting to delete file with Vercel Blob del() function...`);
-      console.log(`🔑 Token prefix: ${vercelToken.substring(0, 20)}...`);
-      console.log(`📁 File URL: ${fileUrl}`);
+      // Use Vercel Blob SDK for proper deletion
+      const { del } = await import('@vercel/blob');
       
-      // Use direct HTTP DELETE to Vercel Blob API
-      console.log(`🔄 Using direct HTTP DELETE to Vercel Blob API...`);
-      console.log(`🔑 Token prefix: ${vercelToken.substring(0, 20)}...`);
-      console.log(`📁 File URL: ${fileUrl}`);
-      
-      // Try different approaches for deletion
-      let response;
-      let deleteMethod = 'unknown';
-      let deleteResult;
-      
-      // Approach 1: Try DELETE on the file URL directly
-      try {
-        console.log(`🔄 Attempt 1: DELETE on file URL directly...`);
-        response = await fetch(fileUrl, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `Bearer ${vercelToken}`,
-            'Content-Type': 'application/json'
-          }
-        });
-        deleteMethod = 'direct_file_delete';
-        console.log(`📡 Attempt 1 Response: ${response.status} ${response.statusText}`);
-      } catch (error) {
-        console.log(`⚠️ Attempt 1 failed:`, error.message);
-      }
-      
-      // Approach 2: If first approach failed, try using the Vercel Blob store endpoint
-      if (!response || !response.ok) {
-        try {
-          console.log(`🔄 Attempt 2: Using Vercel Blob store endpoint...`);
-          // Extract store ID from the file URL
-          const urlParts = fileUrl.split('/');
-          const storeId = urlParts[3]; // e.g., "9feg3hqa5xi6jdus"
-          const fileName = urlParts[urlParts.length - 1];
-          
-          const storeEndpoint = `https://api.vercel.com/v1/blob/${storeId}/${fileName}`;
-          console.log(`📡 Store endpoint: ${storeEndpoint}`);
-          
-          response = await fetch(storeEndpoint, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${vercelToken}`,
-              'Content-Type': 'application/json'
-            }
-          });
-          deleteMethod = 'store_endpoint_delete';
-          console.log(`📡 Attempt 2 Response: ${response.status} ${response.statusText}`);
-        } catch (error) {
-          console.log(`⚠️ Attempt 2 failed:`, error.message);
-        }
-      }
-      
-      // Approach 3: If both failed, try using the Vercel Blob API with the del() function
-      if (!response || !response.ok) {
-        try {
-          console.log(`🔄 Attempt 3: Using Vercel Blob del() function...`);
-          // Re-import del function dynamically
-          const { del } = await import('@vercel/blob');
-          await del(fileUrl, { token: vercelToken });
-          deleteMethod = 'sdk_del_function';
-          response = { ok: true, status: 200, statusText: 'OK' };
-          console.log(`📡 Attempt 3 Response: Success using del() function`);
-        } catch (error) {
-          console.log(`⚠️ Attempt 3 failed:`, error.message);
-          throw error; // Re-throw to be handled by outer catch
-        }
-      }
-      
-      if (response && response.ok) {
-        console.log(`✅ Delete successful using method: ${deleteMethod}`);
-        deleteResult = { success: true, method: deleteMethod, status: response.status };
-      } else {
-        const errorText = response ? await response.text() : 'No response';
-        console.log(`❌ All delete attempts failed`);
-        console.log(`📝 Last error details:`, errorText);
-        throw new Error(`All delete methods failed. Last attempt: ${response?.status} ${response?.statusText} - ${errorText}`);
-      }
-      
-      console.log(`✅ File successfully deleted from Vercel Blob: ${filename}`);
+      // Delete using Vercel Blob SDK
+      await del(fileUrl, {
+        token: vercelToken
+      });
       
       // Track the successful deletion in our database
       await updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', 'deleted', 0);
@@ -1471,13 +1423,10 @@ export const deleteVercelFile = async (req, res) => {
         filename: filename,
         fileUrl: fileUrl,
         status: 'deleted',
-        note: 'File has been permanently removed from Vercel Blob storage',
-        deleteResult: deleteResult
+        note: 'File may take up to 1 minute to be fully removed from cache'
       });
       
     } catch (deleteError) {
-      console.error('Vercel Blob deletion error:', deleteError);
-      
       // Check for specific Vercel Blob errors
       const errorMessage = deleteError.message.toLowerCase();
       
@@ -1517,8 +1466,6 @@ export const deleteVercelFile = async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Delete file error:', error);
-    
     return res.status(500).json({
       success: false,
       error: 'Failed to process delete request',
@@ -1670,7 +1617,6 @@ export const completeVercelUpload = async (req, res) => {
   let apiKey;
   
   try {
-    console.log('✅ Completing Vercel upload and updating metrics...');
     
     const { 
       filename, 
@@ -1743,7 +1689,7 @@ export const completeVercelUpload = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('💥 Vercel upload completion error:', error);
+    
     
     if (apiKey) {
       await updateRequestMetrics(apiKey, req.userId, 'vercel', 'failed', 0);

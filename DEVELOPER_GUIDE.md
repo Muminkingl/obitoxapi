@@ -27,8 +27,7 @@ npm install @obitox/upload
 import { ObitoX } from '@obitox/upload';
 
 const obitox = new ObitoX({
-  apiKey: 'ox_your_api_key_here',
-  baseUrl: 'https://api.obitox.com' // or your custom endpoint
+  apiKey: 'ox_your_api_key_here'
 });
 ```
 

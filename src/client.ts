@@ -1,6 +1,5 @@
 export interface ObitoXConfig {
   apiKey: string;
-  baseUrl?: string;
 }
 
 export interface UploadOptions {
@@ -13,6 +12,7 @@ export interface UploadOptions {
   uploadcarePublicKey?: string; // Developer's Uploadcare public key
   uploadcareSecretKey?: string; // Developer's Uploadcare secret key
   bucket?: string; // Bucket name (for Supabase, AWS, etc.)
+  checkVirus?: boolean; // Automatically scan for viruses (Uploadcare only)
   onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void;
   onCancel?: () => void;
 }
@@ -132,9 +132,9 @@ export class ObitoX {
   private apiKey: string;
   private baseUrl: string;
 
-  constructor(config: { apiKey: string; baseUrl?: string }) {
+  constructor(config: { apiKey: string }) {
     this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl || 'https://api.obitox.com';
+    this.baseUrl = 'http://localhost:5500'; // Internal API endpoint - not exposed to developers
   }
 
   /**
@@ -235,9 +235,88 @@ export class ObitoX {
       finalFileUrl = (this as any).lastVercelBlobUrl;
     }
     
-    // For Uploadcare, use the actual URL from the server response
+    // For Uploadcare, get the correct CDN URL by calling downloadFile
     if (options.provider === 'UPLOADCARE' && (this as any).lastUploadcareUrl) {
-      finalFileUrl = (this as any).lastUploadcareUrl;
+      try {
+        // Get the correct CDN URL by calling downloadFile
+        const downloadInfo = await this.downloadFile({
+          fileUrl: (this as any).lastUploadcareUrl,
+          provider: 'UPLOADCARE',
+          uploadcarePublicKey: options.uploadcarePublicKey,
+          uploadcareSecretKey: options.uploadcareSecretKey
+        });
+        finalFileUrl = downloadInfo.downloadUrl;
+        
+        // If virus scanning is enabled, scan the file and delete if infected
+        if (options.checkVirus && options.uploadcarePublicKey && options.uploadcareSecretKey) {
+          try {
+            console.log('🦠 Scanning file for viruses...');
+            
+            // Initiate virus scan
+            const scanResult = await this.scanFileForMalware({
+              fileUrl: finalFileUrl,
+              provider: 'UPLOADCARE',
+              uploadcarePublicKey: options.uploadcarePublicKey,
+              uploadcareSecretKey: options.uploadcareSecretKey
+            });
+            
+            // Wait for scan to complete (polling)
+            let scanComplete = false;
+            let attempts = 0;
+            const maxAttempts = 30; // 30 seconds timeout
+            
+            while (!scanComplete && attempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+              
+              const statusResult = await this.checkMalwareScanStatus({
+                requestId: scanResult.data.requestId,
+                provider: 'UPLOADCARE',
+                uploadcarePublicKey: options.uploadcarePublicKey,
+                uploadcareSecretKey: options.uploadcareSecretKey
+              });
+              
+              scanComplete = statusResult.data.isComplete;
+              attempts++;
+            }
+            
+            if (scanComplete) {
+              // Get scan results
+              const results = await this.getMalwareScanResults({
+                fileUrl: finalFileUrl,
+                provider: 'UPLOADCARE',
+                uploadcarePublicKey: options.uploadcarePublicKey,
+                uploadcareSecretKey: options.uploadcareSecretKey
+              });
+              
+              if (results.data.isInfected) {
+                console.log('🚨 VIRUS DETECTED! Deleting infected file...');
+                console.log(`🦠 Infected with: ${results.data.infectedWith}`);
+                
+                // Delete the infected file
+                await this.deleteFile({
+                  fileUrl: finalFileUrl,
+                  provider: 'UPLOADCARE',
+                  uploadcarePublicKey: options.uploadcarePublicKey,
+                  uploadcareSecretKey: options.uploadcareSecretKey
+                });
+                
+                throw new Error(`File is infected with virus: ${results.data.infectedWith}. File has been deleted.`);
+              } else {
+                console.log('✅ File is clean - no viruses detected');
+              }
+            } else {
+              console.log('⚠️ Virus scan timed out - file uploaded but scan incomplete');
+            }
+          } catch (virusError) {
+            // If virus scanning fails, we should still throw the error to prevent using potentially infected files
+            const errorMessage = virusError instanceof Error ? virusError.message : String(virusError);
+            throw new Error(`Virus scan failed: ${errorMessage}`);
+          }
+        }
+      } catch (error) {
+        // Fallback to the basic URL if download fails
+        finalFileUrl = (this as any).lastUploadcareUrl;
+      }
     }
     
     await this.track({
@@ -458,8 +537,9 @@ export class ObitoX {
       
       const result = await response.json();
       
-      // Store the UUID for later use (actual URL will be determined via downloadFile)
-      (this as any).lastUploadcareUrl = `https://ucarecdn.com/${result.file}/`;
+      // Store the UUID for later use - construct proper CDN URL with filename
+      const filename = file instanceof File ? file.name : 'uploaded-file';
+      (this as any).lastUploadcareUrl = `https://ucarecdn.com/${result.file}/${filename}`;
       
       return response;
       
@@ -1216,6 +1296,63 @@ export class ObitoX {
     }
 
     return await response.json();
+  }
+
+  /**
+   * List files from a storage provider
+   * @param options - List options
+   * @returns Promise<any> - List of files
+   */
+  async listFiles(options: {
+    provider: 'VERCEL' | 'SUPABASE' | 'UPLOADCARE';
+    vercelToken?: string;
+    supabaseToken?: string;
+    supabaseUrl?: string;
+    uploadcarePublicKey?: string;
+    uploadcareSecretKey?: string;
+    bucket?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<any> {
+    const endpoint = `${this.baseUrl}/api/v1/upload/${options.provider.toLowerCase()}/list`;
+    
+    const requestBody: any = {
+      limit: options.limit || 100,
+      offset: options.offset || 0
+    };
+
+    // Add provider-specific parameters
+    if (options.provider === 'VERCEL' && options.vercelToken) {
+      requestBody.vercelToken = options.vercelToken;
+    }
+    if (options.provider === 'SUPABASE' && options.supabaseToken && options.supabaseUrl) {
+      requestBody.supabaseToken = options.supabaseToken;
+      requestBody.supabaseUrl = options.supabaseUrl;
+      if (options.bucket) {
+        requestBody.bucket = options.bucket;
+      }
+    }
+    if (options.provider === 'UPLOADCARE' && options.uploadcarePublicKey && options.uploadcareSecretKey) {
+      requestBody.uploadcarePublicKey = options.uploadcarePublicKey;
+      requestBody.uploadcareSecretKey = options.uploadcareSecretKey;
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    return result.data || result;
   }
 
 }
