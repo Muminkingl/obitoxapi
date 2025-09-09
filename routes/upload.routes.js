@@ -98,7 +98,7 @@ router.post('/supabase/cancel', validateApiKey, cancelSupabaseUpload);
 router.delete('/supabase/delete', validateApiKey, deleteSupabaseFile);
 
 // List files in Supabase Storage
-router.get('/supabase/list', validateApiKey, listSupabaseFiles);
+router.post('/supabase/list', validateApiKey, listSupabaseFiles);
 
 // Download files from Supabase Storage (public or private)
 router.post('/supabase/download', validateApiKey, downloadSupabaseFile);

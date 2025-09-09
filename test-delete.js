@@ -6,23 +6,42 @@ const obitox = new ObitoX({
   apiKey: 'ox_ce5716a92d3705afc3f4195c3b77957413b900c99e7d0fd9c2031f0935dd86f9'
 });
 
-// Test delete functionality with Uploadcare
+// Test delete functionality with Supabase
 async function testDelete() {
   try {
-    console.log('🗑️ Testing ObitoX Delete Functionality with Uploadcare...');
+    console.log('🗑️ Testing ObitoX Delete Functionality with Supabase...');
     
-    // Replace this with the Uploadcare file URL you want to delete
-    const fileUrl = 'https://2jku2uh917.ucarecd.net/d01fa71e-b66b-423d-9fbb-64cbe5b5f999/testtt.jpg';
+    // Test 1: Delete from public bucket
+    console.log('\n🗑️ Test 1: Delete from Public Bucket (test)');
+    const publicFileUrl = 'https://mexdnzyfjyhwqsosbizu.supabase.co/storage/v1/object/public/test/79cb8086_testtt_1757416265971_e0251888d7848e32.jpg';
     
-    const deleted = await obitox.deleteFile({
-      fileUrl: fileUrl,
-      provider: 'UPLOADCARE',
-      uploadcarePublicKey: 'fd3e8b8a0db4d01d312b',
-      uploadcareSecretKey: '96569e37346814148acf'
+    const publicDeleted = await obitox.deleteFile({
+      fileUrl: publicFileUrl,
+      provider: 'SUPABASE',
+      supabaseToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1leGRuenlmanlod3Fzb3NiaXp1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NjYyNDI0MSwiZXhwIjoyMDcyMjAwMjQxfQ.sKDYLS7ZnDG6kUEfrK0XR8GN_10fFx8cCIYYy3QDUo4',
+      supabaseUrl: 'https://mexdnzyfjyhwqsosbizu.supabase.co',
+      bucket: 'test'
     });
     
-    console.log('✅ Delete successful!');
-    console.log('🗑️ Deletion result:', deleted);
+    console.log('   ✅ Public file deletion result:', publicDeleted);
+    
+    // Test 2: Delete from private bucket
+    console.log('\n🗑️ Test 2: Delete from Private Bucket (admin)');
+    const privateFileUrl = 'https://mexdnzyfjyhwqsosbizu.supabase.co/storage/v1/object/public/admin/79cb8086_testtt_1757416272933_11dfec4102860697.jpg';
+    
+    const privateDeleted = await obitox.deleteFile({
+      fileUrl: privateFileUrl,
+      provider: 'SUPABASE',
+      supabaseToken: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1leGRuenlmanlod3Fzb3NiaXp1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NjYyNDI0MSwiZXhwIjoyMDcyMjAwMjQxfQ.sKDYLS7ZnDG6kUEfrK0XR8GN_10fFx8cCIYYy3QDUo4',
+      supabaseUrl: 'https://mexdnzyfjyhwqsosbizu.supabase.co',
+      bucket: 'admin'
+    });
+    
+    console.log('   ✅ Private file deletion result:', privateDeleted);
+    
+    console.log('\n🎯 Delete Test Results:');
+    console.log('   ✅ Public bucket deletion successful');
+    console.log('   ✅ Private bucket deletion successful');
     
   } catch (error) {
     console.error('❌ Delete failed:', error.message);

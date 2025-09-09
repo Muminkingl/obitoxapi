@@ -24,6 +24,7 @@ export interface UploadOptions {
   uploadcarePublicKey?: string; // Developer's Uploadcare public key
   uploadcareSecretKey?: string; // Developer's Uploadcare secret key
   bucket?: string; // Bucket name (for Supabase, AWS, etc.)
+  expiresIn?: number; // For signed URLs (in seconds) - Supabase only
   checkVirus?: boolean; // Automatically scan for viruses (Uploadcare only)
   imageOptimization?: ImageOptimizationOptions; // Image optimization settings (Uploadcare only)
   onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void;
@@ -296,6 +297,7 @@ export class ObitoX {
         supabaseToken: options.supabaseToken,
         supabaseUrl: options.supabaseUrl,
         bucket: options.bucket,
+        expiresIn: options.expiresIn,
         fileSize: file.size // Include file size for provider limit validation
       });
     }
@@ -357,6 +359,26 @@ export class ObitoX {
     // For Vercel, use the actual blob URL from the SDK
     if (options.provider === 'VERCEL' && (this as any).lastVercelBlobUrl) {
       finalFileUrl = (this as any).lastVercelBlobUrl;
+    }
+    
+    // For Supabase, get the correct signed URL with proper expiration
+    if (options.provider === 'SUPABASE' && options.bucket === 'admin' && options.expiresIn) {
+      try {
+        console.log('🔗 Getting signed URL for private Supabase file...');
+        const downloadInfo = await this.downloadFile({
+          filename: signedUrlResult.data.filename || filename,
+          provider: 'SUPABASE',
+          supabaseToken: options.supabaseToken,
+          supabaseUrl: options.supabaseUrl,
+          bucket: options.bucket,
+          expiresIn: options.expiresIn
+        });
+        finalFileUrl = downloadInfo.downloadUrl;
+        console.log('✅ Got signed URL with proper expiration');
+      } catch (error) {
+        console.warn('⚠️ Failed to get signed URL, using original URL:', error);
+        // Continue with original URL if download fails
+      }
     }
     
     // For Uploadcare, get the correct CDN URL by calling downloadFile
@@ -799,6 +821,7 @@ export class ObitoX {
     uploadcarePublicKey?: string;
     uploadcareSecretKey?: string;
     bucket?: string;
+    expiresIn?: number;
     fileSize?: number;
     replaceUrl?: string;
     imageOptimization?: ImageOptimizationOptions;
@@ -832,6 +855,9 @@ export class ObitoX {
     }
     if (options.bucket) {
       requestBody.bucket = options.bucket;
+    }
+    if (options.expiresIn) {
+      requestBody.expiresIn = options.expiresIn;
     }
     if (options.imageOptimization) {
       requestBody.imageOptimization = options.imageOptimization;

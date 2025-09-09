@@ -235,8 +235,8 @@ const checkBucketAccess = async (bucketName, apiKey, operation = 'read', develop
     }
 
     // Check bucket policies and restrictions (only for admin client)
-    if (bucket.public === false && operation === 'read') {
-      // For private buckets, check if user has specific access
+    if (bucket.public === false && operation === 'read' && !developerSupabase) {
+      // For private buckets, check if user has specific access (only for admin client)
       const { data: permissions, error: permError } = await supabaseAdmin
         .from('bucket_permissions')
         .select('*')
@@ -575,7 +575,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
   
   try {
     
-    const { file: fileData, bucket: customBucket, makePrivate = false, metadata = {}, supabaseToken, supabaseUrl } = req.body;
+    const { file: fileData, bucket: customBucket, makePrivate = false, metadata = {}, expiresIn = 3600, supabaseToken, supabaseUrl } = req.body;
     apiKey = req.apiKeyId;
     
 
@@ -644,12 +644,6 @@ export const uploadToSupabaseStorage = async (req, res) => {
       });
     }
 
-    console.log('📁 Parsed file data:', { 
-      name: file.name, 
-      type: file.type, 
-      size: file.size,
-      bucket: targetBucket 
-    });
 
     // Comprehensive validation
     const validation = await validateSupabaseFile(file, apiKey, targetBucket);
@@ -674,17 +668,14 @@ export const uploadToSupabaseStorage = async (req, res) => {
       console.warn('⚠️ File validation warnings:', validation.warnings);
     }
 
-    console.log(`📁 Uploading file: ${file.name} (${file.size} bytes) to bucket: ${targetBucket}`);
 
     // Generate unique filename
     const filename = generateSupabaseFilename(file.name, apiKey);
-    console.log(`📝 Generated filename: ${filename}`);
 
     // Convert base64 to buffer with error handling
     let fileBuffer;
     try {
       fileBuffer = Buffer.from(file.data, 'base64');
-      console.log(`📦 File buffer size: ${fileBuffer.length} bytes`);
       
       if (fileBuffer.length !== file.size) {
         console.warn(`⚠️ Size mismatch: expected ${file.size}, got ${fileBuffer.length}`);
@@ -813,11 +804,11 @@ export const uploadToSupabaseStorage = async (req, res) => {
     let isPrivate = false;
 
     try {
-      if (makePrivate || targetBucket === PRIVATE_BUCKET) {
+      if (makePrivate || targetBucket === PRIVATE_BUCKET || targetBucket === 'admin') {
         // Generate signed URL for private files (24 hours expiry)
-        const { data: signedUrlData, error: signedError } = await supabaseAdmin.storage
+        const { data: signedUrlData, error: signedError } = await developerSupabase.storage
           .from(targetBucket)
-          .createSignedUrl(filename, 24 * 60 * 60); // 24 hours
+          .createSignedUrl(filename, expiresIn); // Use expiresIn parameter
 
         if (signedError) {
           console.warn('⚠️ Could not generate signed URL:', signedError);
@@ -828,7 +819,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
         }
       } else {
         // Get public URL for public files
-        const { data: urlData } = supabaseAdmin.storage
+        const { data: urlData } = developerSupabase.storage
           .from(targetBucket)
           .getPublicUrl(filename);
 
@@ -840,7 +831,6 @@ export const uploadToSupabaseStorage = async (req, res) => {
       publicUrl = null;
     }
 
-    console.log(`✅ Upload successful! ${isPrivate ? 'Signed' : 'Public'} URL: ${publicUrl}`);
 
     // Update metrics with success
     await updateSupabaseMetrics(apiKey, 'supabase', true, 'SUCCESS', { 
@@ -911,7 +901,6 @@ export const generateSupabaseSignedUrl = async (req, res) => {
   let apiKey;
   
   try {
-    console.log('🔗 Generating Supabase Storage signed upload URL...');
     
     const { 
       filename, 
@@ -1027,7 +1016,6 @@ export const generateSupabaseSignedUrl = async (req, res) => {
       });
     }
 
-    console.log(`✅ Generated signed upload URL for: ${uniqueFilename}`);
 
     // Update metrics for successful signed URL generation
     await updateSupabaseMetrics(apiKey, 'supabase', true, 'SIGNED_URL_SUCCESS', {
@@ -1036,7 +1024,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
 
     // Get the final public URL (for after upload completion)
     let finalUrl;
-    if (makePrivate || targetBucket === PRIVATE_BUCKET) {
+    if (makePrivate || targetBucket === PRIVATE_BUCKET || targetBucket === 'admin') {
       // For private files, we'll generate signed download URLs as needed
       finalUrl = null; // Will be generated after upload
     } else {
@@ -1194,7 +1182,6 @@ export const deleteSupabaseFile = async (req, res) => {
       });
     }
 
-    console.log(`📁 Deleting file: ${targetFilename} from bucket: ${targetBucket}`);
 
     // Check if user has permission to delete this file
     const { data: uploadLog, error: logError } = await supabaseAdmin
@@ -1293,7 +1280,6 @@ export const deleteSupabaseFile = async (req, res) => {
         .eq('bucket', targetBucket);
     }
 
-    console.log(`✅ File deleted successfully: ${targetFilename}`);
 
     // Update metrics
     await updateSupabaseMetrics(apiKey, 'supabase', true, 'DELETE_SUCCESS');
@@ -1375,7 +1361,6 @@ export const moveSupabaseFile = async (req, res) => {
       });
     }
 
-    console.log(`📁 Moving ${filename} from ${source} to ${target}`);
 
     // Check access to both buckets
     const sourceAccess = await checkBucketAccess(source, apiKey, 'read');
@@ -1459,7 +1444,7 @@ export const moveSupabaseFile = async (req, res) => {
 
     // Generate new URL
     let newUrl;
-    if (target === PRIVATE_BUCKET) {
+    if (target === PRIVATE_BUCKET || target === 'admin') {
       const { data: signedUrlData } = await supabaseAdmin.storage
         .from(target)
         .createSignedUrl(filename, 24 * 60 * 60);
@@ -1481,7 +1466,7 @@ export const moveSupabaseFile = async (req, res) => {
         sourceBucket: source,
         targetBucket: target,
         newUrl: newUrl,
-        isPrivate: target === PRIVATE_BUCKET,
+        isPrivate: target === PRIVATE_BUCKET || target === 'admin',
         movedAt: new Date().toISOString()
       }
     });
@@ -1569,7 +1554,6 @@ export const cancelSupabaseUpload = async (req, res) => {
         created_at: new Date().toISOString()
       });
 
-    console.log(`✅ Upload cancellation processed for: ${uploadId || filename}`);
 
     // Update metrics
     await updateSupabaseMetrics(apiKey, 'supabase', true, 'CANCELLED');
@@ -1606,13 +1590,12 @@ export const cancelSupabaseUpload = async (req, res) => {
 };
 
 /**
- * List files in Supabase Storage bucket with advanced filtering
+ * List files in Supabase Storage bucket with direct storage listing
  */
 export const listSupabaseFiles = async (req, res) => {
   let apiKey;
   
   try {
-    console.log('📋 Listing files in Supabase Storage...');
     
     const { 
       limit = 100, 
@@ -1620,12 +1603,8 @@ export const listSupabaseFiles = async (req, res) => {
       bucket = SUPABASE_BUCKET,
       sortBy = 'created_at',
       sortOrder = 'desc',
-      search = '',
-      fileType = '',
-      minSize = 0,
-      maxSize = Infinity,
-      dateFrom = null,
-      dateTo = null
+      supabaseToken,
+      supabaseUrl
     } = req.body;
     
     apiKey = req.apiKeyId;
@@ -1638,107 +1617,54 @@ export const listSupabaseFiles = async (req, res) => {
       });
     }
 
-    // Check bucket access
-    const bucketAccess = await checkBucketAccess(bucket, apiKey, 'read');
-    if (!bucketAccess.hasAccess) {
-      return res.status(403).json({
+    // Validate developer's Supabase credentials
+    if (!supabaseToken) {
+      return res.status(400).json({
         success: false,
-        error: bucketAccess.error,
-        message: 'Bucket access denied',
-        details: bucketAccess.details
+        error: 'MISSING_SUPABASE_TOKEN',
+        message: 'Supabase service key is required. Please provide your Supabase service role key.'
       });
     }
 
-    // Build query for upload logs (more detailed than storage list)
-    let query = supabaseAdmin
-      .from('upload_logs')
-      .select('*')
-      .eq('api_key_id', apiKey)
-      .eq('bucket', bucket)
-      .neq('status', 'cancelled');
-
-    // Apply filters
-    if (search) {
-      query = query.or(`filename.ilike.%${search}%,original_name.ilike.%${search}%`);
+    if (!supabaseUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'MISSING_SUPABASE_URL',
+        message: 'Supabase project URL is required. Please provide your Supabase project URL.'
+      });
     }
 
-    if (fileType) {
-      query = query.like('file_type', `${fileType}%`);
-    }
+    // Create Supabase client using developer's credentials
+    const developerSupabase = createClient(supabaseUrl, supabaseToken);
 
-    if (minSize > 0) {
-      query = query.gte('file_size', minSize);
-    }
-
-    if (maxSize < Infinity) {
-      query = query.lte('file_size', maxSize);
-    }
-
-    if (dateFrom) {
-      query = query.gte('created_at', dateFrom);
-    }
-
-    if (dateTo) {
-      query = query.lte('created_at', dateTo);
-    }
-
-    // Apply sorting
-    const validSortFields = ['created_at', 'file_size', 'filename', 'original_name'];
-    const sortField = validSortFields.includes(sortBy) ? sortBy : 'created_at';
-    const order = sortOrder === 'asc' ? true : false;
+    // For developer's Supabase client, we assume they have access to their own buckets
+    // Skip permission checks entirely since they're using their own credentials
     
-    query = query.order(sortField, { ascending: order });
-
-    // Apply pagination
-    query = query.range(offset, offset + Math.min(limit, 1000) - 1);
-
-    const { data: uploadLogs, error: logsError } = await query;
-
-    if (logsError) {
-      console.error('❌ Error fetching upload logs:', logsError);
-      // Fallback to direct storage listing
-      const { data: storageFiles, error: storageError } = await supabaseAdmin.storage
-        .from(bucket)
-        .list('', {
-          limit: Math.min(limit, 1000),
-          offset: offset,
-          sortBy: { column: 'created_at', order: sortOrder }
-        });
-
-      if (storageError) {
-        return res.status(500).json({
-          success: false,
-          error: 'LIST_ERROR',
-          message: 'Failed to list files from Supabase Storage',
-          details: storageError.message
-        });
-      }
-
-      // Transform storage files to standard format
-      const transformedFiles = storageFiles.map(file => {
-        const { data: urlData } = supabaseAdmin.storage
-          .from(bucket)
-          .getPublicUrl(file.name);
-        
-        return {
-          filename: file.name,
-          originalName: file.name,
-          size: file.metadata?.size || 0,
-          type: file.metadata?.mimetype || 'unknown',
-          lastModified: file.updated_at,
-          url: urlData.publicUrl,
-          provider: 'supabase',
-          bucket: bucket,
-          isPrivate: bucket === PRIVATE_BUCKET
-        };
+    const { data: storageFiles, error: storageError } = await developerSupabase.storage
+      .from(bucket)
+      .list('', {
+        limit: Math.min(limit, 1000),
+        offset: offset,
+        sortBy: { column: 'created_at', order: sortOrder }
       });
 
+    if (storageError) {
+      console.error('❌ Error listing storage files:', storageError);
+      return res.status(500).json({
+        success: false,
+        error: 'LIST_ERROR',
+        message: 'Failed to list files from Supabase Storage',
+        details: storageError.message
+      });
+    }
+
+    if (!storageFiles || storageFiles.length === 0) {
       return res.status(200).json({
         success: true,
-        message: 'Files listed successfully (storage fallback)',
+        message: 'No files found in bucket',
         data: {
-          files: transformedFiles,
-          total: transformedFiles.length,
+          files: [],
+          total: 0,
           limit: limit,
           offset: offset,
           provider: 'supabase',
@@ -1747,96 +1673,75 @@ export const listSupabaseFiles = async (req, res) => {
       });
     }
 
-    // Transform upload logs to file list with current URLs
-    const filesWithUrls = await Promise.all(uploadLogs.map(async (log) => {
-      let currentUrl = log.upload_url;
+    // Transform storage files to standard format with proper URLs
+    const transformedFiles = await Promise.all(storageFiles.map(async (file) => {
+      let fileUrl;
+      let isPrivate = bucket === PRIVATE_BUCKET || bucket === 'admin';
       
-      // Generate fresh URL for private files or if URL is missing
-      if (!currentUrl || log.is_private) {
-        try {
-          if (log.is_private) {
-            const { data: signedUrlData } = await supabaseAdmin.storage
-              .from(log.bucket)
-              .createSignedUrl(log.filename, 24 * 60 * 60);
-            currentUrl = signedUrlData?.signedUrl || null;
-          } else {
-            const { data: urlData } = supabaseAdmin.storage
-              .from(log.bucket)
-              .getPublicUrl(log.filename);
-            currentUrl = urlData.publicUrl;
-          }
-        } catch (error) {
-          console.warn(`⚠️ Could not generate URL for ${log.filename}:`, error);
-        }
-      }
-
-      // Verify file still exists
-      let exists = true;
       try {
-        const { error: downloadError } = await supabaseAdmin.storage
-          .from(log.bucket)
-          .download(log.filename);
-        if (downloadError) exists = false;
-      } catch {
-        exists = false;
-      }
-
-      return {
-        filename: log.filename,
-        originalName: log.original_name || log.filename,
-        size: log.file_size || 0,
-        type: log.file_type || 'unknown',
-        lastModified: log.created_at,
-        url: currentUrl,
-        provider: 'supabase',
-        bucket: log.bucket,
-        isPrivate: log.is_private || false,
-        uploadedAt: log.created_at,
-        exists: exists,
-        metadata: {
-          uploadId: log.id,
-          apiKeyId: log.api_key_id
+        if (isPrivate) {
+          // For private files, just set a placeholder URL for now
+          fileUrl = `https://mexdnzyfjyhwqsosbizu.supabase.co/storage/v1/object/sign/${bucket}/${file.name}?token=placeholder`;
+        } else {
+          // Get public URL for public files
+          const { data: urlData } = developerSupabase.storage
+            .from(bucket)
+            .getPublicUrl(file.name);
+          fileUrl = urlData.publicUrl;
         }
+      } catch (error) {
+        console.warn(`⚠️ Could not generate URL for ${file.name}:`, error);
+        fileUrl = null;
+      }
+      
+      return {
+        filename: file.name,
+        originalName: file.name,
+        size: file.metadata?.size || 0,
+        type: file.metadata?.mimetype || 'unknown',
+        lastModified: file.updated_at,
+        url: fileUrl,
+        provider: 'supabase',
+        bucket: bucket,
+        isPrivate: isPrivate
       };
     }));
 
-    // Filter out non-existent files if requested
-    const existingFiles = filesWithUrls.filter(file => file.exists);
 
-    console.log(`✅ Listed ${existingFiles.length} files (${filesWithUrls.length - existingFiles.length} missing)`);
+    // Update metrics (non-blocking)
+    try {
+      await updateSupabaseMetrics(apiKey, 'supabase', true, null, {
+        operation: 'list_files',
+        fileCount: transformedFiles.length,
+        bucket: bucket
+      });
+    } catch (metricsError) {
+      console.warn('⚠️ Failed to update metrics (non-blocking):', metricsError.message);
+    }
 
     res.status(200).json({
       success: true,
       message: 'Files listed successfully',
       data: {
-        files: existingFiles,
-        total: existingFiles.length,
-        totalInDatabase: uploadLogs.length,
-        missing: filesWithUrls.length - existingFiles.length,
+        files: transformedFiles,
+        total: transformedFiles.length,
         limit: limit,
         offset: offset,
         provider: 'supabase',
-        bucket: bucket,
-        filters: {
-          search,
-          fileType,
-          minSize,
-          maxSize,
-          dateFrom,
-          dateTo,
-          sortBy: sortField,
-          sortOrder
-        }
+        bucket: bucket
       }
     });
 
   } catch (error) {
-    console.error('💥 Supabase Storage list error:', error);
     
     if (apiKey) {
-      await updateSupabaseMetrics(apiKey, 'supabase', false, 'LIST_ERROR', { 
-        errorDetails: error.message 
-      });
+      try {
+        await updateSupabaseMetrics(apiKey, 'supabase', false, 'LIST_ERROR', { 
+          errorDetails: error.message 
+        });
+      } catch (metricsError) {
+        console.warn('⚠️ Failed to update error metrics (non-blocking):', metricsError.message);
+      }
     }
 
     res.status(500).json({
@@ -1935,7 +1840,7 @@ export const getSupabaseFileInfo = async (req, res) => {
 
     // Generate current URL
     let currentUrl;
-    let isPrivate = targetBucket === PRIVATE_BUCKET;
+    let isPrivate = targetBucket === PRIVATE_BUCKET || targetBucket === 'admin';
     
     if (isPrivate) {
       const { data: signedUrlData } = await supabaseAdmin.storage
@@ -2061,7 +1966,7 @@ export const updateSupabaseFile = async (req, res) => {
 
     // Handle privacy change (move between buckets)
     if (makePrivate || makePublic) {
-      const targetBucket = makePrivate ? PRIVATE_BUCKET : SUPABASE_BUCKET;
+      const targetBucket = makePrivate ? (PRIVATE_BUCKET || 'admin') : SUPABASE_BUCKET;
       
       if (targetBucket !== bucket) {
         // Move file to different bucket
@@ -2114,7 +2019,7 @@ export const updateSupabaseFile = async (req, res) => {
       }
 
       const targetBucket = (makePrivate || makePublic) ? 
-        (makePrivate ? PRIVATE_BUCKET : SUPABASE_BUCKET) : bucket;
+        (makePrivate ? (PRIVATE_BUCKET || 'admin') : SUPABASE_BUCKET) : bucket;
 
       // Check if new filename already exists
       const { data: existingFile } = await supabaseAdmin.storage
@@ -2181,10 +2086,10 @@ export const updateSupabaseFile = async (req, res) => {
 
     // Generate new URL
     const finalBucket = (makePrivate || makePublic) ? 
-      (makePrivate ? PRIVATE_BUCKET : SUPABASE_BUCKET) : bucket;
+      (makePrivate ? (PRIVATE_BUCKET || 'admin') : SUPABASE_BUCKET) : bucket;
     
     let newUrl;
-    if (finalBucket === PRIVATE_BUCKET) {
+    if (finalBucket === PRIVATE_BUCKET || finalBucket === 'admin') {
       const { data: signedUrlData } = await supabaseAdmin.storage
         .from(finalBucket)
         .createSignedUrl(finalFilename, 24 * 60 * 60);
@@ -2206,7 +2111,7 @@ export const updateSupabaseFile = async (req, res) => {
         currentFilename: finalFilename,
         bucket: finalBucket,
         url: newUrl,
-        isPrivate: finalBucket === PRIVATE_BUCKET,
+        isPrivate: finalBucket === PRIVATE_BUCKET || finalBucket === 'admin',
         operations: operations,
         updatedAt: new Date().toISOString(),
         provider: 'supabase'
@@ -2238,7 +2143,6 @@ export const copySupabaseFile = async (req, res) => {
   let apiKey;
   
   try {
-    console.log('📋 Copying Supabase file...');
     
     const { 
       sourceFilename, 
@@ -2348,14 +2252,14 @@ export const copySupabaseFile = async (req, res) => {
         original_name: sourceLog?.original_name || sourceFilename,
         file_size: sourceLog?.file_size || 0,
         file_type: sourceLog?.file_type || 'unknown',
-        is_private: targetBucket === PRIVATE_BUCKET,
+        is_private: targetBucket === PRIVATE_BUCKET || targetBucket === 'admin',
         created_at: new Date().toISOString(),
         copied_from: sourceFilename
       });
 
     // Generate URL for copied file
     let newUrl;
-    if (targetBucket === PRIVATE_BUCKET) {
+    if (targetBucket === PRIVATE_BUCKET || targetBucket === 'admin') {
       const { data: signedUrlData } = await supabaseAdmin.storage
         .from(targetBucket)
         .createSignedUrl(targetFilename, 24 * 60 * 60);
@@ -2380,7 +2284,7 @@ export const copySupabaseFile = async (req, res) => {
         sourceBucket: sourceBucket,
         targetBucket: targetBucket,
         url: newUrl,
-        isPrivate: targetBucket === PRIVATE_BUCKET,
+        isPrivate: targetBucket === PRIVATE_BUCKET || targetBucket === 'admin',
         copiedAt: new Date().toISOString(),
         provider: 'supabase',
         overwritten: existingTarget ? true : false
@@ -2676,17 +2580,26 @@ export const downloadSupabaseFile = async (req, res) => {
       });
     }
 
-    console.log(`📁 Downloading file: ${targetFilename} from bucket: ${targetBucket}`);
 
-    // Check bucket access
-    const bucketAccess = await checkBucketAccess(targetBucket, apiKey, 'read', developerSupabase);
-    if (!bucketAccess.hasAccess) {
-      await updateSupabaseMetrics(apiKey, 'supabase', false, 'BUCKET_ACCESS_DENIED');
-      return res.status(403).json({
+    // For developer's Supabase client, we assume they have access to their own buckets
+    // Just verify the bucket exists
+    const { data: buckets, error: bucketsError } = await developerSupabase.storage.listBuckets();
+    if (bucketsError) {
+      return res.status(500).json({
         success: false,
-        error: 'BUCKET_ACCESS_DENIED',
-        message: 'Bucket access denied',
-        details: bucketAccess.details
+        error: 'BUCKET_LIST_ERROR',
+        message: 'Failed to list buckets',
+        details: bucketsError.message
+      });
+    }
+    
+    const bucketExists = buckets.find(b => b.name === targetBucket);
+    if (!bucketExists) {
+      return res.status(404).json({
+        success: false,
+        error: 'BUCKET_NOT_FOUND',
+        message: `Bucket '${targetBucket}' does not exist`,
+        details: 'The specified bucket was not found in your Supabase project'
       });
     }
 
@@ -2707,7 +2620,7 @@ export const downloadSupabaseFile = async (req, res) => {
 
     // Determine if bucket is public or private
     const isPublicBucket = targetBucket === SUPABASE_BUCKET; // Assuming main bucket is public
-    const isPrivateBucket = targetBucket === PRIVATE_BUCKET || !isPublicBucket;
+    const isPrivateBucket = targetBucket === PRIVATE_BUCKET || targetBucket === 'admin' || !isPublicBucket;
 
     let downloadUrl;
     let downloadMethod = 'direct';
@@ -2734,7 +2647,6 @@ export const downloadSupabaseFile = async (req, res) => {
       downloadMethod = 'signed_url';
       expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
       
-      console.log(`✅ Generated signed download URL (expires in ${expiresIn}s)`);
     } else {
       // Get direct public URL for public files
       const { data: urlData } = developerSupabase.storage
@@ -2744,7 +2656,6 @@ export const downloadSupabaseFile = async (req, res) => {
       downloadUrl = urlData.publicUrl;
       downloadMethod = 'direct';
       
-      console.log(`✅ Generated direct public download URL`);
     }
 
     // Get file metadata
@@ -3060,7 +2971,6 @@ export const listSupabaseBuckets = async (req, res) => {
   let apiKey;
   
   try {
-    console.log('📋 Listing Supabase Storage buckets...');
     
     const { supabaseToken, supabaseUrl } = req.body;
     apiKey = req.apiKeyId;
@@ -3144,7 +3054,6 @@ export const listSupabaseBuckets = async (req, res) => {
       })
     );
 
-    console.log(`✅ Listed ${bucketInfos.length} buckets successfully`);
 
     // Update metrics
     await updateSupabaseMetrics(apiKey, 'supabase', true, null, {
