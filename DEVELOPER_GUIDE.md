@@ -36,6 +36,7 @@ const obitox = new ObitoX({
 ### ✅ Currently Supported
 - **Vercel Blob** - Fast, global CDN
 - **Supabase Storage** - PostgreSQL-based storage with RLS
+- **Uploadcare** - Advanced image processing with virus scanning
 
 ### 🔄 Coming Soon
 - **AWS S3** - Industry standard
@@ -146,6 +147,179 @@ const deleted = await obitox.deleteFile({
 });
 
 console.log('File deleted:', deleted);
+```
+
+### 🖼️ Uploadcare (Advanced Image Processing)
+
+#### Setup Your Uploadcare Credentials
+
+```javascript
+// Your Uploadcare project credentials
+const UPLOADCARE_PUBLIC_KEY = 'fd3e8b8a0db4d01d312b';
+const UPLOADCARE_SECRET_KEY = '96569e37346814148acf';
+```
+
+#### Upload with Image Optimization
+
+##### 🚀 Easy Mode - Auto Optimization
+
+```javascript
+const imageFile = new File([imageData], 'photo.jpg', { type: 'image/jpeg' });
+
+const fileUrl = await obitox.uploadFile(imageFile, {
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY,
+  
+  // Super simple - just one option!
+  imageOptimization: {
+    auto: true  // Automatically applies best settings (WebP + Smart Quality + Progressive)
+  },
+  
+  // Virus scanning
+  checkVirus: true,
+  
+  onProgress: (progress) => {
+    console.log(`Upload progress: ${progress.toFixed(1)}%`);
+  }
+});
+
+console.log('Auto-optimized image uploaded:', fileUrl);
+```
+
+##### 🎛️ Advanced Mode - Manual Control
+
+```javascript
+const imageFile = new File([imageData], 'photo.jpg', { type: 'image/jpeg' });
+
+const fileUrl = await obitox.uploadFile(imageFile, {
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY,
+  
+  // Advanced image optimization settings
+  imageOptimization: {
+    format: 'auto',        // auto, jpeg, png, webp, preserve
+    quality: 'normal',     // normal, better, best, lighter, lightest
+    progressive: true,     // Progressive JPEG loading
+    stripMeta: 'all',      // all, none, sensitive
+    adaptiveQuality: true  // Enable adaptive quality
+  },
+  
+  // Virus scanning
+  checkVirus: true,
+  
+  onProgress: (progress) => {
+    console.log(`Upload progress: ${progress.toFixed(1)}%`);
+  }
+});
+
+console.log('Manually optimized image uploaded:', fileUrl);
+```
+
+#### Image Optimization Options
+
+```javascript
+// High compression for web
+const webOptimized = await obitox.uploadFile(imageFile, {
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY,
+  imageOptimization: {
+    format: 'webp',        // Modern format with better compression
+    quality: 'lightest',   // Highest compression
+    stripMeta: 'all',      // Remove all metadata
+    progressive: true      // Progressive loading
+  }
+});
+
+// Best quality for print
+const printQuality = await obitox.uploadFile(imageFile, {
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY,
+  imageOptimization: {
+    format: 'preserve',    // Keep original format
+    quality: 'best',       // Highest quality
+    stripMeta: 'sensitive', // Keep EXIF but remove location
+    progressive: false     // No progressive loading
+  }
+});
+```
+
+#### Post-Upload Image Optimization
+
+```javascript
+// Optimize an existing image
+const optimizedUrl = await obitox.optimizeImage({
+  fileUrl: 'https://ucarecdn.com/your-image.jpg',
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY,
+  format: 'webp',
+  quality: 'lighter',
+  stripMeta: 'all',
+  progressive: true
+});
+
+console.log('Optimized URL:', optimizedUrl);
+```
+
+#### Get Image Optimization Info
+
+```javascript
+const imageInfo = await obitox.getImageOptimizationInfo({
+  fileUrl: 'https://ucarecdn.com/your-image.jpg',
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY
+});
+
+console.log('Original size:', imageInfo.data.originalSize, 'bytes');
+console.log('Optimized size:', imageInfo.data.optimizedSize, 'bytes');
+console.log('Compression ratio:', imageInfo.data.compressionRatio, '%');
+console.log('Format:', imageInfo.data.format);
+console.log('Quality:', imageInfo.data.quality);
+```
+
+#### Virus Scanning
+
+```javascript
+// Upload with automatic virus scanning
+const safeFile = await obitox.uploadFile(file, {
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY,
+  checkVirus: true  // Automatically scan and delete infected files
+});
+
+// Manual virus scanning
+const scanResult = await obitox.scanFileForMalware({
+  fileUrl: 'https://ucarecdn.com/your-file.jpg',
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY
+});
+
+// Check scan status
+const status = await obitox.checkMalwareScanStatus({
+  requestId: scanResult.data.requestId,
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY
+});
+
+// Get scan results
+const results = await obitox.getMalwareScanResults({
+  fileUrl: 'https://ucarecdn.com/your-file.jpg',
+  provider: 'UPLOADCARE',
+  uploadcarePublicKey: UPLOADCARE_PUBLIC_KEY,
+  uploadcareSecretKey: UPLOADCARE_SECRET_KEY
+});
+
+if (results.data.isInfected) {
+  console.log('File is infected with:', results.data.infectedWith);
+}
 ```
 
 ## 🎯 Advanced Features

@@ -2,6 +2,18 @@ export interface ObitoXConfig {
   apiKey: string;
 }
 
+export interface ImageOptimizationOptions {
+  // Easy mode - automatic optimization
+  auto?: boolean; // Automatically apply best optimization settings
+  
+  // Advanced mode - manual control
+  format?: 'auto' | 'jpeg' | 'png' | 'webp' | 'preserve'; // Image format conversion
+  quality?: 'normal' | 'better' | 'best' | 'lighter' | 'lightest'; // Quality presets
+  progressive?: boolean; // Progressive JPEG loading
+  stripMeta?: 'all' | 'none' | 'sensitive'; // Metadata stripping
+  adaptiveQuality?: boolean; // Enable adaptive quality (Uploadcare only)
+}
+
 export interface UploadOptions {
   filename: string;
   contentType?: string;
@@ -13,6 +25,7 @@ export interface UploadOptions {
   uploadcareSecretKey?: string; // Developer's Uploadcare secret key
   bucket?: string; // Bucket name (for Supabase, AWS, etc.)
   checkVirus?: boolean; // Automatically scan for viruses (Uploadcare only)
+  imageOptimization?: ImageOptimizationOptions; // Image optimization settings (Uploadcare only)
   onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void;
   onCancel?: () => void;
 }
@@ -138,6 +151,116 @@ export class ObitoX {
   }
 
   /**
+   * Build optimized Uploadcare URL with image transformations
+   * @param baseUrl - Base Uploadcare URL
+   * @param optimization - Image optimization options
+   * @param filename - Original filename for validation
+   * @param contentType - Original content type for validation
+   * @returns string - Optimized URL with transformations
+   */
+  private buildOptimizedUploadcareUrl(baseUrl: string, optimization: ImageOptimizationOptions, filename: string, contentType: string): string {
+    // Validate inputs
+    if (!baseUrl || !optimization) {
+      throw new Error('Invalid parameters: baseUrl and optimization are required');
+    }
+    
+    // Check if file is an image
+    const isImage = this.isImageFile(filename, contentType);
+    if (!isImage) {
+      throw new Error(`Image optimization can only be applied to image files. File "${filename}" (${contentType}) is not an image.`);
+    }
+    
+    // Extract components from the URL (format: https://domain.com/uuid/filename)
+    const urlParts = baseUrl.split('/');
+    if (urlParts.length < 4) {
+      throw new Error('Invalid Uploadcare URL format');
+    }
+    
+    const domain = urlParts.slice(0, 3).join('/'); // https://domain.com
+    const uuid = urlParts[urlParts.length - 2];
+    const urlFilename = urlParts[urlParts.length - 1];
+    
+    // Validate UUID format (basic check)
+    if (!uuid || uuid.length < 8) {
+      throw new Error('Invalid UUID in Uploadcare URL');
+    }
+    
+    // Build transformation string
+    const transformations: string[] = [];
+    
+    // Uploadcare requires at least one size operation when using image transformations
+    // Add preview operation to produce the biggest possible image without changing size
+    transformations.push('preview');
+    
+    // Auto mode - apply best optimization settings automatically
+    if (optimization.auto === true) {
+      // Auto mode: WebP format, smart quality, progressive loading
+      transformations.push('format/webp');
+      transformations.push('quality/smart');
+      transformations.push('progressive/yes');
+    } else {
+      // Manual mode - use individual settings
+      
+      // Format transformation
+      if (optimization.format && optimization.format !== 'auto') {
+        transformations.push(`format/${optimization.format}`);
+      }
+      
+      // Quality transformation - map our presets to Uploadcare values
+      if (optimization.quality && optimization.quality !== 'normal') {
+        let qualityValue: string;
+        switch (optimization.quality) {
+          case 'better': qualityValue = 'smart'; break;
+          case 'best': qualityValue = 'smart'; break;
+          case 'lighter': qualityValue = 'smart'; break;
+          case 'lightest': qualityValue = 'smart'; break;
+          default: qualityValue = 'smart';
+        }
+        transformations.push(`quality/${qualityValue}`);
+      }
+      
+      // Progressive transformation
+      if (optimization.progressive === true) {
+        transformations.push('progressive/yes');
+      } else if (optimization.progressive === false) {
+        transformations.push('progressive/no');
+      }
+      
+      // Strip meta transformation - temporarily disabled due to API issues
+      // if (optimization.stripMeta && optimization.stripMeta !== 'all') {
+      //   transformations.push(`strip_meta/${optimization.stripMeta}`);
+      // }
+    }
+    
+    // Build the optimized URL using the original domain
+    if (transformations.length > 0) {
+      const transformationString = transformations.join('/-/');
+      return `${domain}/${uuid}/-/${transformationString}/${urlFilename}`;
+    }
+    
+    return baseUrl;
+  }
+
+  /**
+   * Check if a file is an image based on filename and content type
+   * @param filename - File name
+   * @param contentType - MIME type
+   * @returns boolean - True if file is an image
+   */
+  private isImageFile(filename: string, contentType: string): boolean {
+    // Check by content type first (most reliable)
+    if (contentType && contentType.startsWith('image/')) {
+      return true;
+    }
+    
+    // Check by file extension as fallback
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.ico', '.avif', '.heic', '.heif'];
+    const lowerFilename = filename.toLowerCase();
+    
+    return imageExtensions.some(ext => lowerFilename.endsWith(ext));
+  }
+
+  /**
    * Upload a file using the provider system with progress tracking
    * @param file - File or Blob to upload
    * @param options - Upload options including provider and progress callback
@@ -160,13 +283,14 @@ export class ObitoX {
         provider: options.provider,
         uploadcarePublicKey: options.uploadcarePublicKey,
         uploadcareSecretKey: options.uploadcareSecretKey,
-        fileSize: file.size // Include file size for provider limit validation
+        fileSize: file.size, // Include file size for provider limit validation
+        imageOptimization: options.imageOptimization
       });
     } else {
       // For other providers, get signed URL
       signedUrlResult = await this.upload({
-          filename,
-          contentType,
+        filename,
+        contentType,
         provider: options.provider,
         vercelToken: options.vercelToken,
         supabaseToken: options.supabaseToken,
@@ -246,6 +370,17 @@ export class ObitoX {
           uploadcareSecretKey: options.uploadcareSecretKey
         });
         finalFileUrl = downloadInfo.downloadUrl;
+        
+        // Apply image optimization transformations if specified
+        if (options.imageOptimization) {
+          try {
+            finalFileUrl = this.buildOptimizedUploadcareUrl(finalFileUrl, options.imageOptimization, filename, contentType);
+          } catch (optimizationError) {
+            const errorMessage = optimizationError instanceof Error ? optimizationError.message : String(optimizationError);
+            console.warn('⚠️ Image optimization failed, using original URL:', errorMessage);
+            // Continue with original URL if optimization fails
+          }
+        }
         
         // If virus scanning is enabled, scan the file and delete if infected
         if (options.checkVirus && options.uploadcarePublicKey && options.uploadcareSecretKey) {
@@ -666,6 +801,7 @@ export class ObitoX {
     bucket?: string;
     fileSize?: number;
     replaceUrl?: string;
+    imageOptimization?: ImageOptimizationOptions;
   }): Promise<UploadResponse> {
     // Determine the correct endpoint based on provider
     const providerEndpoint = options.provider.toLowerCase();
@@ -696,6 +832,9 @@ export class ObitoX {
     }
     if (options.bucket) {
       requestBody.bucket = options.bucket;
+    }
+    if (options.imageOptimization) {
+      requestBody.imageOptimization = options.imageOptimization;
     }
 
     const response = await fetch(endpoint, {
@@ -1353,6 +1492,98 @@ export class ObitoX {
 
     const result = await response.json();
     return result.data || result;
+  }
+
+  /**
+   * Optimize image with Uploadcare (Uploadcare only)
+   * @param options - Image optimization options
+   * @returns Promise<string> - Optimized image URL
+   */
+  async optimizeImage(options: {
+    fileUrl: string;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+    format?: 'auto' | 'jpeg' | 'png' | 'webp' | 'preserve';
+    quality?: 'normal' | 'better' | 'best' | 'lighter' | 'lightest';
+    progressive?: boolean;
+    stripMeta?: 'all' | 'none' | 'sensitive';
+    adaptiveQuality?: boolean;
+  }): Promise<string> {
+    // Validate inputs
+    if (!options.fileUrl) {
+      throw new Error('File URL is required for image optimization');
+    }
+    
+    if (!options.uploadcarePublicKey || !options.uploadcareSecretKey) {
+      throw new Error('Uploadcare credentials are required for image optimization');
+    }
+    
+    // Extract filename from URL for validation
+    const urlParts = options.fileUrl.split('/');
+    const filename = urlParts[urlParts.length - 1];
+    
+    // Basic image file validation
+    if (!this.isImageFile(filename, '')) {
+      throw new Error(`Image optimization can only be applied to image files. File "${filename}" does not appear to be an image.`);
+    }
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/optimize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        fileUrl: options.fileUrl,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey,
+        format: options.format,
+        quality: options.quality,
+        progressive: options.progressive,
+        stripMeta: options.stripMeta,
+        adaptiveQuality: options.adaptiveQuality
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Image optimization failed');
+    }
+
+    const result = await response.json();
+    return result.data.optimizedUrl;
+  }
+
+  /**
+   * Get image optimization info (Uploadcare only)
+   * @param options - Image info options
+   * @returns Promise<any> - Image optimization information
+   */
+  async getImageOptimizationInfo(options: {
+    fileUrl: string;
+    provider: 'UPLOADCARE';
+    uploadcarePublicKey: string;
+    uploadcareSecretKey: string;
+  }): Promise<{ success: boolean; data: { originalSize: number; optimizedSize: number; compressionRatio: number; format: string; quality: string; provider: string; } }> {
+    const response = await fetch(`${this.baseUrl}/api/v1/upload/uploadcare/image-info`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey
+      },
+      body: JSON.stringify({
+        fileUrl: options.fileUrl,
+        uploadcarePublicKey: options.uploadcarePublicKey,
+        uploadcareSecretKey: options.uploadcareSecretKey
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.message || 'Image info retrieval failed');
+    }
+
+    return await response.json();
   }
 
 }
