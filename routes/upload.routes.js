@@ -1,16 +1,18 @@
 import express from 'express';
 import multer from 'multer';
 import validateApiKey from '../middlewares/apikey.middleware.js';
-import { 
-  generateVercelSignedUrl, 
-  uploadToVercelBlob, 
-  trackUploadEvent, 
-  vercelHealthCheck,
+
+// ✅ NEW: Import from modular Vercel structure
+import {
+  generateVercelSignedUrl,
+  uploadToVercelBlob,
+  trackUploadEvent,
   cancelVercelUpload,
   deleteVercelFile,
   downloadVercelFile,
   completeVercelUpload
-} from '../controllers/providers/vercel.controller.js';
+} from '../controllers/providers/vercel/index.js';
+
 import {
   uploadToSupabaseStorage,
   generateSupabaseSignedUrl,
@@ -21,12 +23,12 @@ import {
   listSupabaseBuckets,
   completeSupabaseUpload
 } from '../controllers/providers/supabase.controller.js';
-import { 
-  generateUploadcareSignedUrl, 
-  deleteUploadcareFile, 
-  downloadUploadcareFile, 
-  cancelUploadcareUpload, 
-  listUploadcareFiles, 
+import {
+  generateUploadcareSignedUrl,
+  deleteUploadcareFile,
+  downloadUploadcareFile,
+  cancelUploadcareUpload,
+  listUploadcareFiles,
   uploadcareHealthCheck,
   scanUploadcareFileForMalware,
   checkUploadcareMalwareScanStatus,
@@ -68,8 +70,8 @@ router.post('/vercel/upload', validateApiKey, upload.single('file'), uploadToVer
 // Track upload events for analytics
 router.post('/vercel/track', validateApiKey, trackUploadEvent);
 
-// Vercel provider health check
-router.get('/vercel/health', vercelHealthCheck);
+// Vercel Blob provider routes
+// Health check removed - use main /health endpoint instead
 
 // Cancel ongoing uploads
 router.post('/vercel/cancel', validateApiKey, cancelVercelUpload);
