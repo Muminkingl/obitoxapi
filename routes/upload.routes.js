@@ -22,27 +22,30 @@ import {
 } from '../controllers/providers/supabase/index.js';
 
 // ⚠️ TODO: These are not yet extracted (using old controller for now)
+// ✅ COMPLETE: All Supabase operations from modular structure
 import {
   listSupabaseFiles,
   cancelSupabaseUpload,
   listSupabaseBuckets,
   completeSupabaseUpload
-} from '../controllers/providers/supabase.controller.js';
+} from '../controllers/providers/supabase/index.js';
+
+// ✅ COMPLETE: Import all from modular Uploadcare structure (with enterprise caching!)
 import {
   generateUploadcareSignedUrl,
   deleteUploadcareFile,
   downloadUploadcareFile,
   cancelUploadcareUpload,
   listUploadcareFiles,
-  uploadcareHealthCheck,
   scanUploadcareFileForMalware,
   checkUploadcareMalwareScanStatus,
   getUploadcareMalwareScanResults,
   removeUploadcareInfectedFile,
   validateUploadcareFile,
   getUploadcareProjectSettings,
-  validateUploadcareSvg
-} from '../controllers/providers/uploadcare.controller.js';
+  validateUploadcareSvg,
+  uploadcareHealthCheck
+} from '../controllers/providers/uploadcare/index.js';
 import {
   getUploadAnalytics,
   getDailyUsageAnalytics,
