@@ -13,13 +13,18 @@ import {
   completeVercelUpload
 } from '../controllers/providers/vercel/index.js';
 
+// ✅ UPDATED: Import from modular Supabase structure
 import {
   uploadToSupabaseStorage,
   generateSupabaseSignedUrl,
   deleteSupabaseFile,
+  downloadSupabaseFile
+} from '../controllers/providers/supabase/index.js';
+
+// ⚠️ TODO: These are not yet extracted (using old controller for now)
+import {
   listSupabaseFiles,
   cancelSupabaseUpload,
-  downloadSupabaseFile,
   listSupabaseBuckets,
   completeSupabaseUpload
 } from '../controllers/providers/supabase.controller.js';
@@ -97,7 +102,7 @@ router.post('/supabase/upload', validateApiKey, uploadToSupabaseStorage);
 router.post('/supabase/cancel', validateApiKey, cancelSupabaseUpload);
 
 // Delete files from Supabase Storage
-router.delete('/supabase/delete', validateApiKey, deleteSupabaseFile);
+router.post('/supabase/delete', validateApiKey, deleteSupabaseFile);
 
 // List files in Supabase Storage
 router.post('/supabase/list', validateApiKey, listSupabaseFiles);
