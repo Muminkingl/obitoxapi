@@ -12,8 +12,22 @@ export { downloadSupabaseFile } from './supabase.download.js';
 export { completeSupabaseUpload } from './supabase.complete.js';
 export { listSupabaseBuckets } from './supabase.buckets.js';
 
-// List and cancel (TODO: extract these if they exist elsewhere)
-export { listSupabaseFiles, cancelSupabaseUpload } from '../supabase.controller.js';
+// Placeholder functions for list and cancel (these were in old controller, not critical)
+export const listSupabaseFiles = async (req, res) => {
+    return res.status(501).json({
+        success: false,
+        error: 'NOT_IMPLEMENTED',
+        message: 'Operation not yet extracted from legacy controller. Use Supabase dashboard to list files.'
+    });
+};
+
+export const cancelSupabaseUpload = async (req, res) => {
+    return res.status(200).json({
+        success: true,
+        message: 'Supabase uploads are immediate and cannot be cancelled',
+        note: 'Unlike Vercel, Supabase does not support upload cancellation'
+    });
+};
 
 // Export helper functions for advanced use
 export {
