@@ -46,6 +46,23 @@ import {
   validateUploadcareSvg,
   uploadcareHealthCheck
 } from '../controllers/providers/uploadcare/index.js';
+
+// ✅ NEW: Import all from modular R2 structure (enterprise caching + pure crypto!)
+import {
+  generateR2SignedUrl,
+  deleteR2File,
+  downloadR2File,
+  listR2Files,
+  generateR2DownloadUrl,       // Phase 2A: Time-limited download URLs
+  generateR2AccessToken,        // Phase 2A: JWT access tokens
+  revokeR2AccessToken,          // Phase 2A: Token revocation
+  generateR2BatchSignedUrls,    // Phase 2B: Batch signed URLs
+  batchDeleteR2Files            // Phase 2B: Batch delete
+} from '../controllers/providers/r2/index.js';
+
+// R2 token validation middleware
+import { validateR2AccessToken, requireR2Permission } from '../middlewares/r2-token.middleware.js';
+
 import {
   getUploadAnalytics,
   getDailyUsageAnalytics,
@@ -149,6 +166,39 @@ router.post('/uploadcare/remove-infected', validateApiKey, removeUploadcareInfec
 router.post('/uploadcare/validate', validateApiKey, validateUploadcareFile);
 router.post('/uploadcare/project-settings', validateApiKey, getUploadcareProjectSettings);
 router.post('/uploadcare/validate-svg', validateApiKey, validateUploadcareSvg);
+
+// ===== CLOUDFLARE R2 PROVIDER ROUTES =====
+
+// Generate presigned URL for R2 upload (pure crypto - 5-10ms!)
+router.post('/r2/signed-url', validateApiKey, generateR2SignedUrl);
+
+// Delete files from R2
+router.delete('/r2/delete', validateApiKey, deleteR2File);
+
+// Get file info and download URL from R2
+router.post('/r2/download', validateApiKey, downloadR2File);
+
+// List files in R2 bucket
+router.post('/r2/list', validateApiKey, listR2Files);
+
+// ===== R2 ADVANCED FEATURES (Phase 2A) =====
+
+// Generate time-limited download URL (presigned with expiry)
+router.post('/r2/download-url', validateApiKey, generateR2DownloadUrl);
+
+// Generate JWT access token for file/bucket access
+router.post('/r2/access-token', validateApiKey, generateR2AccessToken);
+
+// Revoke JWT access token
+router.delete('/r2/access-token/revoke', validateApiKey, revokeR2AccessToken);
+
+// ===== R2 BATCH OPERATIONS (Phase 2B) =====
+
+// Generate batch signed URLs (up to 100 files)
+router.post('/r2/batch/signed-urls', validateApiKey, generateR2BatchSignedUrls);
+
+// Batch delete files (up to 1000 files)
+router.delete('/r2/batch/delete', validateApiKey, batchDeleteR2Files);
 
 // ===== LEGACY ROUTES (for backward compatibility) =====
 
