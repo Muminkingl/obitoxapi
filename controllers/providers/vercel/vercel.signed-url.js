@@ -72,16 +72,13 @@ export const generateVercelSignedUrl = async (req, res) => {
         const uploadUrl = `vercel://${finalFilename}`;
         const fileUrl = `vercel://${finalFilename}`;
 
-        // 6. Track upload initiation (non-blocking)
+        // 6. Log upload (non-blocking fire-and-forget)
         supabaseAdmin
-            .from('upload_logs')
+            .from('uploads_log')
             .insert({
-                user_id: req.userId,
                 api_key_id: req.apiKeyId,
-                file_name: finalFilename,
-                original_name: filename,
-                file_type: contentType,
-                file_size: fileSize || 0,
+                user_id: req.userId,
+                filename: finalFilename,
                 file_url: fileUrl,
                 status: 'initiated',
                 provider: 'vercel',
@@ -92,6 +89,7 @@ export const generateVercelSignedUrl = async (req, res) => {
                     token_prefix: vercelToken.substring(0, 20) + '...'
                 }
             })
+            .then(() => { })  // Fire-and-forget - don't wait for result
             .catch(err => console.error('Upload log error:', err));
 
         // 7. Update metrics (non-blocking)
