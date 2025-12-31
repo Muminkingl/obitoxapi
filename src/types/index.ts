@@ -25,6 +25,7 @@ export * from './common';
 export * from './vercel.types';
 export * from './supabase.types';
 export * from './uploadcare.types';
+export * from './r2.types';
 
 // ============================================================================
 // Unified Upload Options
@@ -33,6 +34,7 @@ export * from './uploadcare.types';
 import type { VercelUploadOptions } from './vercel.types';
 import type { SupabaseUploadOptions } from './supabase.types';
 import type { UploadcareUploadOptions } from './uploadcare.types';
+import type { R2UploadOptions } from './r2.types';
 import type { BaseUploadOptions } from './common';
 
 /**
@@ -42,7 +44,8 @@ import type { BaseUploadOptions } from './common';
 export type UploadOptions =
     | VercelUploadOptions
     | SupabaseUploadOptions
-    | UploadcareUploadOptions;
+    | UploadcareUploadOptions
+    | R2UploadOptions;
 
 // ============================================================================
 // Unified Delete Options
@@ -51,6 +54,7 @@ export type UploadOptions =
 import type { VercelDeleteOptions } from './vercel.types';
 import type { SupabaseDeleteOptions } from './supabase.types';
 import type { UploadcareDeleteOptions } from './uploadcare.types';
+import type { R2DeleteOptions } from './r2.types';
 
 /**
  * Union type of all provider delete options
@@ -58,7 +62,8 @@ import type { UploadcareDeleteOptions } from './uploadcare.types';
 export type DeleteFileOptions =
     | VercelDeleteOptions
     | SupabaseDeleteOptions
-    | UploadcareDeleteOptions;
+    | UploadcareDeleteOptions
+    | R2DeleteOptions;
 
 // ============================================================================
 // Unified Download Options
@@ -67,6 +72,7 @@ export type DeleteFileOptions =
 import type { VercelDownloadOptions } from './vercel.types';
 import type { SupabaseDownloadOptions } from './supabase.types';
 import type { UploadcareDownloadOptions } from './uploadcare.types';
+import type { R2DownloadOptions } from './r2.types';
 
 /**
  * Union type of all provider download options
@@ -74,7 +80,8 @@ import type { UploadcareDownloadOptions } from './uploadcare.types';
 export type DownloadFileOptions =
     | VercelDownloadOptions
     | SupabaseDownloadOptions
-    | UploadcareDownloadOptions;
+    | UploadcareDownloadOptions
+    | R2DownloadOptions;
 
 // ============================================================================
 // Unified Cancel Options

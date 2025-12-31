@@ -38,3 +38,21 @@ export type {
     MalwareScanOptions,
     MalwareScanResults,
 } from './uploadcare';
+
+// R2 provider
+export { R2Provider } from './r2';
+export type {
+    R2UploadOptions,
+    R2BatchUploadOptions,
+    R2DeleteOptions,
+    R2BatchDeleteOptions,
+    R2DownloadOptions,
+    R2AccessTokenOptions,
+    R2ListOptions,
+    R2UploadResponse,
+    R2BatchUploadResponse,
+    R2DownloadResponse,
+    R2AccessTokenResponse,
+    R2ListResponse,
+    R2BatchDeleteResponse,
+} from './r2';

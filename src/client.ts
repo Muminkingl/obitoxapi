@@ -35,6 +35,7 @@ import { ProviderRegistry } from './providers/base.provider.js';
 import { VercelProvider } from './providers/vercel/index.js';
 import { SupabaseProvider } from './providers/supabase/index.js';
 import { UploadcareProvider } from './providers/uploadcare/index.js';
+import { R2Provider } from './providers/r2/index.js';
 
 // Import types for responses
 import type {
@@ -120,6 +121,7 @@ export class ObitoX {
     this.providers.register('VERCEL', (apiKey, baseUrl) => new VercelProvider(apiKey, baseUrl));
     this.providers.register('SUPABASE', (apiKey, baseUrl) => new SupabaseProvider(apiKey, baseUrl));
     this.providers.register('UPLOADCARE', (apiKey, baseUrl) => new UploadcareProvider(apiKey, baseUrl));
+    this.providers.register('R2', (apiKey, baseUrl) => new R2Provider(apiKey, baseUrl));
   }
 
   // ============================================================================
@@ -445,6 +447,234 @@ export class ObitoX {
     return response.json() as Promise<T>;
   }
 
+  // ============================================================================
+  // R2-Specific Methods (Advanced Features)
+  // ============================================================================
+
+  /**
+   * Batch upload multiple files to R2
+   * 
+   * R2's killer feature - generate presigned URLs for up to 100 files in a single API call.
+   * This is significantly faster than calling uploadFile() 100 times.
+   * 
+   * @param options - R2 batch upload options
+   * @returns Promise resolving to batch upload response with URLs for all files
+   * @throws Error if batch upload fails or exceeds 100 files limit
+   * 
+   * @example
+   * ```typescript
+   * import type { R2BatchUploadOptions, R2BatchUploadResponse } from '@obitox/sdk';
+   * 
+   * const result: R2BatchUploadResponse = await client.batchUpload({
+   *   files: [
+   *     { filename: 'photo1.jpg', contentType: 'image/jpeg', fileSize: 1024000 },
+   *     { filename: 'photo2.jpg', contentType: 'image/jpeg', fileSize: 2048000 },
+   *     // ... up to 100 files
+   *   ],
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads'
+   * });
+   * 
+   * console.log(`Generated ${result.total} URLs in ${result.performance.totalTime}`);
+   * 
+   * // Upload all files in parallel
+   * await Promise.all(
+   *   actualFiles.map((file, i) =>
+   *     fetch(result.urls[i].uploadUrl, {
+   *       method: 'PUT',
+   *       body: file
+   *     })
+   *   )
+   * );
+   * ```
+   */
+  async batchUpload(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider not available');
+    }
+
+    // Cast to R2Provider to access batchUpload method
+    const r2Provider = provider as any;
+    if (typeof r2Provider.batchUpload !== 'function') {
+      throw new Error('R2 provider does not support batch upload');
+    }
+
+    return r2Provider.batchUpload(options);
+  }
+
+  /**
+   * Batch delete multiple files from R2
+   * 
+   * Delete up to 1000 files in a single API call.
+   * Much more efficient than calling deleteFile() 1000 times.
+   * 
+   * @param options - R2 batch delete options
+   * @returns Promise resolving to arrays of deleted and failed file keys
+   * @throws Error if batch delete fails or exceeds 1000 files limit
+   * 
+   * @example
+   * ```typescript
+   * import type { R2BatchDeleteOptions, R2BatchDeleteResponse } from '@obitox/sdk';
+   * 
+   * const result: R2BatchDeleteResponse = await client.batchDelete({
+   *   fileKeys: ['photo1.jpg', 'photo2.jpg', 'photo3.jpg'],
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads'
+   * });
+   * 
+   * console.log(`Deleted: ${result.deleted.length}, Failed: ${result.errors.length}`);
+   * ```
+   */
+  async batchDelete(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider not available');
+    }
+
+    // Cast to R2Provider to access batchDelete method
+    const r2Provider = provider as any;
+    if (typeof r2Provider.batchDelete !== 'function') {
+      throw new Error('R2 provider does not support batch delete');
+    }
+
+    return r2Provider.batchDelete(options);
+  }
+
+  /**
+   * Generate JWT access token for R2 file or bucket
+   * 
+   * Creates a time-limited token with specific permissions for secure file access.
+   * Use this for enterprise security scenarios where you need granular access control.
+   * 
+   * @param options - R2 access token options
+   * @returns Promise resolving to token and metadata
+   * @throws Error if token generation fails
+   * 
+   * @example
+   * ```typescript
+   * import type { R2AccessTokenOptions, R2AccessTokenResponse } from '@obitox/sdk';
+   * 
+   * // Generate read-only token for a specific file
+   * const token: R2AccessTokenResponse = await client.generateR2AccessToken({
+   *   r2Bucket: 'private-docs',
+   *   fileKey: 'confidential-report.pdf',
+   *   permissions: ['read'],
+   *   expiresIn: 3600  // 1 hour
+   * });
+   * 
+   * console.log('Share this token:', token.token);
+   * console.log('Expires at:', token.expiresAt);
+   * console.log('Usage:', token.usage.description);
+   * ```
+   */
+  async generateR2AccessToken(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider not available');
+    }
+
+    // Cast to R2Provider to access generateAccessToken method
+    const r2Provider = provider as any;
+    if (typeof r2Provider.generateAccessToken !== 'function') {
+      throw new Error('R2 provider does not support access tokens');
+    }
+
+    return r2Provider.generateAccessToken(options);
+  }
+
+  /**
+   * Revoke R2 access token
+   * 
+   * Immediately invalidates a previously issued token.
+   * Use this to revoke access when a token should no longer be valid.
+   * 
+   * @param token - JWT token to revoke
+   * @throws Error if revocation fails
+   * 
+   * @example
+   * ```typescript
+   * // Revoke a previously issued token
+   * await client.revokeR2AccessToken(token.token);
+   * console.log('Token revoked - access denied');
+   * ```
+   */
+  async revokeR2AccessToken(token: string): Promise<void> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider not available');
+    }
+
+    // Cast to R2Provider to access revokeAccessToken method
+    const r2Provider = provider as any;
+    if (typeof r2Provider.revokeAccessToken !== 'function') {
+      throw new Error('R2 provider does not support token revocation');
+    }
+
+    return r2Provider.revokeAccessToken(token);
+  }
+
+  /**
+   * List files in R2 bucket
+   * 
+   * Retrieves a list of files with pagination support.
+   * Use prefix to filter by folder, and continuationToken for pagination.
+   * 
+   * @param options - R2 list options
+   * @returns Promise resolving to file list and metadata
+   * @throws Error if listing fails
+   * 
+   * @example
+   * ```typescript
+   * import type { R2ListOptions, R2ListResponse } from '@obitox/sdk';
+   * 
+   * // List all PDFs in "documents/" folder
+   * const result: R2ListResponse = await client.listR2Files({
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads',
+   *   prefix: 'documents/',
+   *   maxKeys: 50
+   * });
+   * 
+   * console.log(`Found ${result.count} files`);
+   * result.files.forEach(file => {
+   *   console.log(`- ${file.key} (${file.size} bytes, modified: ${file.lastModified})`);
+   * });
+   * 
+   * // Pagination for large buckets
+   * if (result.truncated) {
+   *   const nextPage = await client.listR2Files({
+   *     ...options,
+   *     continuationToken: result.continuationToken
+   *   });
+   * }
+   * ```
+   */
+  async listR2Files(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider not available');
+    }
+
+    // Cast to R2Provider to access listFiles method
+    const r2Provider = provider as any;
+    if (typeof r2Provider.listFiles !== 'function') {
+      throw new Error('R2 provider does not support file listing');
+    }
+
+    return r2Provider.listFiles(options);
+  }
+
+  // ============================================================================
+  // Utility Methods
+  // ============================================================================
+
   /**
    * Get list of available providers
    * 
@@ -454,11 +684,12 @@ export class ObitoX {
    * ```typescript
    * const providers = client.getAvailableProviders();
    * console.log(`Available providers: ${providers.join(', ')}`);
-   * // Output: Available providers: VERCEL, SUPABASE, UPLOADCARE
+   * // Output: Available providers: VERCEL, SUPABASE, UPLOADCARE, R2
    * ```
    */
   getAvailableProviders(): string[] {
     return this.providers.getProviderNames();
+
   }
 
   /**
