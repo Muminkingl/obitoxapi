@@ -110,7 +110,9 @@ export class UploadcareProvider extends BaseProvider<
                     uploadcareSecretKey: options.uploadcareSecretKey,
                 });
 
-                finalFileUrl = downloadInfo;
+                if (downloadInfo && typeof downloadInfo === 'string') {
+                    finalFileUrl = downloadInfo;
+                }
 
                 // Step 4: Apply image optimization if specified
                 if (options.imageOptimization && isImageFile(filename, contentType)) {
@@ -138,7 +140,13 @@ export class UploadcareProvider extends BaseProvider<
                 }
             } catch (error) {
                 // Fallback to basic URL if download/optimization fails
+                console.warn('⚠️  Download/optimization failed, using direct CDN URL');
                 finalFileUrl = this.lastUploadcareUrl || '';
+            }
+
+            // Ensure we have a valid URL
+            if (!finalFileUrl) {
+                throw new Error('Failed to get Uploadcare file URL');
             }
 
             // Step 6: Track completion
@@ -175,7 +183,7 @@ export class UploadcareProvider extends BaseProvider<
 
         try {
             // Call ObitoX API to delete the file
-            await this.makeRequest('/api/v1/upload/delete', {
+            await this.makeRequest('/api/v1/upload/uploadcare/delete', {
                 method: 'DELETE',
                 body: JSON.stringify({
                     fileUrl: options.fileUrl,
@@ -206,7 +214,7 @@ export class UploadcareProvider extends BaseProvider<
 
         try {
             const response = await this.makeRequest<{ downloadUrl: string }>(
-                '/api/v1/upload/download',
+                '/api/v1/upload/uploadcare/download',
                 {
                     method: 'POST',
                     body: JSON.stringify({
@@ -356,7 +364,7 @@ export class UploadcareProvider extends BaseProvider<
     private async scanFileForMalware(
         options: MalwareScanOptions
     ): Promise<ApiResponse<{ requestId: string }>> {
-        return this.makeRequest('/api/v1/upload/malware/scan', {
+        return this.makeRequest('/api/v1/upload/uploadcare/scan-malware', {
             method: 'POST',
             body: JSON.stringify(options),
         });
@@ -368,7 +376,7 @@ export class UploadcareProvider extends BaseProvider<
     private async checkMalwareScanStatus(
         options: MalwareScanStatusOptions
     ): Promise<ApiResponse<{ isComplete: boolean }>> {
-        return this.makeRequest('/api/v1/upload/malware/status', {
+        return this.makeRequest('/api/v1/upload/uploadcare/scan-status', {
             method: 'POST',
             body: JSON.stringify(options),
         });
@@ -380,7 +388,7 @@ export class UploadcareProvider extends BaseProvider<
     private async getMalwareScanResults(
         options: MalwareScanOptions
     ): Promise<ApiResponse<MalwareScanResults>> {
-        return this.makeRequest('/api/v1/upload/malware/results', {
+        return this.makeRequest('/api/v1/upload/uploadcare/scan-results', {
             method: 'POST',
             body: JSON.stringify(options),
         });
@@ -400,7 +408,7 @@ export class UploadcareProvider extends BaseProvider<
         contentType: string,
         options: Omit<UploadcareUploadOptions, 'filename' | 'contentType'>
     ): Promise<UploadResponse> {
-        return this.makeRequest<UploadResponse>('/api/v1/upload/signed-url', {
+        return this.makeRequest<UploadResponse>('/api/v1/upload/uploadcare/signed-url', {
             method: 'POST',
             body: JSON.stringify({
                 filename,

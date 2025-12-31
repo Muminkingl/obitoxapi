@@ -90,7 +90,10 @@ export class SupabaseProvider extends BaseProvider<
 
         try {
             // Step 1: Get signed URL from ObitoX API
-            const signedUrlResult = await this.getSignedUrl(filename, contentType, options);
+            const signedUrlResult = await this.getSignedUrl(filename, contentType, {
+                ...options,
+                fileSize: file.size,  // Always pass actual file size
+            });
 
             if (!signedUrlResult.data.token || !signedUrlResult.data.bucket) {
                 throw new Error('Missing required Supabase upload parameters: token or bucket');
@@ -166,8 +169,8 @@ export class SupabaseProvider extends BaseProvider<
 
         try {
             // Call ObitoX API to delete the file
-            await this.makeRequest('/api/v1/upload/delete', {
-                method: 'DELETE',
+            await this.makeRequest('/api/v1/upload/supabase/delete', {
+                method: 'POST',  // Server uses POST for Supabase delete
                 body: JSON.stringify({
                     fileUrl: options.fileUrl,
                     provider: 'SUPABASE',
@@ -208,7 +211,7 @@ export class SupabaseProvider extends BaseProvider<
 
         try {
             // Call ObitoX API to get download URL
-            const response = await this.makeRequest<DownloadResponse>('/api/v1/upload/download', {
+            const response = await this.makeRequest<{ success: boolean; data: { downloadUrl: string } }>('/api/v1/upload/supabase/download', {
                 method: 'POST',
                 body: JSON.stringify({
                     filename: options.filename,
@@ -221,7 +224,7 @@ export class SupabaseProvider extends BaseProvider<
                 }),
             });
 
-            return response.downloadUrl;
+            return response.data.downloadUrl;
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -255,7 +258,7 @@ export class SupabaseProvider extends BaseProvider<
 
         try {
             const response = await this.makeRequest<{ data: { buckets: SupabaseBucketInfo[] } }>(
-                '/api/v1/upload/buckets',
+                '/api/v1/upload/supabase/buckets',
                 {
                     method: 'POST',
                     body: JSON.stringify({
@@ -288,7 +291,7 @@ export class SupabaseProvider extends BaseProvider<
         contentType: string,
         options: Omit<SupabaseUploadOptions, 'filename' | 'contentType'>
     ): Promise<UploadResponse> {
-        return this.makeRequest<UploadResponse>('/api/v1/upload/signed-url', {
+        return this.makeRequest<UploadResponse>('/api/v1/upload/supabase/signed-url', {
             method: 'POST',
             body: JSON.stringify({
                 filename,

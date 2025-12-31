@@ -111,7 +111,8 @@ export const deleteUploadcareFile = async (req, res) => {
         const operationStart = Date.now();
 
         // Delete from Uploadcare using REST API
-        const deleteResponse = await fetch(`${UPLOADCARE_API_BASE}/files/${fileUuid}/`, {
+        // Note: Endpoint must end with /storage/ for deletion to work
+        const deleteResponse = await fetch(`${UPLOADCARE_API_BASE}/files/${fileUuid}/storage/`, {
             method: 'DELETE',
             headers: getUploadcareHeaders(uploadcarePublicKey, uploadcareSecretKey)
         });
