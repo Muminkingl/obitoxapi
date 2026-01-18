@@ -20,6 +20,9 @@ import {
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * Download file from Uploadcare (get file info and public URL)
  */
@@ -27,6 +30,7 @@ export const downloadUploadcareFile = async (req, res) => {
     const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
     let apiKeyId;
+    let userId;
 
     try {
         const { fileUrl, uuid, uploadcarePublicKey, uploadcareSecretKey } = req.body;
@@ -155,6 +159,21 @@ export const downloadUploadcareFile = async (req, res) => {
         updateUploadcareFileSize(apiKeyId, fileUuid, uploadcarePublicKey, uploadcareSecretKey).catch(() => { });
         updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/uploadcare/download',
+            method: 'POST',
+            provider: 'uploadcare',
+            operation: 'download',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         // Log file access (non-blocking)
         logFileUpload(
             apiKeyId,
@@ -168,6 +187,21 @@ export const downloadUploadcareFile = async (req, res) => {
         ).catch(() => { });
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
+
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/uploadcare/download',
+            method: 'POST',
+            provider: 'uploadcare',
+            operation: 'download',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
 
         res.status(200).json({
             success: true,
@@ -207,7 +241,20 @@ export const downloadUploadcareFile = async (req, res) => {
         console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
+            updateUploadcareMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', 'failed', 0).catch(() => { });
+
+            trackApiUsage({
+                userId: userId || apiKeyId,
+                endpoint: '/api/v1/upload/uploadcare/download',
+                method: 'POST',
+                provider: 'uploadcare',
+                operation: 'download',
+                statusCode: 500,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         res.status(500).json({

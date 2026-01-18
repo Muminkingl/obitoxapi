@@ -56,3 +56,22 @@ export type {
     R2ListResponse,
     R2BatchDeleteResponse,
 } from './r2';
+
+// S3 provider
+export { S3Provider } from './s3';
+export type {
+    S3UploadOptions,
+    S3MultipartUploadOptions,
+    S3DeleteOptions,
+    S3BatchDeleteOptions,
+    S3DownloadOptions,
+    S3ListOptions,
+    S3MetadataOptions,
+    S3UploadResponse,
+    S3MultipartInitResponse,
+    S3DownloadResponse,
+    S3DeleteResponse,
+    S3BatchDeleteResponse,
+    S3ListResponse,
+    S3MetadataResponse,
+} from './s3';

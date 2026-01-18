@@ -16,8 +16,8 @@
 
 import ObitoX from './dist/client.js';
 
-// Configuration - Update with your R2 credentials
-const API_KEY = 'ox_ce5716a92d3705afc3f4195c3b77957413b900c99e7d0fd9c2031f0935dd86f9';
+
+const API_KEY = 'ox_44fe86d006bd8358a7dc7b01f2626ae5f724f0122c1bf79f';
 const R2_ACCESS_KEY = '8105c2c257b314edbc01fa0667cac2da';
 const R2_SECRET_KEY = '23b01e76dde5d81b913a36473676c077149bacf79049f0ba894ca7db08858e31';
 const R2_ACCOUNT_ID = 'b0cab7bc004505800b231cb8f9a793f4';

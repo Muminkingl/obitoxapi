@@ -12,6 +12,10 @@ import { updateSupabaseMetrics } from './supabase.helpers.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
+
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * Delete file from Supabase Storage
  * @param {Object} req - Express request
@@ -175,6 +179,36 @@ export const deleteSupabaseFile = async (req, res) => {
         // Background metrics update
         updateSupabaseMetrics(apiKey, 'supabase', true, 'DELETE_SUCCESS').catch(() => { });
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/supabase/delete',
+            method: 'DELETE',
+            provider: 'supabase',
+            operation: 'delete',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId: apiKey,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/supabase/delete',
+            method: 'DELETE',
+            provider: 'supabase',
+            operation: 'delete',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId: apiKey,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         // Update upload log (non-blocking)
         supabaseAdmin
             .from('upload_logs')
@@ -213,6 +247,20 @@ export const deleteSupabaseFile = async (req, res) => {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {
                 errorDetails: error.message
             }).catch(() => { });
+
+            // New Usage Tracking
+            trackApiUsage({
+                userId: req.userId || apiKey,
+                endpoint: '/api/v1/upload/supabase/delete',
+                method: 'DELETE',
+                provider: 'supabase',
+                operation: 'delete',
+                statusCode: 500,
+                success: false,
+                apiKeyId: apiKey,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         res.status(500).json({

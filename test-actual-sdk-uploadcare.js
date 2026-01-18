@@ -14,8 +14,8 @@
 
 import ObitoX from './dist/client.js';
 
-// Configuration - Update with your Uploadcare credentials
-const API_KEY = 'ox_ce5716a92d3705afc3f4195c3b77957413b900c99e7d0fd9c2031f0935dd86f9';
+
+const API_KEY = 'ox_196aed8312066f42b12566f79bc30b55ff2e3209794abc23';
 const UPLOADCARE_PUBLIC_KEY = process.env.UPLOADCARE_PUBLIC_KEY || 'b538618c3e84a2fe4e0c';
 const UPLOADCARE_SECRET_KEY = process.env.UPLOADCARE_SECRET_KEY || '5f5aabee5aa61693d9dc';
 

@@ -14,6 +14,9 @@ import { updateUploadcareMetrics } from './uploadcare.helpers.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * List files from Uploadcare
  */
@@ -114,6 +117,21 @@ export const listUploadcareFiles = async (req, res) => {
         // Background metrics update
         updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/uploadcare/list',
+            method: 'POST',
+            provider: 'uploadcare',
+            operation: 'list',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         res.status(200).json({
             success: true,
             message: 'Files listed from Uploadcare successfully',
@@ -143,6 +161,19 @@ export const listUploadcareFiles = async (req, res) => {
 
         if (apiKeyId) {
             updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
+
+            trackApiUsage({
+                userId: req.userId || apiKeyId,
+                endpoint: '/api/v1/upload/uploadcare/list',
+                method: 'POST',
+                provider: 'uploadcare',
+                operation: 'list',
+                statusCode: 500,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         res.status(500).json({

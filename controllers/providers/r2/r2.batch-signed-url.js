@@ -30,6 +30,7 @@ import {
     MIN_EXPIRY
 } from './r2.config.js';
 import { updateR2Metrics, generateR2Filename } from './r2.helpers.js';
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 
 /**
@@ -76,9 +77,45 @@ export const generateR2BatchSignedUrls = async (req, res) => {
         }
 
         // ============================================================================
+        // LAYER 2: User Quota Check
+        // ============================================================================
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/r2/batch-signed-url',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'batch-signed-urls',
+                statusCode: 429,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            return res.status(429).json(formatR2Error(
+                'QUOTA_EXCEEDED',
+                'Monthly quota exceeded',
+                'Please upgrade your plan'
+            ));
+        }
+
+        // ============================================================================
         // VALIDATION: Required Fields
         // ============================================================================
         if (!Array.isArray(files) || files.length === 0) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/r2/batch-signed-url',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'batch-signed-urls',
+                statusCode: 400,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
             return res.status(400).json(formatR2Error(
                 'INVALID_FILES_ARRAY',
                 'files must be a non-empty array',
@@ -205,6 +242,21 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             responseTime: totalTime
         }).catch(() => { });
 
+        // New Usage Tracking (Count successful requests)
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/r2/batch-signed-url',
+            method: 'POST',
+            provider: 'r2',
+            operation: 'batch-signed-urls',
+            statusCode: 200,
+            success: true,
+            requestCount: successCount, // Count each successful file generation as 1 request
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         // ============================================================================
         // RESPONSE: Same format as other R2 operations
         // ============================================================================
@@ -241,6 +293,19 @@ export const generateR2BatchSignedUrls = async (req, res) => {
                 error: error.message,
                 responseTime: totalTime
             }).catch(() => { });
+
+            trackApiUsage({
+                userId: req.userId || req.apiKeyId,
+                endpoint: '/api/v1/upload/r2/batch-signed-url',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'batch-signed-urls',
+                statusCode: 500,
+                success: false,
+                apiKeyId: req.apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         return res.status(500).json(formatR2Error(

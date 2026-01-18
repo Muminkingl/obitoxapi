@@ -18,9 +18,11 @@ import {
 } from './cache/memory-guard.js';
 import {
     checkRedisRateLimit,
-    getQuotaFromRedis,
     checkBucketAccessRedis
 } from './cache/redis-cache.js';
+
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
 
 /**
  * Generate signed upload URL for Supabase Storage
@@ -126,41 +128,33 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         // ========================================================================
         // LAYER 3: QUOTA CHECK WITH CACHE (50-100ms) 💰
         // ========================================================================
+        // ========================================================================
+        // LAYER 3: QUOTA CHECK (Database RPC) 💰
+        // ========================================================================
         const quotaStart = Date.now();
-
-        // Check memory first
-        let quotaCheck = checkMemoryQuota(userId);
-
-        if (quotaCheck.needsRefresh) {
-            // Memory miss - check Redis
-            quotaCheck = await getQuotaFromRedis(userId);
-
-            // Update memory cache for next request
-            if (!quotaCheck.needsRefresh) {
-                setMemoryQuota(userId, {
-                    current: quotaCheck.current,
-                    limit: quotaCheck.limit
-                });
-            }
-        }
-
+        const quotaCheck = await checkUserQuota(userId);
         const quotaTime = Date.now() - quotaStart;
 
-        if (!quotaCheck.allowed && !quotaCheck.fallback) {
+        if (!quotaCheck.allowed) {
             console.log(`[${requestId}] ❌ Quota exceeded in ${quotaTime}ms`);
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/supabase/signed-url',
+                method: 'POST',
+                provider: 'supabase',
+                operation: 'signed-url',
+                statusCode: 403,
+                success: false,
+                apiKeyId: apiKey,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
             return res.status(403).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
-                message: 'User quota exceeded',
-                current: quotaCheck.current,
+                message: 'Monthly quota exceeded',
                 limit: quotaCheck.limit,
-                layer: quotaCheck.layer,
-                timing: {
-                    total: Date.now() - startTime,
-                    memoryGuard: memoryTime,
-                    redisCheck: redisTime,
-                    quotaCheck: quotaTime
-                }
+                used: quotaCheck.used
             });
         }
 
@@ -270,6 +264,21 @@ export const generateSupabaseSignedUrl = async (req, res) => {
             fileSize: fileSize
         }).catch(err => console.error('Background metrics error:', err));
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/supabase/signed-url',
+            method: 'POST',
+            provider: 'supabase',
+            operation: 'signed-url',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId: apiKey,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         const totalTime = Date.now() - startTime;
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, redis:${redisTime}ms, quota:${quotaTime}ms, bucket:${bucketTime}ms, operation:${operationTime}ms)`);
@@ -324,6 +333,19 @@ export const generateSupabaseSignedUrl = async (req, res) => {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {
                 errorDetails: error.message
             }).catch(err => console.error('Background metrics error:', err));
+
+            trackApiUsage({
+                userId: req.userId || apiKey,
+                endpoint: '/api/v1/upload/supabase/signed-url',
+                method: 'POST',
+                provider: 'supabase',
+                operation: 'signed-url',
+                statusCode: 500,
+                success: false,
+                apiKeyId: apiKey,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         res.status(500).json({

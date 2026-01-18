@@ -6,6 +6,7 @@
 import { supabaseAdmin } from '../../../database/supabase.js';
 import { logFileUpload } from '../shared/analytics.helper.js';
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import { trackApiUsage } from '../shared/analytics.new.js';
 import { formatErrorResponse } from '../shared/error.helper.js';
 
 /**
@@ -76,8 +77,42 @@ export const trackUploadEvent = async (req, res) => {
         }
 
         // 5. Update metrics (non-blocking, if we have user info)
-        if (userId && apiKeyId) {
-            updateRequestMetrics(apiKeyId, userId, provider, event === 'completed', fileSize || 0)
+        // 5. Update metrics (non-blocking, if we have user info)
+        if (userId && apiKeyId && event === 'completed') {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/vercel/track',
+                method: 'POST',
+                provider,
+                operation: 'confirm', // Use 'confirm' or 'track' to distinguish from signed-url
+                statusCode: 200,
+                success: true,
+                requestCount: 1, // 1 upload completion = 1 request
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+
+            updateRequestMetrics(apiKeyId, userId, provider, true, fileSize || 0)
+                .catch(err => console.error('Metrics error:', err));
+        } else if (userId && apiKeyId && event === 'failed') {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/vercel/track',
+                method: 'POST',
+                provider,
+                operation: 'confirm',
+                statusCode: 400,
+                success: false,
+                requestCount: 1, // Failed upload tracking might still count as request if we want? Or valid tracking request?
+                // Plans say "1 file upload completion = 1 request". Implies success. 
+                // But failed request to API is still a request.
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+
+            updateRequestMetrics(apiKeyId, userId, provider, false, fileSize || 0)
                 .catch(err => console.error('Metrics error:', err));
         }
 

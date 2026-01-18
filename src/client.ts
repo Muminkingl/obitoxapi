@@ -36,6 +36,7 @@ import { VercelProvider } from './providers/vercel/index.js';
 import { SupabaseProvider } from './providers/supabase/index.js';
 import { UploadcareProvider } from './providers/uploadcare/index.js';
 import { R2Provider } from './providers/r2/index.js';
+import { S3Provider } from './providers/s3/index.js';
 
 // Import types for responses
 import type {
@@ -76,9 +77,15 @@ import type {
  */
 export class ObitoX {
   /**
-   * ObitoX API key for authentication
+   * ObitoX API key for authentication (public key: ox_...)
    */
   private readonly apiKey: string;
+
+  /**
+   * ObitoX API secret for request signing (secret key: sk_...)
+   * Required for Layer 2 security - request signatures
+   */
+  private readonly apiSecret?: string;
 
   /**
    * Base URL for ObitoX API
@@ -103,10 +110,11 @@ export class ObitoX {
     }
 
     this.apiKey = config.apiKey;
+    this.apiSecret = config.apiSecret; // Optional for now (backwards compatibility)
     this.baseUrl = config.baseUrl || 'http://localhost:5500';
 
-    // Initialize provider registry
-    this.providers = new ProviderRegistry(this.apiKey, this.baseUrl);
+    // Initialize provider registry with apiSecret for Layer 2 security
+    this.providers = new ProviderRegistry(this.apiKey, this.baseUrl, this.apiSecret);
 
     // Register all available providers
     this.registerProviders();
@@ -118,10 +126,11 @@ export class ObitoX {
    * @private
    */
   private registerProviders(): void {
-    this.providers.register('VERCEL', (apiKey, baseUrl) => new VercelProvider(apiKey, baseUrl));
-    this.providers.register('SUPABASE', (apiKey, baseUrl) => new SupabaseProvider(apiKey, baseUrl));
-    this.providers.register('UPLOADCARE', (apiKey, baseUrl) => new UploadcareProvider(apiKey, baseUrl));
-    this.providers.register('R2', (apiKey, baseUrl) => new R2Provider(apiKey, baseUrl));
+    this.providers.register('VERCEL', (apiKey, baseUrl, apiSecret) => new VercelProvider(apiKey, baseUrl, apiSecret));
+    this.providers.register('SUPABASE', (apiKey, baseUrl, apiSecret) => new SupabaseProvider(apiKey, baseUrl, apiSecret));
+    this.providers.register('UPLOADCARE', (apiKey, baseUrl, apiSecret) => new UploadcareProvider(apiKey, baseUrl, apiSecret));
+    this.providers.register('R2', (apiKey, baseUrl, apiSecret) => new R2Provider(apiKey, baseUrl, apiSecret));
+    this.providers.register('S3', (apiKey, baseUrl, apiSecret) => new S3Provider(apiKey, baseUrl, apiSecret));
   }
 
   // ============================================================================

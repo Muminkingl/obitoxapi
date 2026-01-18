@@ -96,9 +96,15 @@ export abstract class BaseProvider<
     protected readonly providerName: string;
 
     /**
-     * ObitoX API key for authentication
+     * ObitoX API key for authentication (public key: ox_...)
      */
     protected readonly apiKey: string;
+
+    /**
+     * ObitoX API secret for request signing (secret key: sk_...)
+     * Required for Layer 2 security - request signatures
+     */
+    protected readonly apiSecret?: string;
 
     /**
      * Base URL for ObitoX API
@@ -109,12 +115,14 @@ export abstract class BaseProvider<
      * Constructor
      * 
      * @param providerName - Name of the provider
-     * @param apiKey - ObitoX API key
+     * @param apiKey - ObitoX API key (public key: ox_...)
      * @param baseUrl - ObitoX API base URL
+     * @param apiSecret - Optional API secret (sk_...) for request signing
      */
-    constructor(providerName: string, apiKey: string, baseUrl: string) {
+    constructor(providerName: string, apiKey: string, baseUrl: string, apiSecret?: string) {
         this.providerName = providerName;
         this.apiKey = apiKey;
+        this.apiSecret = apiSecret;
         this.baseUrl = baseUrl;
     }
 
@@ -147,7 +155,8 @@ export abstract class BaseProvider<
     /**
      * Make HTTP request to ObitoX API
      * 
-     * Helper method for API calls with automatic error handling
+     * Helper method for API calls with automatic error handling and signature generation.
+     * Automatically adds Layer 2 security headers if apiSecret is provided.
      * 
      * @param endpoint - API endpoint (relative to baseUrl)
      * @param options - Fetch options
@@ -161,14 +170,31 @@ export abstract class BaseProvider<
         options: RequestInit = {}
     ): Promise<T> {
         const url = `${this.baseUrl}${endpoint}`;
+        const timestamp = Date.now();
+
+        // Prepare headers
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'x-api-key': this.apiKey,
+            ...(options.headers as Record<string, string> || {}),
+        };
+
+        // Layer 2: Add signature headers if apiSecret is provided
+        if (this.apiSecret) {
+            const method = options.method || 'GET';
+            const body = options.body;
+
+            // Generate signature
+            const signature = this.generateSignature(method, endpoint, timestamp, body);
+
+            headers['X-API-Secret'] = this.apiSecret;
+            headers['X-Signature'] = signature;
+            headers['X-Timestamp'] = timestamp.toString();
+        }
 
         const response = await fetch(url, {
             ...options,
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': this.apiKey,
-                ...options.headers,
-            },
+            headers,
         });
 
         if (!response.ok) {
@@ -179,6 +205,37 @@ export abstract class BaseProvider<
         }
 
         return response.json() as Promise<T>;
+    }
+
+    /**
+     * Generate HMAC-SHA256 signature for request (Layer 2 Security)
+     * 
+     * @param method - HTTP method
+     * @param path - Request path
+     * @param timestamp - Unix timestamp
+     * @param body - Request body
+     * @returns HMAC-SHA256 signature (hex)
+     * 
+     * @private
+     */
+    private generateSignature(method: string, path: string, timestamp: number, body: any): string {
+        // Node.js crypto (will add browser support later)
+        const crypto = require('crypto');
+
+        // Normalize body
+        const bodyString = typeof body === 'string'
+            ? body
+            : body
+                ? JSON.stringify(body)
+                : '';
+
+        // Create message: METHOD|PATH|TIMESTAMP|BODY
+        const message = `${method.toUpperCase()}|${path}|${timestamp}|${bodyString}`;
+
+        // Generate HMAC-SHA256
+        const hmac = crypto.createHmac('sha256', this.apiSecret!);
+        hmac.update(message);
+        return hmac.digest('hex');
     }
 
     /**
@@ -250,7 +307,8 @@ export abstract class BaseProvider<
  */
 export type ProviderFactory<T extends IStorageProvider = IStorageProvider> = (
     apiKey: string,
-    baseUrl: string
+    baseUrl: string,
+    apiSecret?: string  // Layer 2: Optional API secret for signatures
 ) => T;
 
 // ============================================================================
@@ -292,10 +350,12 @@ export class ProviderRegistry implements IProviderRegistry {
     private providers: Map<string, ProviderFactory> = new Map();
     private instances: Map<string, IStorageProvider> = new Map();
     private apiKey: string;
+    private apiSecret?: string;  // Layer 2: API secret for signatures
     private baseUrl: string;
 
-    constructor(apiKey: string, baseUrl: string) {
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
         this.apiKey = apiKey;
+        this.apiSecret = apiSecret;
         this.baseUrl = baseUrl;
     }
 
@@ -311,10 +371,10 @@ export class ProviderRegistry implements IProviderRegistry {
             return this.instances.get(key);
         }
 
-        // Create new instance
+        // Create new instance with apiSecret
         const factory = this.providers.get(key);
         if (factory) {
-            const instance = factory(this.apiKey, this.baseUrl);
+            const instance = factory(this.apiKey, this.baseUrl, this.apiSecret);
             this.instances.set(key, instance);
             return instance;
         }

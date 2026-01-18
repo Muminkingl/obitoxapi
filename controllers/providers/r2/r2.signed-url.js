@@ -21,9 +21,14 @@ import {
     SIGNED_URL_EXPIRY
 } from './r2.config.js';
 import { updateR2Metrics, logR2Upload, generateR2Filename } from './r2.helpers.js';
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import { incrementQuota, checkUsageWarnings } from '../../../utils/quota-manager.js';
 
 // Import memory guard only (Redis not needed for pure crypto!)
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
+
+// ✅ MODULE LOADED - This proves the file was loaded with incrementQuota!
+console.log('🔄 [R2 SIGNED URL] Module loaded with Layer 3 quota support!');
 
 /**
  * Generate presigned URL for R2 upload
@@ -83,9 +88,45 @@ export const generateR2SignedUrl = async (req, res) => {
         }
 
         // ============================================================================
+        // LAYER 2: User Quota Check (Database RPC)
+        // ============================================================================
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/r2/signed-url',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'signed-url',
+                statusCode: 429,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            return res.status(429).json(formatR2Error(
+                'QUOTA_EXCEEDED',
+                'Monthly quota exceeded',
+                'Please upgrade your plan'
+            ));
+        }
+
+        // ============================================================================
         // VALIDATION: Required Fields
         // ============================================================================
         if (!filename || !contentType) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/r2/signed-url',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'signed-url',
+                statusCode: 400,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
             updateR2Metrics(apiKeyId, userId, 'r2', 'failed', 0).catch(() => { });
 
             return res.status(400).json(formatR2Error(
@@ -205,6 +246,21 @@ export const generateR2SignedUrl = async (req, res) => {
         updateR2Metrics(apiKeyId, userId, 'r2', 'success', fileSize || 0, contentType)
             .catch(() => { });
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/r2/signed-url',
+            method: 'POST',
+            provider: 'r2',
+            operation: 'signed-url',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (signing: ${signingTime}ms)`);
 
         // ============================================================================
@@ -235,11 +291,42 @@ export const generateR2SignedUrl = async (req, res) => {
             }
         });
 
+        // ✅ INCREMENT QUOTA AFTER SUCCESS (Layer 3)
+        // Fire-and-forget: Don't wait for completion, don't block response
+        console.log(`[${requestId}] 🔄 STARTING quota increment for user: ${req.userId || apiKeyId}`);
+
+        const quotaPromise = incrementQuota(req.userId || apiKeyId, 1)
+            .then(newCount => {
+                console.log(`[${requestId}] 📊 Quota incremented: ${newCount} requests this month`);
+                // Check for usage warnings (80%, 95%)
+                return checkUsageWarnings(req.userId || apiKeyId, req.tier || 'free', newCount);
+            })
+            .catch(err => {
+                console.error(`[${requestId}] ⚠️ Quota increment failed:`, err);
+                console.error(`[${requestId}] Stack:`, err.stack);
+                // Don't fail the request - quota increment is non-critical for response
+            });
+
+        // Make sure the promise doesn't get garbage collected
+        quotaPromise.catch(() => { }); // Ensure no unhandled rejection
+
     } catch (error) {
         const totalTime = Date.now() - startTime;
         console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
+            trackApiUsage({
+                userId: req.userId || apiKeyId,
+                endpoint: '/api/v1/upload/r2/signed-url',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'signed-url',
+                statusCode: error.name === 'CredentialsProviderError' ? 401 : 500,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
             updateR2Metrics(apiKeyId, req.userId, 'r2', 'failed', 0).catch(() => { });
         }
 

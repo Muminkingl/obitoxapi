@@ -17,6 +17,11 @@ import { updateUploadcareMetrics } from './uploadcare.helpers.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import fs from 'fs';
+import path from 'path';
+
 /**
  * Delete file from Uploadcare using their REST API
  */
@@ -24,11 +29,18 @@ export const deleteUploadcareFile = async (req, res) => {
     const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
     let apiKeyId;
+    let userId;
+
+    const logFile = path.resolve(process.cwd(), 'server-debug.log');
+    const log = (msg) => {
+        try { fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`); } catch (e) { }
+    };
+    log(`[${requestId}] START deleteUploadcareFile`);
 
     try {
         const { fileUrl, uuid, uploadcarePublicKey, uploadcareSecretKey } = req.body;
         apiKeyId = req.apiKeyId;
-        const userId = req.userId || apiKeyId;
+        userId = req.userId || apiKeyId;
 
         if (!apiKeyId) {
             return res.status(401).json({
@@ -112,7 +124,11 @@ export const deleteUploadcareFile = async (req, res) => {
 
         // Delete from Uploadcare using REST API
         // Note: Endpoint must end with /storage/ for deletion to work
-        const deleteResponse = await fetch(`${UPLOADCARE_API_BASE}/files/${fileUuid}/storage/`, {
+        const delUrl = `${UPLOADCARE_API_BASE}/files/${fileUuid}/storage/`;
+        console.log(`[${requestId}] 🗑️ Attempting Uploadcare delete: ${delUrl}`);
+        log(`[${requestId}] Deleting: ${delUrl}`);
+
+        const deleteResponse = await fetch(delUrl, {
             method: 'DELETE',
             headers: getUploadcareHeaders(uploadcarePublicKey, uploadcareSecretKey)
         });
@@ -149,6 +165,21 @@ export const deleteUploadcareFile = async (req, res) => {
         // Background updates
         updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/uploadcare/delete',
+            method: 'DELETE',
+            provider: 'uploadcare',
+            operation: 'delete',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         // Remove from upload logs (non-blocking)
         supabaseAdmin
             .from('upload_logs')
@@ -182,7 +213,20 @@ export const deleteUploadcareFile = async (req, res) => {
         console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
+            updateUploadcareMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', 'failed', 0).catch(() => { });
+
+            trackApiUsage({
+                userId: userId || apiKeyId,
+                endpoint: '/api/v1/upload/uploadcare/delete',
+                method: 'DELETE',
+                provider: 'uploadcare',
+                operation: 'delete',
+                statusCode: 500,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         res.status(500).json({

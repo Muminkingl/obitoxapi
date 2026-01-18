@@ -27,6 +27,9 @@ import {
 import { updateR2Metrics } from './r2.helpers.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * Delete multiple R2 files in one request
  * 
@@ -65,6 +68,30 @@ export const batchDeleteR2Files = async (req, res) => {
                 'RATE_LIMIT_EXCEEDED',
                 'Rate limit exceeded - too many batch delete requests',
                 'Wait a moment before submitting another batch delete'
+            ));
+        }
+
+        // ========================================================================
+        // QUOTA CHECK (Database RPC) 💰
+        // ========================================================================
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/r2/batch/delete',
+                method: 'DELETE',
+                provider: 'r2',
+                operation: 'batch-delete',
+                statusCode: 403,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            return res.status(403).json(formatR2Error(
+                'QUOTA_EXCEEDED',
+                'Monthly quota exceeded',
+                `Used: ${quotaCheck.used}, Limit: ${quotaCheck.limit}`
             ));
         }
 
@@ -142,6 +169,21 @@ export const batchDeleteR2Files = async (req, res) => {
             responseTime: totalTime
         }).catch(() => { });
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/r2/batch/delete',
+            method: 'DELETE',
+            provider: 'r2',
+            operation: 'batch-delete',
+            statusCode: 200,
+            success: true,
+            requestCount: filenames.length, // Count as N requests or 1? Plan says "1 request" usually, but batch might be different. Let's count as 1 batch operation but maybe log count in metadata? trackApiUsage schema has request_count. Let's use it.
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         // ============================================================================
         // RESPONSE: Detailed results with success/error arrays
         // ============================================================================
@@ -184,6 +226,19 @@ export const batchDeleteR2Files = async (req, res) => {
                 error: error.message,
                 responseTime: totalTime
             }).catch(() => { });
+
+            trackApiUsage({
+                userId: req.userId || req.apiKeyId,
+                endpoint: '/api/v1/upload/r2/batch/delete',
+                method: 'DELETE',
+                provider: 'r2',
+                operation: 'batch-delete',
+                statusCode: 500,
+                success: false,
+                apiKeyId: req.apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         // Handle specific R2/S3 errors

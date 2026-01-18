@@ -18,6 +18,9 @@ import {
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * Generate signed upload URL for Uploadcare
  * Uploadcare uses direct multipart upload (not traditional signed URLs)
@@ -84,6 +87,32 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
         }
 
+        // ========================================================================
+        // LAYER 3: QUOTA CHECK (Database RPC) 💰
+        // ========================================================================
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/uploadcare/signed-url',
+                method: 'POST',
+                provider: 'uploadcare',
+                operation: 'signed-url',
+                statusCode: 429,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            return res.status(429).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.used
+            });
+        }
+
         // Validate required fields
         if (!filename || !contentType) {
             return res.status(400).json({
@@ -134,6 +163,21 @@ export const generateUploadcareSignedUrl = async (req, res) => {
         // ========================================================================
         updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
 
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/uploadcare/signed-url',
+            method: 'POST',
+            provider: 'uploadcare',
+            operation: 'signed-url',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, redis:${redisTime}ms, validation:${validationTime}ms, operation:${operationTime}ms)`);
 
         // Success response
@@ -183,6 +227,19 @@ export const generateUploadcareSignedUrl = async (req, res) => {
 
         if (apiKeyId) {
             updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
+
+            trackApiUsage({
+                userId: req.userId || apiKeyId,
+                endpoint: '/api/v1/upload/uploadcare/signed-url',
+                method: 'POST',
+                provider: 'uploadcare',
+                operation: 'signed-url',
+                statusCode: 500,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
         }
 
         res.status(500).json({

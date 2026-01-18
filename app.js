@@ -7,10 +7,14 @@ import apiKeyRouter from './routes/apikey.routes.js';
 import uploadRouter from './routes/upload.routes.js';
 import analyticsRouter from './routes/analytics.routes.js';
 import healthRouter from './routes/health.routes.js';
+import monitoringRouter from './routes/monitoring.routes.js';
 import connectToSupabase from './database/supabase.js';
 import errorMiddleware from './middlewares/error.middleware.js';
 import arcjetMiddleware from './middlewares/arcjet.middleware.js';
 import { getRedis, testRedisConnection } from './config/redis.js';
+
+// Import quota sync job (starts automatically on import)
+import './jobs/sync-quotas.js';
 
 const app = express();
 
@@ -26,6 +30,7 @@ app.use('/health', healthRouter);
 app.use('/api/v1/apikeys', apiKeyRouter);
 app.use('/api/v1/upload', uploadRouter);
 app.use('/api/v1/analytics', analyticsRouter);
+app.use('/api/v1/monitoring', monitoringRouter);
 
 // Error handling
 app.use(errorMiddleware);

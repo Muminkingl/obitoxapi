@@ -20,6 +20,9 @@ import {
 import { updateR2Metrics } from './r2.helpers.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * Generate time-limited download URL for R2 file
  * 
@@ -60,6 +63,30 @@ export const generateR2DownloadUrl = async (req, res) => {
                 'RATE_LIMIT_EXCEEDED',
                 'Rate limit exceeded - too many download URL requests',
                 'Wait a moment and try again'
+            ));
+        }
+
+        // ========================================================================
+        // QUOTA CHECK (Database RPC) 💰
+        // ========================================================================
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/r2/download-url',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'download-url',
+                statusCode: 403,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            return res.status(403).json(formatR2Error(
+                'QUOTA_EXCEEDED',
+                'Monthly quota exceeded',
+                `Used: ${quotaCheck.used}, Limit: ${quotaCheck.limit}`
             ));
         }
 
@@ -129,6 +156,24 @@ export const generateR2DownloadUrl = async (req, res) => {
         // ============================================================================
         // RESPONSE: Same format as other R2 operations
         // ============================================================================
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/r2/download-url',
+            method: 'POST',
+            provider: 'r2',
+            operation: 'download-url',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
+        // ============================================================================
+        // RESPONSE: Same format as other R2 operations
+        // ============================================================================
         return res.status(200).json({
             success: true,
             provider: 'r2',
@@ -177,6 +222,19 @@ export const generateR2DownloadUrl = async (req, res) => {
                 'Check that your R2 credentials have read permissions for this bucket'
             ));
         }
+
+        trackApiUsage({
+            userId: req.userId || req.apiKeyId,
+            endpoint: '/api/v1/upload/r2/download-url',
+            method: 'POST',
+            provider: 'r2',
+            operation: 'download-url',
+            statusCode: 500,
+            success: false,
+            apiKeyId: req.apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
 
         return res.status(500).json(formatR2Error(
             'DOWNLOAD_URL_FAILED',

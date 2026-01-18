@@ -13,11 +13,13 @@
 
 /**
  * ObitoX SDK Configuration
- * @property apiKey - Your ObitoX API key for authentication
+ * @property apiKey - Your ObitoX API key for authentication (public key: ox_...)
+ * @property apiSecret - Your ObitoX API secret for request signing (secret key: sk_...)
  * @property baseUrl - Optional custom API base URL (defaults to production)
  */
 export interface ObitoXConfig {
     apiKey: string;
+    apiSecret?: string;  // Optional for backwards compatibility
     baseUrl?: string;
 }
 

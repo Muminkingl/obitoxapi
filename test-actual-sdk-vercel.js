@@ -13,7 +13,7 @@
 
 import ObitoX from './dist/client.js';
 
-const API_KEY = 'ox_ce5716a92d3705afc3f4195c3b77957413b900c99e7d0fd9c2031f0935dd86f9';
+const API_KEY = 'ox_196aed8312066f42b12566f79bc30b55ff2e3209794abc23'; // secret = sk_0d94df0aa198e04f49035122063b650b5c73fa96020ac81f18c1eed57af5e307
 const VERCEL_TOKEN = 'vercel_blob_rw_WEy0MBq075aMvNFK_hek9h62PrD2fc8GchpVyFDGx7kXe6p';
 
 console.log('🎯 ACTUAL REFACTORED SDK TEST\n');
@@ -209,21 +209,21 @@ async function testFileDeletion(client, fileUrl) {
         console.log('   🔍 Calling client.deleteFile()...');
         console.log('   🗑️  Deleting file from Vercel...');
 
-        await client.deleteFile({
+        console.log('   🗑️  Delete result:', await client.deleteFile({
             fileUrl: fileUrl,
             provider: 'VERCEL',
             vercelToken: VERCEL_TOKEN,
-        });
+    }));
 
-        console.log('   ✅ File deleted via SDK!');
-        console.log('   ✅ SDK → Provider → Backend deletion working!');
+    console.log('   ✅ File deleted via SDK!');
+    console.log('   ✅ SDK → Provider → Backend deletion working!');
 
-        results.fileDeletion = true;
-        return true;
-    } catch (error) {
-        console.log('   ❌ FAIL:', error.message);
-        return false;
-    }
+    results.fileDeletion = true;
+    return true;
+} catch (error) {
+    console.log('   ❌ FAIL:', error.message);
+    return false;
+}
 }
 
 // =============================================================================

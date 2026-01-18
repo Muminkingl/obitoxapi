@@ -7,6 +7,9 @@ import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getR2Client, formatR2Error } from './r2.config.js';
 import { updateR2Metrics } from './r2.helpers.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * List files in R2 bucket
  * 
@@ -29,6 +32,30 @@ export const listR2Files = async (req, res) => {
 
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
+
+        // ========================================================================
+        // QUOTA CHECK (Database RPC) 💰
+        // ========================================================================
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/r2/list',
+                method: 'POST',
+                provider: 'r2',
+                operation: 'list',
+                statusCode: 403,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            return res.status(403).json(formatR2Error(
+                'QUOTA_EXCEEDED',
+                'Monthly quota exceeded',
+                `Used: ${quotaCheck.used}, Limit: ${quotaCheck.limit}`
+            ));
+        }
 
         // Validate required fields
         if (!r2AccessKey || !r2SecretKey || !r2AccountId || !r2Bucket) {
@@ -55,6 +82,21 @@ export const listR2Files = async (req, res) => {
 
         // Update metrics (non-blocking)
         updateR2Metrics(apiKeyId, userId, 'r2', 'success', 0).catch(() => { });
+
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/r2/list',
+            method: 'POST',
+            provider: 'r2',
+            operation: 'list',
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
 
         return res.status(200).json({
             success: true,
@@ -83,6 +125,19 @@ export const listR2Files = async (req, res) => {
         if (req.apiKeyId) {
             updateR2Metrics(req.apiKeyId, req.userId, 'r2', 'failed', 0).catch(() => { });
         }
+
+        trackApiUsage({
+            userId: req.userId || req.apiKeyId,
+            endpoint: '/api/v1/upload/r2/list',
+            method: 'POST',
+            provider: 'r2',
+            operation: 'list',
+            statusCode: 500,
+            success: false,
+            apiKeyId: req.apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
 
         return res.status(500).json(formatR2Error(
             'LIST_FAILED',

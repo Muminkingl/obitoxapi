@@ -7,6 +7,7 @@ import { supabaseAdmin } from '../../../database/supabase.js';
 import { validateFileInput, validateVercelToken } from '../shared/validation.helper.js';
 import { generateUniqueFilename } from '../shared/filename.helper.js';
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
 import { formatErrorResponse, formatMissingFieldsError } from '../shared/error.helper.js';
 import { MAX_FILE_SIZE } from './vercel.config.js';
 
@@ -24,8 +25,18 @@ export const generateVercelSignedUrl = async (req, res) => {
         // 1. Validate required fields
         if (!filename || !vercelToken) {
             // Track failed request
-            updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
-                .catch(err => console.error('Metrics error:', err));
+            trackApiUsage({
+                userId: req.userId,
+                endpoint: '/api/v1/upload/vercel/signed-url',
+                method: 'POST',
+                provider: 'vercel',
+                operation: 'signed-url',
+                statusCode: 400,
+                success: false,
+                apiKeyId: req.apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
 
             return res.status(400).json(
                 formatMissingFieldsError(['filename', 'vercelToken'].filter(field =>
@@ -34,11 +45,45 @@ export const generateVercelSignedUrl = async (req, res) => {
             );
         }
 
+        // 1.5. Check User Quota
+        const quotaCheck = await checkUserQuota(req.userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId: req.userId,
+                endpoint: '/api/v1/upload/vercel/signed-url',
+                method: 'POST',
+                provider: 'vercel',
+                operation: 'signed-url',
+                statusCode: 429,
+                success: false,
+                apiKeyId: req.apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+
+            return res.status(429).json(
+                formatErrorResponse(
+                    'Monthly quota exceeded. Please upgrade your plan.',
+                    'QUOTA_EXCEEDED'
+                )
+            );
+        }
+
         // 2. Validate file input
         const fileValidation = validateFileInput(filename, contentType, fileSize);
         if (!fileValidation.isValid) {
-            updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
-                .catch(err => console.error('Metrics error:', err));
+            trackApiUsage({
+                userId: req.userId,
+                endpoint: '/api/v1/upload/vercel/signed-url',
+                method: 'POST',
+                provider: 'vercel',
+                operation: 'signed-url',
+                statusCode: 400,
+                success: false,
+                apiKeyId: req.apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
 
             return res.status(400).json(
                 formatErrorResponse(
@@ -52,8 +97,18 @@ export const generateVercelSignedUrl = async (req, res) => {
         // 3. Validate Vercel token format
         const tokenValidation = validateVercelToken(vercelToken);
         if (!tokenValidation.isValid) {
-            updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
-                .catch(err => console.error('Metrics error:', err));
+            trackApiUsage({
+                userId: req.userId,
+                endpoint: '/api/v1/upload/vercel/signed-url',
+                method: 'POST',
+                provider: 'vercel',
+                operation: 'signed-url',
+                statusCode: 401,
+                success: false,
+                apiKeyId: req.apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
 
             return res.status(401).json(
                 formatErrorResponse(
@@ -93,8 +148,32 @@ export const generateVercelSignedUrl = async (req, res) => {
             .catch(err => console.error('Upload log error:', err));
 
         // 7. Update metrics (non-blocking)
+        // Also tracks usage in api_usage_logs and increments quota via RPC
+        trackApiUsage({
+            userId: req.userId,
+            endpoint: '/api/v1/upload/vercel/signed-url',
+            method: 'POST',
+            provider: 'vercel',
+            operation: 'signed-url',
+            statusCode: 200,
+            success: true,
+            requestCount: 1, // 1 signed URL = 1 request
+            apiKeyId: req.apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
+        // Legacy metrics update (keep for backward compatibility if needed, or remove? 
+        // The plan says "Update Analytics to New DB Schema". 
+        // We should probably keep legacy specific tables updating if they are still used by other parts, 
+        // but metrics.helper.js updates api_keys and provider_usage.
+        // The new system might replace provider_usage?
+        // "Provider Alignment: Ensure all 4 providers ... use this new system."
+        // Let's keep updateRequestMetrics for now to maintain the old specific tables until full migration,
+        // or better yet, make `trackApiUsage` also call `updateRequestMetrics` internally?
+        // No, let's call both for safety to ensure all charts work.
         updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', true, { fileSize: fileSize || 0 })
-            .catch(err => console.error('Metrics error:', err));
+            .catch(err => console.error('Legacy metrics error:', err));
 
         // 8. Return response with upload instructions
         return res.status(200).json({
@@ -126,8 +205,21 @@ export const generateVercelSignedUrl = async (req, res) => {
     } catch (error) {
         console.error('Signed URL generation error:', error);
 
+        trackApiUsage({
+            userId: req.userId,
+            endpoint: '/api/v1/upload/vercel/signed-url',
+            method: 'POST',
+            provider: 'vercel',
+            operation: 'signed-url',
+            statusCode: 500,
+            success: false,
+            apiKeyId: req.apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
         updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
-            .catch(err => console.error('Metrics error:', err));
+            .catch(err => console.error('Legacy metrics error:', err));
 
         return res.status(500).json(
             formatErrorResponse(

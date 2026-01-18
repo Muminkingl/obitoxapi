@@ -6,6 +6,9 @@
 import { validateVercelToken } from '../shared/validation.helper.js';
 import { formatErrorResponse, formatMissingFieldsError } from '../shared/error.helper.js';
 
+// NEW: Analytics & Quota
+import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+
 /**
  * Download file from Vercel Blob
  * Returns download URL - NO verification (Vercel files are public)
@@ -16,6 +19,34 @@ import { formatErrorResponse, formatMissingFieldsError } from '../shared/error.h
 export const downloadVercelFile = async (req, res) => {
     try {
         const { fileUrl, vercelToken } = req.body;
+        const apiKeyId = req.apiKeyId;
+        const userId = req.userId || apiKeyId;
+
+        // ========================================================================
+        // QUOTA CHECK (Database RPC) 💰
+        // ========================================================================
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            trackApiUsage({
+                userId,
+                endpoint: '/api/v1/upload/vercel/download-url',
+                method: 'POST',
+                provider: 'vercel',
+                operation: 'download-url',
+                statusCode: 403,
+                success: false,
+                apiKeyId,
+                ipAddress: req.ip,
+                userAgent: req.headers['user-agent']
+            });
+            return res.status(403).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.used
+            });
+        }
 
         // 1. Validate required fields
         if (!fileUrl) {
@@ -47,6 +78,23 @@ export const downloadVercelFile = async (req, res) => {
 
         // 4. Return download URL immediately (no verification needed)
         // Vercel Blob files are public - if file doesn't exist, user gets 404 when downloading
+        // New Usage Tracking
+        trackApiUsage({
+            userId,
+            endpoint: '/api/v1/upload/vercel/download-url',
+            method: 'POST',
+            provider: 'vercel',
+            operation: 'download-url', // Categorize as download-url generation
+            statusCode: 200,
+            success: true,
+            requestCount: 1,
+            apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
+
+        // 4. Return download URL immediately (no verification needed)
+        // Vercel Blob files are public - if file doesn't exist, user gets 404 when downloading
         return res.status(200).json({
             success: true,
             message: 'File download URL generated successfully',
@@ -66,6 +114,19 @@ export const downloadVercelFile = async (req, res) => {
 
     } catch (error) {
         console.error('Download handler error:', error);
+
+        trackApiUsage({
+            userId: req.userId || req.apiKeyId,
+            endpoint: '/api/v1/upload/vercel/download-url',
+            method: 'POST',
+            provider: 'vercel',
+            operation: 'download-url',
+            statusCode: 500,
+            success: false,
+            apiKeyId: req.apiKeyId,
+            ipAddress: req.ip,
+            userAgent: req.headers['user-agent']
+        });
 
         return res.status(500).json(
             formatErrorResponse(
