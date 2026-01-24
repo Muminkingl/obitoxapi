@@ -64,8 +64,8 @@ export class R2Provider extends BaseProvider<
     { fileUrl: string; r2AccessKey: string; r2SecretKey: string; r2AccountId: string; r2Bucket: string },
     R2DownloadOptions
 > {
-    constructor(apiKey: string, baseUrl: string) {
-        super('R2', apiKey, baseUrl);
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+        super('R2', apiKey, baseUrl, apiSecret);
     }
 
     // ============================================================================

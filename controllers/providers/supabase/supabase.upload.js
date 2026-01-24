@@ -355,23 +355,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
         // Increment quota in memory (optimistic)
         incrementMemoryQuota(userId, 1);
 
-        // Log upload in background
-        supabaseAdmin
-            .from('upload_logs')
-            .insert({
-                api_key_id: apiKey,
-                provider: 'supabase',
-                bucket: targetBucket,
-                filename: filename,
-                original_name: file.name,
-                file_size: file.size,
-                file_type: file.type,
-                is_private: isPrivate,
-                upload_url: publicUrl,
-                created_at: new Date().toISOString()
-            })
-            .then(() => { })
-            .catch(err => console.error('Upload log error:', err));
+        // NOTE: upload_logs table has been deleted - metrics tracked via Redis now
 
         // New Usage Tracking
         trackApiUsage({

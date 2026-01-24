@@ -1,6 +1,8 @@
 /**
  * Uploadcare File Download/Info
  * WITH ENTERPRISE MULTI-LAYER CACHING
+ * 
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import {
@@ -10,18 +12,16 @@ import {
     validateUploadcareCredentials,
     getUploadcareHeaders
 } from './uploadcare.config.js';
-import {
-    logFileUpload,
-    updateUploadcareFileSize,
-    updateUploadcareMetrics
-} from './uploadcare.helpers.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
-// NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+// Quota check
+import { checkUserQuota } from '../shared/analytics.new.js';
+
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * Download file from Uploadcare (get file info and public URL)
@@ -35,7 +35,7 @@ export const downloadUploadcareFile = async (req, res) => {
     try {
         const { fileUrl, uuid, uploadcarePublicKey, uploadcareSecretKey } = req.body;
         apiKeyId = req.apiKeyId;
-        const userId = req.userId || apiKeyId;
+        userId = req.userId || apiKeyId;
 
         if (!apiKeyId) {
             return res.status(401).json({
@@ -61,7 +61,6 @@ export const downloadUploadcareFile = async (req, res) => {
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -76,12 +75,23 @@ export const downloadUploadcareFile = async (req, res) => {
         const redisTime = Date.now() - redisStart;
 
         if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis in ${redisTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
                 message: 'Rate limit exceeded',
                 layer: redisLimit.layer
+            });
+        }
+
+        // LAYER 3: Quota check
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.used
             });
         }
 
@@ -137,7 +147,8 @@ export const downloadUploadcareFile = async (req, res) => {
                 statusCode = 403;
             }
 
-            updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'failed', 0).catch(() => { });
+            updateRequestMetrics(apiKeyId, userId, 'uploadcare', false)
+                .catch(() => { });
 
             return res.status(statusCode).json({
                 success: false,
@@ -148,60 +159,16 @@ export const downloadUploadcareFile = async (req, res) => {
         }
 
         const fileInfo = await fileInfoResponse.json();
-
-        // Use actual CDN URL from API response
         const publicUrl = fileInfo.original_file_url || `${UPLOADCARE_CDN_BASE}/${fileUuid}/`;
 
         const operationTime = Date.now() - operationStart;
         const totalTime = Date.now() - startTime;
 
-        // Background updates (non-blocking)
-        updateUploadcareFileSize(apiKeyId, fileUuid, uploadcarePublicKey, uploadcareSecretKey).catch(() => { });
-        updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
-
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/uploadcare/download',
-            method: 'POST',
-            provider: 'uploadcare',
-            operation: 'download',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
-
-        // Log file access (non-blocking)
-        logFileUpload(
-            apiKeyId,
-            userId,
-            'uploadcare',
-            fileInfo.original_filename,
-            fileInfo.mime_type,
-            fileInfo.size,
-            'success',
-            publicUrl
-        ).catch(() => { });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 'uploadcare', true)
+            .catch(() => { });
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
-
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/uploadcare/download',
-            method: 'POST',
-            provider: 'uploadcare',
-            operation: 'download',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
 
         res.status(200).json({
             success: true,
@@ -212,7 +179,7 @@ export const downloadUploadcareFile = async (req, res) => {
                 contentType: fileInfo.mime_type,
                 filename: fileInfo.original_filename,
                 uuid: fileUuid,
-                isPrivate: false, // Uploadcare files are public by default
+                isPrivate: false,
                 provider: 'uploadcare',
                 metadata: {
                     originalFilename: fileInfo.original_filename,
@@ -241,20 +208,8 @@ export const downloadUploadcareFile = async (req, res) => {
         console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            updateUploadcareMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', 'failed', 0).catch(() => { });
-
-            trackApiUsage({
-                userId: userId || apiKeyId,
-                endpoint: '/api/v1/upload/uploadcare/download',
-                method: 'POST',
-                provider: 'uploadcare',
-                operation: 'download',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', false)
+                .catch(() => { });
         }
 
         res.status(500).json({

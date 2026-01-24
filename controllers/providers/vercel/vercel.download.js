@@ -1,13 +1,14 @@
 /**
  * Download file from Vercel Blob
  * Returns public download URL (Vercel files are public by default)
+ * 
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import { validateVercelToken } from '../shared/validation.helper.js';
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 import { formatErrorResponse, formatMissingFieldsError } from '../shared/error.helper.js';
-
-// NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
 
 /**
  * Download file from Vercel Blob
@@ -22,23 +23,9 @@ export const downloadVercelFile = async (req, res) => {
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
 
-        // ========================================================================
-        // QUOTA CHECK (Database RPC) 💰
-        // ========================================================================
+        // 1. Check User Quota
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/vercel/download-url',
-                method: 'POST',
-                provider: 'vercel',
-                operation: 'download-url',
-                statusCode: 403,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(403).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
@@ -48,7 +35,7 @@ export const downloadVercelFile = async (req, res) => {
             });
         }
 
-        // 1. Validate required fields
+        // 2. Validate required fields
         if (!fileUrl) {
             return res.status(400).json(
                 formatMissingFieldsError(['fileUrl'])
@@ -61,7 +48,7 @@ export const downloadVercelFile = async (req, res) => {
             );
         }
 
-        // 2. Validate token format
+        // 3. Validate token format
         const tokenValidation = validateVercelToken(vercelToken);
         if (!tokenValidation.isValid) {
             return res.status(401).json(
@@ -72,28 +59,15 @@ export const downloadVercelFile = async (req, res) => {
             );
         }
 
-        // 3. Extract filename from URL
+        // 4. Extract filename from URL
         const urlParts = fileUrl.split('/');
         const filename = urlParts[urlParts.length - 1];
 
-        // 4. Return download URL immediately (no verification needed)
-        // Vercel Blob files are public - if file doesn't exist, user gets 404 when downloading
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/vercel/download-url',
-            method: 'POST',
-            provider: 'vercel',
-            operation: 'download-url', // Categorize as download-url generation
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 5. Update metrics via Redis (non-blocking, single call)
+        updateRequestMetrics(apiKeyId, userId, 'vercel', true)
+            .catch(err => console.error('Metrics error:', err));
 
-        // 4. Return download URL immediately (no verification needed)
+        // 6. Return download URL immediately (no verification needed)
         // Vercel Blob files are public - if file doesn't exist, user gets 404 when downloading
         return res.status(200).json({
             success: true,
@@ -115,18 +89,8 @@ export const downloadVercelFile = async (req, res) => {
     } catch (error) {
         console.error('Download handler error:', error);
 
-        trackApiUsage({
-            userId: req.userId || req.apiKeyId,
-            endpoint: '/api/v1/upload/vercel/download-url',
-            method: 'POST',
-            provider: 'vercel',
-            operation: 'download-url',
-            statusCode: 500,
-            success: false,
-            apiKeyId: req.apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
+            .catch(err => console.error('Metrics error:', err));
 
         return res.status(500).json(
             formatErrorResponse(

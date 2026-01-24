@@ -1,15 +1,20 @@
 /**
- * Complete upload tracking
- * Marks upload as complete in database
+ * Complete upload tracking (DEPRECATED - Use /vercel/track instead)
+ * 
+ * ⚠️ DEPRECATED: This endpoint duplicates /vercel/track with event='completed'.
+ * Kept for backward compatibility only. New code should use /vercel/track.
+ * 
+ * @deprecated Use POST /api/v1/upload/vercel/track with { event: 'completed' } instead
  */
 
-import { supabaseAdmin } from '../../../database/supabase.js';
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 import { formatErrorResponse, formatMissingFieldsError } from '../shared/error.helper.js';
 
 /**
- * Complete Vercel upload
- * Updates tracking tables to mark upload as complete
+ * Complete Vercel upload (DEPRECATED)
+ * 
+ * @deprecated Use /vercel/track with event='completed' instead.
+ * This endpoint is maintained for backward compatibility only.
  * 
  * @param {Object} req - Express request
  * @param {Object} res - Express response
@@ -25,44 +30,29 @@ export const completeVercelUpload = async (req, res) => {
             );
         }
 
-        // 2. Get user info from middleware (if available)
+        // 2. Get user info from middleware
         const userId = req.userId || req.user?.id || null;
         const apiKeyId = req.apiKeyId || req.apiKey?.id || null;
 
-        // 3. Update upload status to completed (non-blocking)
-        if (userId) {
-            supabaseAdmin
-                .from('upload_logs')
-                .update({
-                    file_url: fileUrl,
-                    status: 'completed',
-                    updated_at: new Date().toISOString()
-                })
-                .eq('user_id', userId)
-                .eq('file_name', filename)
-                .then(() => { })
-                .catch(err => console.error('Upload log update error:', err));
-        }
-
-        // 4. Update metrics (non-blocking)
+        // 3. Update metrics via Redis (non-blocking)
         if (apiKeyId && userId) {
             updateRequestMetrics(apiKeyId, userId, provider, true, { fileSize: fileSize || 0 })
                 .catch(err => console.error('Metrics error:', err));
         }
 
-        // 5. Return success immediately
+        // 4. Return success with deprecation notice
         return res.status(200).json({
             success: true,
             message: 'Upload marked as complete',
+            deprecated: true,
+            deprecationNotice: 'This endpoint is deprecated. Use POST /api/v1/upload/vercel/track with { event: "completed" } instead.',
             data: {
                 filename,
-                originalFilename: filename,
                 fileSize: fileSize || 0,
                 fileUrl: fileUrl || null,
                 provider,
                 completedAt: new Date().toISOString(),
-                metricsUpdated: !!(apiKeyId && userId),
-                tracked: !!userId
+                metricsUpdated: !!(apiKeyId && userId)
             }
         });
 

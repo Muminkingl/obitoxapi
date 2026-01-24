@@ -2,21 +2,7 @@
  * R2 Batch Signed URLs
  * Generate multiple signed URLs in one request using parallel processing
  * 
- * Target Performance: 4-5ms per file
- * - 10 files: 50-80ms
- * - 50 files: 200-300ms
- * - 100 files: 400-500ms
- * 
- * Architecture:
- * - Single S3Client creation (reused for all files)
- * - Par allel Promise.all() for maximum speed
- * - Individual error handling per file
- * - Memory Guard rate limiting
- * 
- * Following Rules:
- * - Rule #1: Pure crypto only (NO external API calls)
- * - Rule #5: Same pattern as single signed-url
- * - Rule #8: Clear error messages per file
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import { PutObjectCommand } from '@aws-sdk/client-s3';
@@ -29,9 +15,14 @@ import {
     MAX_EXPIRY,
     MIN_EXPIRY
 } from './r2.config.js';
-import { updateR2Metrics, generateR2Filename } from './r2.helpers.js';
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import { generateR2Filename } from './r2.helpers.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
+
+// Quota check
+import { checkUserQuota } from '../shared/analytics.new.js';
+
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * Generate multiple R2 signed URLs in one request
@@ -45,30 +36,24 @@ export const generateR2BatchSignedUrls = async (req, res) => {
 
     try {
         const {
-            files,                      // Array: [{ filename, contentType, fileSize }, ...]
+            files,
             r2AccessKey,
             r2SecretKey,
             r2AccountId,
             r2Bucket,
-            r2PublicUrl,                // Optional custom domain
-            expiresIn = SIGNED_URL_EXPIRY  // Default: 1 hour
+            r2PublicUrl,
+            expiresIn = SIGNED_URL_EXPIRY
         } = req.body;
 
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
 
-        console.log(`[${requestId}] 📦 Batch signed URL request for ${files?.length || 0} files`);
-
-        // ============================================================================
-        // LAYER 1: Memory Guard (Target: 0-2ms)
-        // Rate limit batch requests (they're more resource-intensive)
-        // ============================================================================
+        // LAYER 1: Memory Guard
         const memoryStart = Date.now();
         const memCheck = checkMemoryRateLimit(userId, 'r2-batch');
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json(formatR2Error(
                 'RATE_LIMIT_EXCEEDED',
                 'Rate limit exceeded - too many batch requests',
@@ -76,23 +61,9 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // LAYER 2: User Quota Check
-        // ============================================================================
+        // QUOTA CHECK
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/r2/batch-signed-url',
-                method: 'POST',
-                provider: 'r2',
-                operation: 'batch-signed-urls',
-                statusCode: 429,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(429).json(formatR2Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded',
@@ -100,22 +71,8 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Required Fields
-        // ============================================================================
+        // VALIDATION: Files Array
         if (!Array.isArray(files) || files.length === 0) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/r2/batch-signed-url',
-                method: 'POST',
-                provider: 'r2',
-                operation: 'batch-signed-urls',
-                statusCode: 400,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(400).json(formatR2Error(
                 'INVALID_FILES_ARRAY',
                 'files must be a non-empty array',
@@ -131,9 +88,7 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // ============================================================================
         // VALIDATION: Batch Size Limit
-        // ============================================================================
         const MAX_BATCH_SIZE = 100;
 
         if (files.length > MAX_BATCH_SIZE) {
@@ -144,9 +99,7 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // ============================================================================
         // VALIDATION: Expiry Time
-        // ============================================================================
         const expiryInt = parseInt(expiresIn);
 
         if (isNaN(expiryInt) || expiryInt < MIN_EXPIRY || expiryInt > MAX_EXPIRY) {
@@ -157,20 +110,13 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // ============================================================================
         // CRYPTO SIGNING: Generate all signed URLs in parallel
-        // Creating S3Client ONCE and reusing for all files (efficient!)
-        // ============================================================================
         const signingStart = Date.now();
-
-        // Create R2 client once (reused for all files)
         const client = getR2Client(r2AccountId, r2AccessKey, r2SecretKey);
 
-        // Process all files in parallel using Promise.all()
         const results = await Promise.all(
             files.map(async (file, index) => {
                 try {
-                    // Validate individual file
                     if (!file.filename || !file.contentType) {
                         return {
                             success: false,
@@ -181,22 +127,18 @@ export const generateR2BatchSignedUrls = async (req, res) => {
                         };
                     }
 
-                    // Generate unique filename
                     const uniqueFilename = generateR2Filename(file.filename, apiKeyId);
 
-                    // Create PutObject command
                     const command = new PutObjectCommand({
                         Bucket: r2Bucket,
                         Key: uniqueFilename,
                         ContentType: file.contentType
                     });
 
-                    // Generate presigned URL (pure crypto!)
                     const uploadUrl = await getSignedUrl(client, command, {
                         expiresIn: expiryInt
                     });
 
-                    // Build public URL
                     const publicUrl = buildPublicUrl(r2AccountId, r2Bucket, uniqueFilename, r2PublicUrl);
 
                     return {
@@ -225,41 +167,15 @@ export const generateR2BatchSignedUrls = async (req, res) => {
         const signingTime = Date.now() - signingStart;
         const totalTime = Date.now() - startTime;
 
-        // Calculate success stats
         const successCount = results.filter(r => r.success).length;
         const failureCount = results.length - successCount;
 
-        console.log(`[${requestId}] ✅ Batch complete in ${totalTime}ms (${successCount}/${files.length} successful, ${signingTime}ms signing)`);
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 'r2', true)
+            .catch(() => { });
 
-        // ============================================================================
-        // ANALYTICS: Non-blocking metrics update
-        // ============================================================================
-        updateR2Metrics(apiKeyId, userId, 'r2', 'success', 0, {
-            operation: 'batch-signed-urls',
-            filesRequested: files.length,
-            filesSuccessful: successCount,
-            filesFailed: failureCount,
-            responseTime: totalTime
-        }).catch(() => { });
+        console.log(`[${requestId}] ✅ Batch complete: ${successCount}/${files.length} in ${totalTime}ms`);
 
-        // New Usage Tracking (Count successful requests)
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/r2/batch-signed-url',
-            method: 'POST',
-            provider: 'r2',
-            operation: 'batch-signed-urls',
-            statusCode: 200,
-            success: true,
-            requestCount: successCount, // Count each successful file generation as 1 request
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
-
-        // ============================================================================
-        // RESPONSE: Same format as other R2 operations
-        // ============================================================================
         return res.status(200).json({
             success: true,
             provider: 'r2',
@@ -276,7 +192,7 @@ export const generateR2BatchSignedUrls = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    cryptoSigning: `${signingTime}ms`,  // Pure crypto - NO API calls!
+                    cryptoSigning: `${signingTime}ms`,
                     perFile: `${(signingTime / files.length).toFixed(1)}ms average`
                 }
             }
@@ -286,26 +202,9 @@ export const generateR2BatchSignedUrls = async (req, res) => {
         const totalTime = Date.now() - startTime;
         console.error(`[${requestId}] ❌ Batch error (${totalTime}ms):`, error.message);
 
-        // Track failed request
         if (req.apiKeyId) {
-            updateR2Metrics(req.apiKeyId, req.userId, 'r2', 'failed', 0, {
-                operation: 'batch-signed-urls',
-                error: error.message,
-                responseTime: totalTime
-            }).catch(() => { });
-
-            trackApiUsage({
-                userId: req.userId || req.apiKeyId,
-                endpoint: '/api/v1/upload/r2/batch-signed-url',
-                method: 'POST',
-                provider: 'r2',
-                operation: 'batch-signed-urls',
-                statusCode: 500,
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)
+                .catch(() => { });
         }
 
         return res.status(500).json(formatR2Error(

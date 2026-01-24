@@ -15,6 +15,30 @@ import { supabaseAdmin } from '../config/supabase.js';
 import { getMonthKey } from '../utils/quota-manager.js';
 
 /**
+ * 🔥 Non-blocking SCAN helper (replaces redis.keys())
+ * 
+ * At 10K+ req/min, KEYS command blocks Redis for seconds.
+ * SCAN iterates incrementally without blocking.
+ * 
+ * @param {object} redisClient - Redis client
+ * @param {string} pattern - Key pattern (e.g., "quota:*:2026-01")
+ * @returns {Promise<string[]>} - Array of matching keys
+ */
+async function scanKeys(redisClient, pattern) {
+    const keys = [];
+    let cursor = '0';
+
+    do {
+        // SCAN returns [cursor, [keys...]]
+        const result = await redisClient.scan(cursor, 'MATCH', pattern, 'COUNT', 500);
+        cursor = result[0];
+        keys.push(...result[1]);
+    } while (cursor !== '0');
+
+    return keys;
+}
+
+/**
  * Sync Redis quotas to Supabase (runs every hour)
  */
 export async function syncQuotasToDatabase() {
@@ -28,8 +52,9 @@ export async function syncQuotasToDatabase() {
     const startTime = Date.now();
 
     try {
-        // Get all quota keys for current month
-        const keys = await redis.keys(pattern);
+        // 🔥 OPTIMIZED: Use SCAN instead of KEYS (non-blocking at 10K+ scale)
+        // KEYS blocks Redis; SCAN iterates incrementally
+        const keys = await scanKeys(redis, pattern);
 
         console.log(`[QUOTA SYNC] Found ${keys.length} quota keys to sync`);
 

@@ -1,14 +1,15 @@
 /**
  * Upload file to Vercel Blob (Server-Side)
  * Handles direct file upload to Vercel Blob from server
+ * 
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import { put } from '@vercel/blob';
 import { validateFileInput, validateVercelToken, checkVercelSizeLimit } from '../shared/validation.helper.js';
 import { generateUniqueFilename } from '../shared/filename.helper.js';
-import { logFileUpload } from '../shared/analytics.helper.js';
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 import { formatErrorResponse, handleProviderError, formatMissingFieldsError } from '../shared/error.helper.js';
 import { formatVercelResponse, VERCEL_BLOB_LIMIT } from './vercel.config.js';
 
@@ -25,18 +26,6 @@ export const uploadToVercelBlob = async (req, res) => {
 
         // 1. Validate Vercel token existence
         if (!vercelToken) {
-            trackApiUsage({
-                userId: req.userId,
-                endpoint: '/api/v1/upload/vercel',
-                method: 'POST',
-                provider: 'vercel',
-                operation: 'upload',
-                statusCode: 400,
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
                 .catch(err => console.error('Metrics error:', err));
 
@@ -45,22 +34,9 @@ export const uploadToVercelBlob = async (req, res) => {
             );
         }
 
-        // 1.5. Check User Quota
+        // 2. Check User Quota
         const quotaCheck = await checkUserQuota(req.userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId: req.userId,
-                endpoint: '/api/v1/upload/vercel',
-                method: 'POST',
-                provider: 'vercel',
-                operation: 'upload',
-                statusCode: 413, // Payload Too Large / Quota
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
-
             return res.status(429).json(
                 formatErrorResponse(
                     'Monthly quota exceeded. Please upgrade your plan.',
@@ -69,21 +45,9 @@ export const uploadToVercelBlob = async (req, res) => {
             );
         }
 
-        // 2. Validate Vercel token format
+        // 3. Validate Vercel token format
         const tokenValidation = validateVercelToken(vercelToken);
         if (!tokenValidation.isValid) {
-            trackApiUsage({
-                userId: req.userId,
-                endpoint: '/api/v1/upload/vercel',
-                method: 'POST',
-                provider: 'vercel',
-                operation: 'upload',
-                statusCode: 401,
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
                 .catch(err => console.error('Metrics error:', err));
 
@@ -95,7 +59,7 @@ export const uploadToVercelBlob = async (req, res) => {
             );
         }
 
-        // 3. Extract file data (multipart or base64)
+        // 4. Extract file data (multipart or base64)
         let fileBuffer;
         let originalFilename;
         let fileMimetype;
@@ -128,21 +92,9 @@ export const uploadToVercelBlob = async (req, res) => {
             );
         }
 
-        // 4. Validate file
+        // 5. Validate file
         const fileValidation = validateFileInput(originalFilename, fileMimetype, fileSize);
         if (!fileValidation.isValid) {
-            trackApiUsage({
-                userId: req.userId,
-                endpoint: '/api/v1/upload/vercel',
-                method: 'POST',
-                provider: 'vercel',
-                operation: 'upload',
-                statusCode: 400,
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
                 .catch(err => console.error('Metrics error:', err));
 
@@ -155,21 +107,9 @@ export const uploadToVercelBlob = async (req, res) => {
             );
         }
 
-        // 5. Check Vercel Blob size limit
+        // 6. Check Vercel Blob size limit
         const sizeCheck = checkVercelSizeLimit(fileSize);
         if (sizeCheck.exceeds) {
-            trackApiUsage({
-                userId: req.userId,
-                endpoint: '/api/v1/upload/vercel',
-                method: 'POST',
-                provider: 'vercel',
-                operation: 'upload',
-                statusCode: 413,
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
                 .catch(err => console.error('Metrics error:', err));
 
@@ -186,7 +126,7 @@ export const uploadToVercelBlob = async (req, res) => {
             );
         }
 
-        // 6. Validate file buffer
+        // 7. Validate file buffer
         if (fileSize > 0 && fileBuffer.length === 0) {
             return res.status(400).json(
                 formatErrorResponse(
@@ -196,10 +136,10 @@ export const uploadToVercelBlob = async (req, res) => {
             );
         }
 
-        // 7. Generate unique filename
+        // 8. Generate unique filename
         const finalFilename = generateUniqueFilename(originalFilename);
 
-        // 8. Upload to Vercel Blob with timeout
+        // 9. Upload to Vercel Blob with timeout
         let blob;
         const startTime = Date.now();
 
@@ -207,7 +147,7 @@ export const uploadToVercelBlob = async (req, res) => {
             const uploadPromise = put(finalFilename, fileBuffer, {
                 access: 'public',
                 token: vercelToken,
-                addRandomSuffix: false // We handle this ourselves
+                addRandomSuffix: false
             });
 
             // Race with timeout (60 seconds)
@@ -224,64 +164,15 @@ export const uploadToVercelBlob = async (req, res) => {
         } catch (uploadError) {
             console.error('Vercel upload error:', uploadError);
 
-            trackApiUsage({
-                userId: req.userId,
-                endpoint: '/api/v1/upload/vercel',
-                method: 'POST',
-                provider: 'vercel',
-                operation: 'upload',
-                statusCode: 500,
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
                 .catch(err => console.error('Metrics error:', err));
-
-            // Log failed upload
-            logFileUpload({
-                apiKeyId: req.apiKeyId,
-                userId: req.userId,
-                provider: 'vercel',
-                fileName: finalFilename,
-                fileType: fileMimetype,
-                fileSize,
-                uploadStatus: 'failed',
-                errorMessage: uploadError.message
-            }).catch(err => console.error('Log error:', err));
 
             return res.status(500).json(
                 handleProviderError(uploadError, 'vercel')
             );
         }
 
-        // 9. Log successful upload (non-blocking)
-        logFileUpload({
-            apiKeyId: req.apiKeyId,
-            userId: req.userId,
-            provider: 'vercel',
-            fileName: finalFilename,
-            fileType: fileMimetype,
-            fileSize,
-            uploadStatus: 'success',
-            fileUrl: blob.url
-        }).catch(err => console.error('Log error:', err));
-
-        // 10. Update metrics (non-blocking)
-        trackApiUsage({
-            userId: req.userId,
-            endpoint: '/api/v1/upload/vercel',
-            method: 'POST',
-            provider: 'vercel',
-            operation: 'upload',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId: req.apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 10. Update metrics via Redis (non-blocking, single call)
         updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', true, { fileSize })
             .catch(err => console.error('Metrics error:', err));
 
@@ -293,18 +184,6 @@ export const uploadToVercelBlob = async (req, res) => {
     } catch (error) {
         console.error('Upload handler error:', error);
 
-        trackApiUsage({
-            userId: req.userId,
-            endpoint: '/api/v1/upload/vercel',
-            method: 'POST',
-            provider: 'vercel',
-            operation: 'upload',
-            statusCode: 500,
-            success: false,
-            apiKeyId: req.apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
         updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
             .catch(err => console.error('Metrics error:', err));
 

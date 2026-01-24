@@ -360,7 +360,9 @@ export class ObitoX {
    */
   async track(options: TrackOptions): Promise<void> {
     try {
-      await this.makeRequest('/api/v1/upload/track', {
+      // Build provider-specific endpoint path
+      const providerPath = options.provider?.toLowerCase() || 'vercel';
+      await this.makeRequest(`/api/v1/upload/${providerPath}/track`, {
         method: 'POST',
         body: JSON.stringify(options),
       });
@@ -427,7 +429,7 @@ export class ObitoX {
   /**
    * Make HTTP request to ObitoX API
    * 
-   * Internal helper method for API calls.
+   * Internal helper method for API calls with Layer 2 security support.
    * 
    * @private
    */
@@ -436,14 +438,31 @@ export class ObitoX {
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
+    const timestamp = Date.now();
+
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-api-key': this.apiKey,
+      ...(options.headers as Record<string, string> || {}),
+    };
+
+    // Layer 2: Add signature headers if apiSecret is provided
+    if (this.apiSecret) {
+      const method = options.method || 'GET';
+      const body = options.body;
+
+      // Generate signature (async for ESM compatibility)
+      const signature = await this.generateSignature(method, endpoint, timestamp, body);
+
+      headers['X-API-Secret'] = this.apiSecret;
+      headers['X-Signature'] = signature;
+      headers['X-Timestamp'] = timestamp.toString();
+    }
 
     const response = await fetch(url, {
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': this.apiKey,
-        ...options.headers,
-      },
+      headers,
     });
 
     if (!response.ok) {
@@ -454,6 +473,37 @@ export class ObitoX {
     }
 
     return response.json() as Promise<T>;
+  }
+
+  /**
+   * Generate HMAC-SHA256 signature for request (Layer 2 Security)
+   * 
+   * @param method - HTTP method
+   * @param path - Request path
+   * @param timestamp - Unix timestamp
+   * @param body - Request body
+   * @returns HMAC-SHA256 signature (hex)
+   * 
+   * @private
+   */
+  private async generateSignature(method: string, path: string, timestamp: number, body: any): Promise<string> {
+    // Dynamic import for Node.js crypto (ESM compatible)
+    const { createHmac } = await import('crypto');
+
+    // Normalize body
+    const bodyString = typeof body === 'string'
+      ? body
+      : body
+        ? JSON.stringify(body)
+        : '';
+
+    // Create message: METHOD|PATH|TIMESTAMP|BODY
+    const message = `${method.toUpperCase()}|${path}|${timestamp}|${bodyString}`;
+
+    // Generate HMAC-SHA256
+    const hmac = createHmac('sha256', this.apiSecret!);
+    hmac.update(message);
+    return hmac.digest('hex');
   }
 
   // ============================================================================

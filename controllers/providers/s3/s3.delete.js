@@ -1,36 +1,25 @@
 /**
  * AWS S3 Delete Controller
- * 
  * Delete files from S3 bucket
  * 
- * Performance:
- * - Single delete: 50-100ms (1 AWS API call)
- * - Batch delete: 200-500ms (1 AWS API call for up to 1000 files)
- * 
- * CRITICAL:
- * - These make AWS API calls (not pure crypto)
- * - Use for file cleanup, user deletions, etc.
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import { DeleteObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import {
     validateS3Credentials,
     getS3Client,
-    formatS3Response,
     formatS3Error
 } from './s3.config.js';
 import { isValidRegion, getInvalidRegionError } from '../../../utils/aws/s3-regions.js';
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
-import { incrementQuota, checkUsageWarnings } from '../../../utils/quota-manager.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
+import { incrementQuota } from '../../../utils/quota-manager.js';
 
-console.log('🔄 [S3 DELETE] Module loaded!');
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * Delete single file from S3
- * DELETE /api/v1/upload/s3/delete
- * 
- * @param {Object} req - Express request
- * @param {Object} res - Express response
  */
 export const deleteS3File = async (req, res) => {
     const requestId = `del_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -39,11 +28,11 @@ export const deleteS3File = async (req, res) => {
 
     try {
         const {
-            key,                    // Required: S3 object key to delete
-            s3AccessKey,           // Required
-            s3SecretKey,           // Required
-            s3Bucket,              // Required
-            s3Region = 'us-east-1' // Optional
+            key,
+            s3AccessKey,
+            s3SecretKey,
+            s3Bucket,
+            s3Region = 'us-east-1'
         } = req.body;
 
         apiKeyId = req.apiKeyId;
@@ -56,9 +45,7 @@ export const deleteS3File = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Required Fields
-        // ============================================================================
+        // VALIDATION
         if (!key) {
             return res.status(400).json(formatS3Error(
                 'MISSING_KEY',
@@ -74,9 +61,6 @@ export const deleteS3File = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Credentials & Region
-        // ============================================================================
         const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
         if (!credValidation.valid) {
             return res.status(400).json({
@@ -95,34 +79,17 @@ export const deleteS3File = async (req, res) => {
             });
         }
 
-        // ============================================================================
         // QUOTA CHECK
-        // ============================================================================
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/s3/delete',
-                method: 'DELETE',
-                provider: 's3',
-                operation: 'delete',
-                statusCode: 429,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded'
             ));
         }
 
-        // ============================================================================
-        // AWS API CALL: Delete Object
-        // ============================================================================
+        // AWS API CALL
         const apiCallStart = Date.now();
-
         const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
 
         const command = new DeleteObjectCommand({
@@ -135,28 +102,12 @@ export const deleteS3File = async (req, res) => {
         const apiCallTime = Date.now() - apiCallStart;
         const totalTime = Date.now() - startTime;
 
-        // ============================================================================
-        // ANALYTICS
-        // ============================================================================
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/s3/delete',
-            method: 'DELETE',
-            provider: 's3',
-            operation: 'delete',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 's3', true)
+            .catch(() => { });
 
-        console.log(`[${requestId}] ✅ S3 delete: ${key} in ${totalTime}ms (API: ${apiCallTime}ms)`);
+        console.log(`[${requestId}] ✅ S3 delete: ${key} in ${totalTime}ms`);
 
-        // ============================================================================
-        // RESPONSE
-        // ============================================================================
         const response = {
             success: true,
             deleted: key,
@@ -176,15 +127,12 @@ export const deleteS3File = async (req, res) => {
         };
 
         res.status(200).json(response);
-
-        // Increment quota (fire-and-forget)
         incrementQuota(userId, 1).catch(() => { });
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
         console.error(`[${requestId}] 💥 S3 delete error after ${totalTime}ms:`, error);
 
-        // Handle specific S3 errors
         if (error.name === 'NoSuchKey' || error.message.includes('NoSuchKey')) {
             return res.status(404).json(formatS3Error(
                 'FILE_NOT_FOUND',
@@ -202,18 +150,8 @@ export const deleteS3File = async (req, res) => {
         }
 
         if (apiKeyId) {
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/s3/delete',
-                method: 'DELETE',
-                provider: 's3',
-                operation: 'delete',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
+                .catch(() => { });
         }
 
         return res.status(500).json(formatS3Error(
@@ -226,10 +164,6 @@ export const deleteS3File = async (req, res) => {
 
 /**
  * Delete multiple files from S3 (batch operation)
- * POST /api/v1/upload/s3/batch-delete
- * 
- * @param {Object} req - Express request
- * @param {Object} res - Express response
  */
 export const batchDeleteS3Files = async (req, res) => {
     const requestId = `batch_del_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -238,7 +172,7 @@ export const batchDeleteS3Files = async (req, res) => {
 
     try {
         const {
-            keys,                   // Required: Array of S3 object keys
+            keys,
             s3AccessKey,
             s3SecretKey,
             s3Bucket,
@@ -255,9 +189,7 @@ export const batchDeleteS3Files = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Keys Array
-        // ============================================================================
+        // VALIDATION
         if (!keys || !Array.isArray(keys) || keys.length === 0) {
             return res.status(400).json(formatS3Error(
                 'INVALID_KEYS',
@@ -266,7 +198,6 @@ export const batchDeleteS3Files = async (req, res) => {
             ));
         }
 
-        // Validate batch size (AWS limit: 1000)
         if (keys.length > 1000) {
             return res.status(400).json(formatS3Error(
                 'BATCH_TOO_LARGE',
@@ -282,9 +213,6 @@ export const batchDeleteS3Files = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Credentials & Region
-        // ============================================================================
         const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
         if (!credValidation.valid) {
             return res.status(400).json({
@@ -303,41 +231,24 @@ export const batchDeleteS3Files = async (req, res) => {
             });
         }
 
-        // ============================================================================
         // QUOTA CHECK
-        // ============================================================================
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/s3/batch-delete',
-                method: 'POST',
-                provider: 's3',
-                operation: 'batch-delete',
-                statusCode: 429,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded'
             ));
         }
 
-        // ============================================================================
-        // AWS API CALL: Delete Objects (Batch)
-        // ============================================================================
+        // AWS API CALL
         const apiCallStart = Date.now();
-
         const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
 
         const command = new DeleteObjectsCommand({
             Bucket: s3Bucket,
             Delete: {
                 Objects: keys.map(key => ({ Key: key })),
-                Quiet: false // Return list of deleted objects
+                Quiet: false
             }
         });
 
@@ -346,28 +257,12 @@ export const batchDeleteS3Files = async (req, res) => {
         const apiCallTime = Date.now() - apiCallStart;
         const totalTime = Date.now() - startTime;
 
-        // ============================================================================
-        // ANALYTICS
-        // ============================================================================
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/s3/batch-delete',
-            method: 'POST',
-            provider: 's3',
-            operation: 'batch-delete',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 's3', true)
+            .catch(() => { });
 
-        console.log(`[${requestId}] ✅ S3 batch delete: ${keys.length} files in ${totalTime}ms (API: ${apiCallTime}ms)`);
+        console.log(`[${requestId}] ✅ S3 batch delete: ${keys.length} files in ${totalTime}ms`);
 
-        // ============================================================================
-        // RESPONSE
-        // ============================================================================
         const response = {
             success: true,
             deleted: result.Deleted?.map(obj => obj.Key) || [],
@@ -385,8 +280,6 @@ export const batchDeleteS3Files = async (req, res) => {
         };
 
         res.status(200).json(response);
-
-        // Increment quota (fire-and-forget)
         incrementQuota(userId, 1).catch(() => { });
 
     } catch (error) {
@@ -394,18 +287,8 @@ export const batchDeleteS3Files = async (req, res) => {
         console.error(`[${requestId}] 💥 S3 batch delete error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/s3/batch-delete',
-                method: 'POST',
-                provider: 's3',
-                operation: 'batch-delete',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
+                .catch(() => { });
         }
 
         return res.status(500).json(formatS3Error(

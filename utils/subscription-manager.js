@@ -19,12 +19,19 @@ export async function upgradeSubscription(userId, newTier) {
     try {
         console.log(`[SUBSCRIPTION] Upgrading user ${userId.substring(0, 8)}... to ${newTier}`);
 
-        // 1. Update database
+        const now = new Date();
+        const billingCycleEnd = new Date(now);
+        billingCycleEnd.setMonth(billingCycleEnd.getMonth() + 1); // +1 month
+
+        // ✅ NEW ARCHITECTURE: Write to subscription_tier_paid (not subscription_tier)
+        // The view will compute subscription_tier from this + expiration logic
         const { error } = await supabaseAdmin
             .from('profiles')
             .update({
-                subscription_tier: newTier,
-                subscription_start_date: new Date().toISOString()
+                subscription_tier_paid: newTier,
+                subscription_status: 'active',
+                billing_cycle_start: now.toISOString(),
+                billing_cycle_end: billingCycleEnd.toISOString()
             })
             .eq('id', userId);
 
@@ -54,11 +61,15 @@ export async function downgradeSubscription(userId, newTier) {
     try {
         console.log(`[SUBSCRIPTION] Downgrading user ${userId.substring(0, 8)}... to ${newTier}`);
 
-        // 1. Update database
+        // ✅ NEW ARCHITECTURE: Write to subscription_tier_paid
+        // For downgrades, we clear billing cycle (or set status to cancelled)
         const { error } = await supabaseAdmin
             .from('profiles')
             .update({
-                subscription_tier: newTier
+                subscription_tier_paid: newTier,
+                subscription_status: newTier === 'free' ? 'cancelled' : 'active',
+                // Clear billing cycle on downgrade to free
+                ...(newTier === 'free' && { billing_cycle_end: null })
             })
             .eq('id', userId);
 

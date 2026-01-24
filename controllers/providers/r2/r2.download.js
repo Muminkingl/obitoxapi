@@ -1,13 +1,16 @@
 /**
  * Download/Get Info for File from Cloudflare R2
  * Uses AWS SDK HeadObjectCommand to get metadata
+ * 
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
-import { HeadObjectCommand } from '@aws-sdk/client-s3';
+import { HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { getR2Client, buildPublicUrl, formatR2Error, SIGNED_URL_EXPIRY } from './r2.config.js';
-import { updateR2Metrics } from './r2.helpers.js';
+
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * Get file info and download URL from R2
@@ -66,8 +69,9 @@ export const downloadR2File = async (req, res) => {
 
         const totalTime = Date.now() - startTime;
 
-        // Update metrics (non-blocking)
-        updateR2Metrics(apiKeyId, userId, 'r2', 'success', 0).catch(() => { });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 'r2', true)
+            .catch(() => { });
 
         return res.status(200).json({
             success: true,
@@ -76,7 +80,7 @@ export const downloadR2File = async (req, res) => {
                 fileKey,
                 bucket: r2Bucket,
                 publicUrl,
-                downloadUrl,  // Presigned URL for direct download
+                downloadUrl,
                 metadata: {
                     contentType: metadata.ContentType,
                     contentLength: metadata.ContentLength,
@@ -94,7 +98,8 @@ export const downloadR2File = async (req, res) => {
         console.error('R2 download error:', error);
 
         if (req.apiKeyId) {
-            updateR2Metrics(req.apiKeyId, req.userId, 'r2', 'failed', 0).catch(() => { });
+            updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)
+                .catch(() => { });
         }
 
         if (error.name === 'NotFound') {

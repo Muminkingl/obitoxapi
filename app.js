@@ -16,6 +16,9 @@ import { getRedis, testRedisConnection } from './config/redis.js';
 // Import quota sync job (starts automatically on import)
 import './jobs/sync-quotas.js';
 
+// Import metrics worker
+import { startMetricsSyncWorker } from './jobs/metrics-worker.js';
+
 const app = express();
 
 app.use(express.json({ limit: '50mb' }));
@@ -56,6 +59,10 @@ app.listen(PORT, async () => {
       const testResult = await testRedisConnection();
       if (testResult.success) {
         console.log(`✅ Redis: Connected (latency: ${testResult.latency}ms)`);
+
+        // Start metrics sync worker (requires Redis)
+        startMetricsSyncWorker();
+        console.log('✅ Metrics sync worker started');
       } else {
         console.warn(`⚠️  Redis: Connection test failed - ${testResult.error}`);
         console.warn('   Caching will be disabled until Redis is available');

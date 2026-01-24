@@ -1,19 +1,21 @@
+/**
+ * Analytics Controller (UPDATED to use new Redis-backed tables)
+ * 
+ * Uses these tables:
+ * - api_keys (running totals)
+ * - provider_usage (per-provider running totals)
+ * - api_key_usage_daily (daily snapshots)
+ * - provider_usage_daily (per-provider daily snapshots)
+ */
+
 import { supabaseAdmin } from '../database/supabase.js';
 
 /**
- * Get comprehensive analytics with all filter support
+ * Get comprehensive analytics from running totals
  */
 export const getUploadAnalytics = async (req, res) => {
   try {
-    const { 
-      provider, 
-      fileType, 
-      startDate, 
-      endDate, 
-      limit = 100, 
-      offset = 0 
-    } = req.query;
-    
+    const { provider, startDate, endDate, limit = 100, offset = 0 } = req.query;
     const apiKeyId = req.apiKeyId;
     const userId = req.userId;
 
@@ -25,139 +27,65 @@ export const getUploadAnalytics = async (req, res) => {
       });
     }
 
-    // Build the base query
-    let query = supabaseAdmin
-      .from('file_uploads')
-      .select('*')
+    // Get API key summary
+    const { data: apiKeyData, error: apiKeyError } = await supabaseAdmin
+      .from('api_keys')
+      .select('total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded, file_type_counts')
+      .eq('id', apiKeyId)
+      .single();
+
+    if (apiKeyError) throw apiKeyError;
+
+    // Get provider usage breakdown
+    let providerQuery = supabaseAdmin
+      .from('provider_usage')
+      .select('provider, upload_count, total_file_size, last_used_at')
       .eq('api_key_id', apiKeyId);
 
-    // Apply filters
     if (provider) {
       const providers = Array.isArray(provider) ? provider : [provider];
-      query = query.in('provider', providers);
+      providerQuery = providerQuery.in('provider', providers);
     }
 
-    if (fileType) {
-      if (fileType.includes('*')) {
-        // Handle wildcard file types (e.g., 'image/*')
-        const baseType = fileType.replace('*', '');
-        query = query.like('file_type', `${baseType}%`);
-      } else {
-        const fileTypes = Array.isArray(fileType) ? fileType : [fileType];
-        query = query.in('file_type', fileTypes);
-      }
-    }
+    const { data: providerData, error: providerError } = await providerQuery;
 
-    if (startDate) {
-      query = query.gte('uploaded_at', startDate);
-    }
+    if (providerError) throw providerError;
 
-    if (endDate) {
-      query = query.lte('uploaded_at', endDate);
-    }
-
-    // Apply pagination
-    query = query
-      .order('uploaded_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    const { data: uploads, error } = await query;
-
-    if (error) {
-      throw error;
-    }
-
-    // Get summary statistics
-    const summaryQuery = supabaseAdmin
-      .from('file_uploads')
-      .select('provider, file_type, file_size, upload_status')
-      .eq('api_key_id', apiKeyId);
-
-    // Apply same filters for summary
-    if (provider) {
-      const providers = Array.isArray(provider) ? provider : [provider];
-      summaryQuery.in('provider', providers);
-    }
-
-    if (fileType) {
-      if (fileType.includes('*')) {
-        const baseType = fileType.replace('*', '');
-        summaryQuery.like('file_type', `${baseType}%`);
-      } else {
-        const fileTypes = Array.isArray(fileType) ? fileType : [fileType];
-        summaryQuery.in('file_type', fileTypes);
-      }
-    }
-
-    if (startDate) {
-      summaryQuery.gte('uploaded_at', startDate);
-    }
-
-    if (endDate) {
-      summaryQuery.lte('uploaded_at', endDate);
-    }
-
-    const { data: allUploads, error: summaryError } = await summaryQuery;
-
-    if (summaryError) {
-      throw summaryError;
-    }
-
-    // Calculate summary statistics
-    const totalUploads = allUploads.length;
-    const totalSize = allUploads.reduce((sum, upload) => sum + (upload.file_size || 0), 0);
-    const successfulUploads = allUploads.filter(upload => upload.upload_status === 'success').length;
-    const failedUploads = allUploads.filter(upload => upload.upload_status === 'failed').length;
+    // Calculate summary
+    const summary = {
+      totalUploads: apiKeyData?.total_files_uploaded || 0,
+      totalRequests: apiKeyData?.total_requests || 0,
+      successfulRequests: apiKeyData?.successful_requests || 0,
+      failedRequests: apiKeyData?.failed_requests || 0,
+      totalBytes: apiKeyData?.total_file_size || 0,
+      averageFileSize: apiKeyData?.total_files_uploaded > 0
+        ? Math.round((apiKeyData?.total_file_size || 0) / apiKeyData.total_files_uploaded)
+        : 0,
+      successRate: apiKeyData?.total_requests > 0
+        ? Math.round((apiKeyData?.successful_requests || 0) / apiKeyData.total_requests * 100)
+        : 0
+    };
 
     // Provider breakdown
-    const providerStats = allUploads.reduce((acc, upload) => {
-      if (!acc[upload.provider]) {
-        acc[upload.provider] = { count: 0, size: 0, successful: 0, failed: 0 };
-      }
-      acc[upload.provider].count++;
-      acc[upload.provider].size += upload.file_size || 0;
-      if (upload.upload_status === 'success') acc[upload.provider].successful++;
-      if (upload.upload_status === 'failed') acc[upload.provider].failed++;
-      return acc;
-    }, {});
-
-    // File type breakdown
-    const fileTypeStats = allUploads.reduce((acc, upload) => {
-      if (!acc[upload.file_type]) {
-        acc[upload.file_type] = { count: 0, size: 0, successful: 0, failed: 0 };
-      }
-      acc[upload.file_type].count++;
-      acc[upload.file_type].size += upload.file_size || 0;
-      if (upload.upload_status === 'success') acc[upload.file_type].successful++;
-      if (upload.upload_status === 'failed') acc[upload.file_type].failed++;
+    const providerBreakdown = (providerData || []).reduce((acc, p) => {
+      acc[p.provider] = {
+        uploads: p.upload_count || 0,
+        totalBytes: p.total_file_size || 0,
+        lastUsed: p.last_used_at
+      };
       return acc;
     }, {});
 
     res.json({
       success: true,
       data: {
-        uploads: uploads || [],
-        summary: {
-          totalUploads,
-          totalSize,
-          successfulUploads,
-          failedUploads,
-          successRate: totalUploads > 0 ? (successfulUploads / totalUploads * 100).toFixed(2) : 0
-        },
-        providerStats,
-        fileTypeStats,
-        pagination: {
-          limit: parseInt(limit),
-          offset: parseInt(offset),
-          total: totalUploads,
-          hasMore: (parseInt(offset) + parseInt(limit)) < totalUploads
-        },
-        filters: {
-          provider: provider || null,
-          fileType: fileType || null,
-          startDate: startDate || null,
-          endDate: endDate || null
-        }
+        summary,
+        providers: providerBreakdown,
+        fileTypes: apiKeyData?.file_type_counts || {}
+      },
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset)
       }
     });
 
@@ -166,23 +94,17 @@ export const getUploadAnalytics = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'ANALYTICS_ERROR',
-      message: 'Failed to fetch upload analytics'
+      message: error.message
     });
   }
 };
 
 /**
- * Get daily usage analytics
+ * Get daily usage analytics from daily tables
  */
 export const getDailyUsageAnalytics = async (req, res) => {
   try {
-    const { 
-      provider, 
-      startDate, 
-      endDate, 
-      limit = 30 
-    } = req.query;
-    
+    const { startDate, endDate, limit = 30 } = req.query;
     const apiKeyId = req.apiKeyId;
 
     if (!apiKeyId) {
@@ -193,70 +115,54 @@ export const getDailyUsageAnalytics = async (req, res) => {
       });
     }
 
-    // Build the base query
+    // Query daily usage table
     let query = supabaseAdmin
-      .from('daily_usage_summary')
-      .select('*')
-      .eq('api_key_id', apiKeyId);
-
-    // Apply filters
-    if (provider) {
-      const providers = Array.isArray(provider) ? provider : [provider];
-      query = query.in('provider', providers);
-    }
+      .from('api_key_usage_daily')
+      .select('usage_date, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
+      .eq('api_key_id', apiKeyId)
+      .order('usage_date', { ascending: false })
+      .limit(parseInt(limit));
 
     if (startDate) {
       query = query.gte('usage_date', startDate);
     }
-
     if (endDate) {
       query = query.lte('usage_date', endDate);
     }
 
-    // Apply pagination and ordering
-    query = query
-      .order('usage_date', { ascending: false })
-      .limit(parseInt(limit));
+    const { data: dailyData, error } = await query;
 
-    const { data: dailyUsage, error } = await query;
+    if (error) throw error;
 
-    if (error) {
-      throw error;
-    }
-
-    // Calculate totals
-    const totalUploads = dailyUsage.reduce((sum, day) => sum + (day.total_uploads || 0), 0);
-    const totalSize = dailyUsage.reduce((sum, day) => sum + (day.total_file_size || 0), 0);
-    const totalSuccessful = dailyUsage.reduce((sum, day) => sum + (day.successful_requests || 0), 0);
-    const totalFailed = dailyUsage.reduce((sum, day) => sum + (day.failed_requests || 0), 0);
+    // Calculate totals for period
+    const totals = (dailyData || []).reduce((acc, day) => {
+      acc.totalRequests += day.total_requests || 0;
+      acc.successfulRequests += day.successful_requests || 0;
+      acc.failedRequests += day.failed_requests || 0;
+      acc.totalBytes += day.total_file_size || 0;
+      acc.totalUploads += day.total_files_uploaded || 0;
+      return acc;
+    }, { totalRequests: 0, successfulRequests: 0, failedRequests: 0, totalBytes: 0, totalUploads: 0 });
 
     res.json({
       success: true,
       data: {
-        dailyUsage: dailyUsage || [],
-        summary: {
-          totalUploads,
-          totalSize,
-          totalSuccessful,
-          totalFailed,
-          successRate: totalUploads > 0 ? (totalSuccessful / totalUploads * 100).toFixed(2) : 0,
-          averageDailyUploads: dailyUsage.length > 0 ? (totalUploads / dailyUsage.length).toFixed(2) : 0,
-          averageDailySize: dailyUsage.length > 0 ? (totalSize / dailyUsage.length).toFixed(2) : 0
-        },
-        filters: {
-          provider: provider || null,
-          startDate: startDate || null,
-          endDate: endDate || null
+        daily: dailyData || [],
+        totals,
+        period: {
+          days: dailyData?.length || 0,
+          startDate: dailyData?.[dailyData.length - 1]?.usage_date || null,
+          endDate: dailyData?.[0]?.usage_date || null
         }
       }
     });
 
   } catch (error) {
-    console.error('Daily usage analytics error:', error);
+    console.error('Daily analytics error:', error);
     res.status(500).json({
       success: false,
       error: 'DAILY_ANALYTICS_ERROR',
-      message: 'Failed to fetch daily usage analytics'
+      message: error.message
     });
   }
 };
@@ -266,7 +172,7 @@ export const getDailyUsageAnalytics = async (req, res) => {
  */
 export const getProviderUsageAnalytics = async (req, res) => {
   try {
-    const { provider } = req.query;
+    const { provider, startDate, endDate } = req.query;
     const apiKeyId = req.apiKeyId;
 
     if (!apiKeyId) {
@@ -277,65 +183,82 @@ export const getProviderUsageAnalytics = async (req, res) => {
       });
     }
 
-    // Build the base query
-    let query = supabaseAdmin
-      .from('provider_usage_detailed')
-      .select('*')
+    // Get running totals by provider
+    let runningQuery = supabaseAdmin
+      .from('provider_usage')
+      .select('provider, upload_count, total_file_size, last_used_at, average_file_size')
       .eq('api_key_id', apiKeyId);
 
-    // Apply provider filter if specified
     if (provider) {
-      const providers = Array.isArray(provider) ? provider : [provider];
-      query = query.in('provider', providers);
+      runningQuery = runningQuery.eq('provider', provider);
     }
 
-    const { data: providerUsage, error } = await query;
+    const { data: runningData, error: runningError } = await runningQuery;
+    if (runningError) throw runningError;
 
-    if (error) {
-      throw error;
+    // Get daily breakdown by provider
+    let dailyQuery = supabaseAdmin
+      .from('provider_usage_daily')
+      .select('usage_date, provider, upload_count, total_file_size')
+      .eq('api_key_id', apiKeyId)
+      .order('usage_date', { ascending: false })
+      .limit(90); // Last 90 days
+
+    if (provider) {
+      dailyQuery = dailyQuery.eq('provider', provider);
+    }
+    if (startDate) {
+      dailyQuery = dailyQuery.gte('usage_date', startDate);
+    }
+    if (endDate) {
+      dailyQuery = dailyQuery.lte('usage_date', endDate);
     }
 
-    // Calculate totals
-    const totalUploads = providerUsage.reduce((sum, provider) => sum + (provider.upload_count || 0), 0);
-    const totalSize = providerUsage.reduce((sum, provider) => sum + (provider.total_file_size || 0), 0);
+    const { data: dailyData, error: dailyError } = await dailyQuery;
+    if (dailyError) throw dailyError;
+
+    // Group daily data by provider
+    const dailyByProvider = (dailyData || []).reduce((acc, row) => {
+      if (!acc[row.provider]) {
+        acc[row.provider] = [];
+      }
+      acc[row.provider].push({
+        date: row.usage_date,
+        uploads: row.upload_count,
+        bytes: row.total_file_size
+      });
+      return acc;
+    }, {});
 
     res.json({
       success: true,
       data: {
-        providerUsage: providerUsage || [],
-        summary: {
-          totalUploads,
-          totalSize,
-          averageFileSize: totalUploads > 0 ? (totalSize / totalUploads).toFixed(2) : 0,
-          providerCount: providerUsage.length
-        },
-        filters: {
-          provider: provider || null
-        }
+        providers: (runningData || []).map(p => ({
+          name: p.provider,
+          totalUploads: p.upload_count || 0,
+          totalBytes: p.total_file_size || 0,
+          averageFileSize: p.average_file_size || 0,
+          lastUsed: p.last_used_at,
+          dailyTrend: dailyByProvider[p.provider] || []
+        }))
       }
     });
 
   } catch (error) {
-    console.error('Provider usage analytics error:', error);
+    console.error('Provider analytics error:', error);
     res.status(500).json({
       success: false,
       error: 'PROVIDER_ANALYTICS_ERROR',
-      message: 'Failed to fetch provider usage analytics'
+      message: error.message
     });
   }
 };
 
 /**
- * Get file type distribution analytics
+ * Get file type distribution analytics from api_keys
  */
 export const getFileTypeAnalytics = async (req, res) => {
   try {
-    const { 
-      provider, 
-      startDate, 
-      endDate 
-    } = req.query;
-    
     const apiKeyId = req.apiKeyId;
 
     if (!apiKeyId) {
@@ -346,91 +269,42 @@ export const getFileTypeAnalytics = async (req, res) => {
       });
     }
 
-    // Build the base query
-    let query = supabaseAdmin
-      .from('file_uploads')
-      .select('file_type, file_size, upload_status')
-      .eq('api_key_id', apiKeyId)
-      .eq('upload_status', 'success'); // Only count successful uploads
+    // Get file type counts from api_keys
+    const { data: apiKeyData, error } = await supabaseAdmin
+      .from('api_keys')
+      .select('file_type_counts, total_files_uploaded')
+      .eq('id', apiKeyId)
+      .single();
 
-    // Apply filters
-    if (provider) {
-      const providers = Array.isArray(provider) ? provider : [provider];
-      query = query.in('provider', providers);
-    }
+    if (error) throw error;
 
-    if (startDate) {
-      query = query.gte('uploaded_at', startDate);
-    }
+    const fileTypeCounts = apiKeyData?.file_type_counts || {};
+    const totalFiles = apiKeyData?.total_files_uploaded || 0;
 
-    if (endDate) {
-      query = query.lte('uploaded_at', endDate);
-    }
+    // Convert to array with percentages
+    const fileTypes = Object.entries(fileTypeCounts).map(([type, count]) => ({
+      type,
+      count,
+      percentage: totalFiles > 0 ? Math.round((count / totalFiles) * 100) : 0
+    })).sort((a, b) => b.count - a.count);
 
-    const { data: uploads, error } = await query;
-
-    if (error) {
-      throw error;
-    }
-
-    // Calculate file type distribution
-    const fileTypeStats = uploads.reduce((acc, upload) => {
-      if (!acc[upload.file_type]) {
-        acc[upload.file_type] = { count: 0, size: 0 };
-      }
-      acc[upload.file_type].count++;
-      acc[upload.file_type].size += upload.file_size || 0;
-      return acc;
-    }, {});
-
-    // Convert to array and sort by count
-    const fileTypeDistribution = Object.entries(fileTypeStats)
-      .map(([fileType, stats]) => ({
-        fileType,
-        count: stats.count,
-        totalSize: stats.size,
-        averageSize: stats.count > 0 ? (stats.size / stats.count).toFixed(2) : 0,
-        percentage: uploads.length > 0 ? (stats.count / uploads.length * 100).toFixed(2) : 0
-      }))
-      .sort((a, b) => b.count - a.count);
-
-    // Calculate category distribution
-    const categoryStats = fileTypeDistribution.reduce((acc, item) => {
-      const category = item.fileType.split('/')[0];
+    // Group by category (image, video, document, etc.)
+    const categories = fileTypes.reduce((acc, ft) => {
+      const category = ft.type.split('/')[0] || 'other';
       if (!acc[category]) {
-        acc[category] = { count: 0, size: 0 };
+        acc[category] = { count: 0, types: [] };
       }
-      acc[category].count += item.count;
-      acc[category].size += item.totalSize;
+      acc[category].count += ft.count;
+      acc[category].types.push(ft);
       return acc;
     }, {});
-
-    const categoryDistribution = Object.entries(categoryStats)
-      .map(([category, stats]) => ({
-        category,
-        count: stats.count,
-        totalSize: stats.size,
-        averageSize: stats.count > 0 ? (stats.size / stats.count).toFixed(2) : 0,
-        percentage: uploads.length > 0 ? (stats.count / uploads.length * 100).toFixed(2) : 0
-      }))
-      .sort((a, b) => b.count - a.count);
 
     res.json({
       success: true,
       data: {
-        fileTypeDistribution,
-        categoryDistribution,
-        summary: {
-          totalFileTypes: fileTypeDistribution.length,
-          totalCategories: categoryDistribution.length,
-          totalUploads: uploads.length,
-          totalSize: uploads.reduce((sum, upload) => sum + (upload.file_size || 0), 0)
-        },
-        filters: {
-          provider: provider || null,
-          startDate: startDate || null,
-          endDate: endDate || null
-        }
+        totalFiles,
+        fileTypes,
+        categories
       }
     });
 
@@ -439,7 +313,7 @@ export const getFileTypeAnalytics = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'FILE_TYPE_ANALYTICS_ERROR',
-      message: 'Failed to fetch file type analytics'
+      message: error.message
     });
   }
 };

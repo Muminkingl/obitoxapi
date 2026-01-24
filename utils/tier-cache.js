@@ -53,9 +53,10 @@ export async function getUserTierCached(userId) {
         // Cache miss - fetch from database
         console.log(`[TierCache] ⚠️  Cache MISS for ${userId.substring(0, 8)}... - querying DB`);
 
+        // ✅ NEW: Query profiles_with_tier view (computed tier + limits from subscription_plans)
         const { data: userData, error: dbError } = await supabaseAdmin
-            .from('profiles')
-            .select('subscription_tier')
+            .from('profiles_with_tier')
+            .select('subscription_tier, subscription_tier_paid, subscription_status, is_subscription_expired, is_in_grace_period, days_until_expiration, api_requests_limit, plan_name')
             .eq('id', userId)
             .single();
 
@@ -64,6 +65,10 @@ export async function getUserTierCached(userId) {
             // Return default tier on error
             return {
                 tier: TIER_CACHE_CONFIG.DEFAULT_TIER,
+                tier_paid: TIER_CACHE_CONFIG.DEFAULT_TIER,
+                api_requests_limit: 1000,
+                is_expired: false,
+                is_in_grace: false,
                 cachedAt: Date.now(),
                 fromCache: false,
                 error: dbError.message,
@@ -71,11 +76,19 @@ export async function getUserTierCached(userId) {
             };
         }
 
+        // subscription_tier is COMPUTED (respects expiration + grace period)
         const tier = userData?.subscription_tier || TIER_CACHE_CONFIG.DEFAULT_TIER;
 
-        // Cache the result
+        // Cache the result with richer data
         const cacheData = {
             tier,
+            tier_paid: userData?.subscription_tier_paid || TIER_CACHE_CONFIG.DEFAULT_TIER,
+            subscription_status: userData?.subscription_status || 'active',
+            is_expired: userData?.is_subscription_expired || false,
+            is_in_grace: userData?.is_in_grace_period || false,
+            days_until_expiration: userData?.days_until_expiration || null,
+            api_requests_limit: userData?.api_requests_limit || 1000,
+            plan_name: userData?.plan_name || 'Free',
             cachedAt: Date.now()
         };
 
@@ -99,6 +112,10 @@ export async function getUserTierCached(userId) {
         // Fail open - return default tier
         return {
             tier: TIER_CACHE_CONFIG.DEFAULT_TIER,
+            tier_paid: TIER_CACHE_CONFIG.DEFAULT_TIER,
+            api_requests_limit: 1000,
+            is_expired: false,
+            is_in_grace: false,
             cachedAt: Date.now(),
             fromCache: false,
             error: error.message,

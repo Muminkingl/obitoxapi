@@ -1,57 +1,32 @@
 /**
- * Cancel upload operation
- * Marks upload as cancelled in tracking system
+ * Cancel upload operation (DEPRECATED)
+ * 
+ * ⚠️ DEPRECATED: This endpoint is kept for backward compatibility only.
+ * Vercel Blob does NOT support cancelling in-progress uploads.
+ * Client-side cancellation uses AbortController directly.
+ * 
+ * @deprecated Use client-side AbortController instead
  */
 
-import { updateRequestMetrics } from '../shared/metrics.helper.js';
-import { formatErrorResponse, formatMissingFieldsError } from '../shared/error.helper.js';
+import { formatErrorResponse } from '../shared/error.helper.js';
 
 /**
- * Cancel Vercel upload
- * Note: Vercel Blob doesn't support cancelling in-progress uploads
- * This marks the upload as cancelled in our tracking system
+ * Cancel Vercel upload (NO-OP, DEPRECATED)
+ * 
+ * @deprecated Vercel Blob doesn't support server-side cancellation.
+ * Use AbortController on the client side for upload cancellation.
  * 
  * @param {Object} req - Express request
  * @param {Object} res - Express response
  */
 export const cancelVercelUpload = async (req, res) => {
-    try {
-        const { uploadId, vercelToken } = req.body;
-
-        // 1. Validate required fields
-        if (!uploadId || !vercelToken) {
-            return res.status(400).json(
-                formatMissingFieldsError(['uploadId', 'vercelToken'].filter(field =>
-                    !req.body[field]
-                ))
-            );
-        }
-
-        // 2. Track cancellation (non-blocking)
-        // Note: Vercel Blob doesn't support cancelling uploads
-        // We just mark it as cancelled in our system
-        updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
-            .catch(err => console.error('Metrics error:', err));
-
-        // 3. Return success
-        return res.status(200).json({
-            success: true,
-            message: 'Upload cancellation requested',
-            uploadId,
-            status: 'cancelled',
-            timestamp: new Date().toISOString(),
-            note: 'Upload marked as cancelled in tracking system. Vercel Blob does not support cancelling in-progress uploads.'
-        });
-
-    } catch (error) {
-        console.error('Cancel upload error:', error);
-
-        return res.status(500).json(
-            formatErrorResponse(
-                'Failed to cancel upload',
-                'CANCEL_FAILED',
-                { message: error.message }
-            )
-        );
-    }
+    // Return deprecation notice - no actual cancellation happens
+    return res.status(200).json({
+        success: true,
+        message: 'DEPRECATED: Cancel endpoint is no longer active',
+        deprecated: true,
+        note: 'Vercel Blob does not support server-side upload cancellation. Use AbortController on the client side.',
+        recommendation: 'Remove calls to this endpoint from your code.',
+        timestamp: new Date().toISOString()
+    });
 };

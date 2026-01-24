@@ -38,12 +38,14 @@ async function getUserTier(userId) {
     if (cached) return JSON.parse(cached).tier;
 
     try {
+        // ✅ NEW: Query profiles_with_tier view for computed tier (respects expiration + grace period)
         const { data } = await supabaseAdmin
-            .from('profiles')
+            .from('profiles_with_tier')
             .select('subscription_tier')
             .eq('id', userId)
             .single();
 
+        // subscription_tier is COMPUTED (not subscription_tier_paid)
         const tier = (data?.subscription_tier || 'free').toLowerCase();
         await redis.setex(cacheKey, 300, JSON.stringify({ tier }));
         return tier;

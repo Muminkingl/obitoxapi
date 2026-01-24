@@ -2,33 +2,18 @@
  * R2 Batch Delete
  * Delete multiple files in one request using DeleteObjectsCommand
  * 
- * Target Performance:
- * - 10 files: 200-400ms
- * - 100 files: 300-600ms
- * - 1000 files: 800-1200ms
- * 
- * Architecture:
- * - Single DeleteObjectsCommand (ONE R2 API call for all files!)
- * - Max 1000 files (R2/S3 limit)
- * - Returns detailed deleted + errors arrays
- * - Memory Guard rate limiting
- * 
- * Following Rules:
- * - Rule #8: Clear error reporting per file
- * - Rule #9: Same metrics tracking
- * - Rule #6: Non-blocking analytics
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import { DeleteObjectsCommand } from '@aws-sdk/client-s3';
-import {
-    getR2Client,
-    formatR2Error
-} from './r2.config.js';
-import { updateR2Metrics } from './r2.helpers.js';
+import { getR2Client, formatR2Error } from './r2.config.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 
-// NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+// Quota check
+import { checkUserQuota } from '../shared/analytics.new.js';
+
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * Delete multiple R2 files in one request
@@ -42,7 +27,7 @@ export const batchDeleteR2Files = async (req, res) => {
 
     try {
         const {
-            filenames,              // Array of file keys to delete
+            filenames,
             r2AccessKey,
             r2SecretKey,
             r2AccountId,
@@ -52,18 +37,12 @@ export const batchDeleteR2Files = async (req, res) => {
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
 
-        console.log(`[${requestId}] 🗑️  Batch delete request for ${filenames?.length || 0} files`);
-
-        // ============================================================================
-        // LAYER 1: Memory Guard (Target: 0-2ms)
-        // Rate limit batch delete requests
-        // ============================================================================
+        // LAYER 1: Memory Guard
         const memoryStart = Date.now();
         const memCheck = checkMemoryRateLimit(userId, 'r2-batch-delete');
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json(formatR2Error(
                 'RATE_LIMIT_EXCEEDED',
                 'Rate limit exceeded - too many batch delete requests',
@@ -71,23 +50,9 @@ export const batchDeleteR2Files = async (req, res) => {
             ));
         }
 
-        // ========================================================================
-        // QUOTA CHECK (Database RPC) 💰
-        // ========================================================================
+        // QUOTA CHECK
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/r2/batch/delete',
-                method: 'DELETE',
-                provider: 'r2',
-                operation: 'batch-delete',
-                statusCode: 403,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(403).json(formatR2Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded',
@@ -95,9 +60,7 @@ export const batchDeleteR2Files = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Required Fields
-        // ============================================================================
+        // VALIDATION: Filenames Array
         if (!Array.isArray(filenames) || filenames.length === 0) {
             return res.status(400).json(formatR2Error(
                 'INVALID_FILENAMES_ARRAY',
@@ -114,79 +77,45 @@ export const batchDeleteR2Files = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Batch Size Limit (R2/S3 API Limit)
-        // ============================================================================
-        const MAX_DELETE_BATCH = 1000;  // R2/S3 DeleteObjects limit
+        // VALIDATION: Batch Size Limit
+        const MAX_DELETE_BATCH = 1000;
 
         if (filenames.length > MAX_DELETE_BATCH) {
             return res.status(400).json(formatR2Error(
                 'BATCH_TOO_LARGE',
                 `Maximum ${MAX_DELETE_BATCH} files per batch delete request`,
-                `You requested ${filenames.length} files. This is an R2/S3 API limit. Split into multiple batches.`
+                `You requested ${filenames.length} files. Split into multiple batches.`
             ));
         }
 
-        // ============================================================================
-        // R2 API CALL: Batch Delete (Single API call for all files!)
-        // ============================================================================
+        // R2 API CALL: Batch Delete
         const deleteStart = Date.now();
-
-        // Create R2 client
         const client = getR2Client(r2AccountId, r2AccessKey, r2SecretKey);
 
-        // Create DeleteObjects command
         const deleteCommand = new DeleteObjectsCommand({
             Bucket: r2Bucket,
             Delete: {
                 Objects: filenames.map(Key => ({ Key })),
-                Quiet: false  // Return detailed results (both deleted and errors)
+                Quiet: false
             }
         });
 
-        // Execute batch delete (ONE R2 API call!)
         const result = await client.send(deleteCommand);
 
         const deleteTime = Date.now() - deleteStart;
         const totalTime = Date.now() - startTime;
 
-        // Extract results
         const deleted = result.Deleted || [];
         const errors = result.Errors || [];
         const deletedCount = deleted.length;
         const errorCount = errors.length;
 
-        console.log(`[${requestId}] ✅ Batch delete complete in ${totalTime}ms (${deletedCount}/${filenames.length} deleted, API: ${deleteTime}ms)`);
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 'r2', true)
+            .catch(() => { });
 
-        // ============================================================================
-        // ANALYTICS: Non-blocking metrics update
-        // ============================================================================
-        updateR2Metrics(apiKeyId, userId, 'r2', 'success', 0, {
-            operation: 'batch-delete',
-            filesRequested: filenames.length,
-            filesDeleted: deletedCount,
-            filesFailed: errorCount,
-            responseTime: totalTime
-        }).catch(() => { });
+        console.log(`[${requestId}] ✅ Batch delete: ${deletedCount}/${filenames.length} in ${totalTime}ms`);
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/r2/batch/delete',
-            method: 'DELETE',
-            provider: 'r2',
-            operation: 'batch-delete',
-            statusCode: 200,
-            success: true,
-            requestCount: filenames.length, // Count as N requests or 1? Plan says "1 request" usually, but batch might be different. Let's count as 1 batch operation but maybe log count in metadata? trackApiUsage schema has request_count. Let's use it.
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
-
-        // ============================================================================
-        // RESPONSE: Detailed results with success/error arrays
-        // ============================================================================
         return res.status(200).json({
             success: true,
             provider: 'r2',
@@ -210,7 +139,7 @@ export const batchDeleteR2Files = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    r2ApiCall: `${deleteTime}ms`  // Single API call to R2
+                    r2ApiCall: `${deleteTime}ms`
                 }
             }
         });
@@ -219,34 +148,16 @@ export const batchDeleteR2Files = async (req, res) => {
         const totalTime = Date.now() - startTime;
         console.error(`[${requestId}] ❌ Batch delete error (${totalTime}ms):`, error.message);
 
-        // Track failed request
         if (req.apiKeyId) {
-            updateR2Metrics(req.apiKeyId, req.userId, 'r2', 'failed', 0, {
-                operation: 'batch-delete',
-                error: error.message,
-                responseTime: totalTime
-            }).catch(() => { });
-
-            trackApiUsage({
-                userId: req.userId || req.apiKeyId,
-                endpoint: '/api/v1/upload/r2/batch/delete',
-                method: 'DELETE',
-                provider: 'r2',
-                operation: 'batch-delete',
-                statusCode: 500,
-                success: false,
-                apiKeyId: req.apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 2, false)
+                .catch(() => { });
         }
 
-        // Handle specific R2/S3 errors
         if (error.name === 'NoSuchBucket') {
             return res.status(404).json(formatR2Error(
                 'BUCKET_NOT_FOUND',
                 'R2 bucket not found',
-                `Bucket "${req.body.r2Bucket}" does not exist. Check your bucket name.`
+                `Bucket "${req.body.r2Bucket}" does not exist.`
             ));
         }
 
@@ -254,7 +165,7 @@ export const batchDeleteR2Files = async (req, res) => {
             return res.status(403).json(formatR2Error(
                 'ACCESS_DENIED',
                 'Access denied to R2 bucket',
-                'Check that your R2 credentials have delete permissions for this bucket'
+                'Check that your R2 credentials have delete permissions'
             ));
         }
 

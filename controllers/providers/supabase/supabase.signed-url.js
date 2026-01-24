@@ -24,6 +24,9 @@ import {
 // NEW: Analytics & Quota
 import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
 
+// 🚀 REDIS METRICS: Use Redis-backed metrics for 70% less DB load
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
+
 /**
  * Generate signed upload URL for Supabase Storage
  * NOW WITH <200ms RESPONSE TIME! 🚀
@@ -264,6 +267,10 @@ export const generateSupabaseSignedUrl = async (req, res) => {
             fileSize: fileSize
         }).catch(err => console.error('Background metrics error:', err));
 
+        // 🚀 REDIS METRICS: Provider usage tracking
+        updateRequestMetrics(apiKey, userId, 'supabase', true, { fileSize: fileSize || 0 })
+            .catch(() => { });
+
         // New Usage Tracking
         trackApiUsage({
             userId,
@@ -333,6 +340,10 @@ export const generateSupabaseSignedUrl = async (req, res) => {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {
                 errorDetails: error.message
             }).catch(err => console.error('Background metrics error:', err));
+
+            // 🚀 REDIS METRICS: Track failure
+            updateRequestMetrics(apiKey, req.userId || apiKey, 'supabase', false)
+                .catch(() => { });
 
             trackApiUsage({
                 userId: req.userId || apiKey,

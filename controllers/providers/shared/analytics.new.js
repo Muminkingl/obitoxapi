@@ -3,10 +3,13 @@
  * Implements the new schema tracking logic:
  * 1. Quota Check (can_make_request)
  * 2. Usage Increment (increment_request_count)
- * 3. Central Logging (api_usage_logs)
+ * 
+ * NOTE: API usage is tracked via Redis metrics in provider_usage and api_keys tables.
+ * Audit logs are reserved for low-volume security/billing events only (rate limits, bans, etc.)
  */
 
 import { supabaseAdmin } from '../../../database/supabase.js';
+// NOTE: logAudit removed - API usage should NOT go to audit_logs (high volume)
 
 /**
  * Check if a user has sufficient quota to make a request
@@ -18,8 +21,6 @@ import { supabaseAdmin } from '../../../database/supabase.js';
 export const checkUserQuota = async (userId) => {
     try {
         if (!userId) {
-            // If no user ID (e.g. public access if allowed, or error), default to allow strictly to avoid blocking valid flows if auth fails elsewhere
-            // BUT for this system, userId is required for quota.
             return { allowed: false, error: 'User ID required for quota check' };
         }
 
@@ -28,8 +29,6 @@ export const checkUserQuota = async (userId) => {
 
         if (error) {
             console.error('❌ Quota check error:', error);
-            // Fail open or closed? For billing, usually fail closed, but for UX, maybe fail open?
-            // Let's fail closed to prevent abuse if DB is acting up, but log heavily.
             return { allowed: false, error: error.message };
         }
 
@@ -41,19 +40,21 @@ export const checkUserQuota = async (userId) => {
 };
 
 /**
- * Track API usage
- * 1. Increments user's request count via RPC
- * 2. Logs detailed entry to api_usage_logs
+ * Track API usage - Increments user's request count via RPC
+ * 
+ * NOTE: This ONLY increments the quota counter. API usage metrics are tracked
+ * separately via Redis in provider_usage and api_keys tables (metrics.helper.js).
+ * Audit logs are NOT used for API usage (too high volume).
  * 
  * @param {Object} params
  * @param {string} params.userId - User ID
- * @param {string} params.endpoint - API Endpoint (e.g. '/api/v1/upload/r2/signed-url')
- * @param {string} params.method - HTTP Method (POST, DELETE, etc.)
- * @param {string} params.provider - 'r2', 'vercel', 'supabase', 'uploadcare'
+ * @param {string} params.endpoint - API Endpoint (for logging only)
+ * @param {string} params.method - HTTP Method (for logging only)
+ * @param {string} params.provider - 'r2', 'vercel', 's3', etc.
  * @param {string} params.operation - 'signed-url', 'upload', 'delete', 'list'
  * @param {number} params.statusCode - HTTP Status Code
- * @param {boolean} params.success - Whether requests succeeded
- * @param {number} [params.requestCount=1] - Number of requests to count (for batch)
+ * @param {boolean} params.success - Whether request succeeded
+ * @param {number} [params.requestCount=1] - Number of requests
  * @param {string} [params.apiKeyId] - Optional API Key ID
  * @param {string} [params.ipAddress] - Request IP
  * @param {string} [params.userAgent] - Request User Agent
@@ -72,14 +73,7 @@ export const trackApiUsage = async ({
     userAgent = null
 }) => {
     try {
-        // 1. Increment usage counter (Fire & Forget mostly, but we await to ensure it happens)
-        // Only increment if it counts as usage (usually success or specific failures)
-        // For now, let's count all attempts that reach this stage as usage if we want to be strict,
-        // OR only success. Plans usually count *requests*, so even failures might count if they consume resources.
-        // However, `increment_request_count` simply adds. Let's assume we count everything for now,
-        // or maybe only successful ones? Re-reading planss.md: "1 signed URL = 1 request".
-        // Usually we count successful generation.
-
+        // Increment usage counter (for real-time quota tracking)
         if (userId) {
             const { error: rpcError } = await supabaseAdmin
                 .rpc('increment_request_count', {
@@ -90,27 +84,17 @@ export const trackApiUsage = async ({
             if (rpcError) console.error('❌ Failed to increment usage:', rpcError);
         }
 
-        // 2. Log to api_usage_logs
-        const { error: logError } = await supabaseAdmin
-            .from('api_usage_logs')
-            .insert({
-                user_id: userId,
-                endpoint,
-                method,
-                provider: provider ? provider.toLowerCase() : null,
-                operation,
-                status_code: statusCode,
-                success,
-                request_count: requestCount,
-                api_key_id: apiKeyId,
-                ip_address: ipAddress,
-                user_agent: userAgent,
-                created_at: new Date().toISOString()
-            });
-
-        if (logError) console.error('❌ Failed to log usage:', logError);
+        // NOTE: API usage metrics are tracked via Redis in:
+        // - provider_usage table (via metrics.helper.js → incrementProviderMetrics)
+        // - api_keys table (via metrics.helper.js → incrementApiKeyMetrics)
+        // 
+        // Audit logs are ONLY for low-volume security/billing events:
+        // - rate_limit_exceeded, rate_limit_ban_applied, rate_limit_ban_expired
+        // - usage_warning_50_percent, usage_warning_80_percent, usage_limit_reached
+        // - api_key_created, api_key_deleted, permanent_ban_applied, etc.
 
     } catch (err) {
         console.error('❌ Track API usage exception:', err);
     }
 };
+

@@ -27,6 +27,9 @@ import {
     getUploadcareProjectSettings
 } from './uploadcare.validation.js';
 
+// Tracking (✅ Phase 8 - Uses NEW Redis metrics system)
+import { trackUploadEvent as trackUploadcareEvent } from './uploadcare.track.js';
+
 // Health check (✅ Phase 7)
 import { uploadcareHealthCheck } from './uploadcare.health.js';
 
@@ -51,6 +54,9 @@ export {
     validateUploadcareFile,
     validateUploadcareSvg,
     getUploadcareProjectSettings,
+
+    // Tracking (Redis metrics - NO deprecated tables)
+    trackUploadcareEvent,
 
     // Health check
     uploadcareHealthCheck

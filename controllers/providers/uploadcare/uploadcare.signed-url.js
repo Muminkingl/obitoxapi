@@ -1,7 +1,8 @@
 /**
  * Uploadcare Signed URL Generation
  * WITH ENTERPRISE MULTI-LAYER CACHING
- * Target: <1000ms response time
+ * 
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import {
@@ -10,16 +11,18 @@ import {
 } from './uploadcare.config.js';
 import {
     validateFileForUploadcare,
-    generateUploadcareFilename,
-    updateUploadcareMetrics
+    generateUploadcareFilename
 } from './uploadcare.helpers.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
-// NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+// Quota check
+import { checkUserQuota } from '../shared/analytics.new.js';
+
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * Generate signed upload URL for Uploadcare
@@ -53,15 +56,12 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
         }
 
-        // ========================================================================
-        // LAYER 1: MEMORY GUARD (0-5ms) 🔥
-        // ========================================================================
+        // LAYER 1: MEMORY GUARD (0-5ms)
         const memoryStart = Date.now();
         const memCheck = checkMemoryRateLimit(userId, 'signed-url');
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -70,15 +70,12 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
         }
 
-        // ========================================================================
-        // LAYER 2: REDIS RATE LIMIT (5-50ms) ⚡
-        // ========================================================================
+        // LAYER 2: REDIS RATE LIMIT (5-50ms)
         const redisStart = Date.now();
         const redisLimit = await checkRedisRateLimit(userId, 'signed-url');
         const redisTime = Date.now() - redisStart;
 
         if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis in ${redisTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -87,23 +84,9 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
         }
 
-        // ========================================================================
-        // LAYER 3: QUOTA CHECK (Database RPC) 💰
-        // ========================================================================
+        // LAYER 3: QUOTA CHECK
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/uploadcare/signed-url',
-                method: 'POST',
-                provider: 'uploadcare',
-                operation: 'signed-url',
-                statusCode: 429,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(429).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
@@ -122,15 +105,12 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
         }
 
-        // ========================================================================
-        // FAST VALIDATION (10-20ms) ✅
-        // ========================================================================
+        // FAST VALIDATION
         const validationStart = Date.now();
-
-        // File validation
         const fileValidation = validateFileForUploadcare(filename, contentType, fileSize);
         if (!fileValidation.isValid) {
-            updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'failed', 0).catch(() => { });
+            updateRequestMetrics(apiKeyId, userId, 'uploadcare', false)
+                .catch(() => { });
             return res.status(400).json({
                 success: false,
                 error: 'VALIDATION_ERROR',
@@ -138,47 +118,21 @@ export const generateUploadcareSignedUrl = async (req, res) => {
                 details: fileValidation.errors
             });
         }
-
         const validationTime = Date.now() - validationStart;
 
-        // ========================================================================
-        // GENERATE UPLOAD URL (5-10ms) 📤
-        // ========================================================================
+        // GENERATE UPLOAD URL
         const operationStart = Date.now();
-
-        // Generate unique filename
         const uniqueFilename = generateUploadcareFilename(filename, apiKeyId);
-
-        // For Uploadcare, we return direct upload URL and parameters
         const uploadUrl = UPLOAD_BASE_URL;
-
-        // Generate temporary UUID (Uploadcare assigns real one after upload)
         const tempUuid = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-
         const operationTime = Date.now() - operationStart;
         const totalTime = Date.now() - startTime;
 
-        // ========================================================================
-        // BACKGROUND UPDATES (NON-BLOCKING) 🔄
-        // ========================================================================
-        updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 'uploadcare', true, { fileSize: fileSize || 0 })
+            .catch(() => { });
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/uploadcare/signed-url',
-            method: 'POST',
-            provider: 'uploadcare',
-            operation: 'signed-url',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
-
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, redis:${redisTime}ms, validation:${validationTime}ms, operation:${operationTime}ms)`);
+        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
 
         // Success response
         res.status(200).json({
@@ -186,7 +140,7 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             message: 'Uploadcare upload URL generated successfully',
             data: {
                 uploadUrl: uploadUrl,
-                fileUrl: '', // Will be set after upload
+                fileUrl: '',
                 filename: uniqueFilename,
                 method: 'POST',
                 headers: {
@@ -213,10 +167,6 @@ export const generateUploadcareSignedUrl = async (req, res) => {
                     redisCheck: `${redisTime}ms`,
                     validation: `${validationTime}ms`,
                     operation: `${operationTime}ms`
-                },
-                cacheHits: {
-                    memory: memCheck.layer === 'memory',
-                    redis: redisLimit.layer === 'redis'
                 }
             }
         });
@@ -226,20 +176,8 @@ export const generateUploadcareSignedUrl = async (req, res) => {
         console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
-
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/uploadcare/signed-url',
-                method: 'POST',
-                provider: 'uploadcare',
-                operation: 'signed-url',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 'uploadcare', false)
+                .catch(() => { });
         }
 
         res.status(500).json({

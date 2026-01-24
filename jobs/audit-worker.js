@@ -140,13 +140,17 @@ async function flushBatch(redis, logs) {
 
     } catch (error) {
         console.error(`❌ [${WORKER_ID}] Batch insert failed:`, error.message);
+        console.error(`❌ [${WORKER_ID}] Error details:`, JSON.stringify(error, null, 2));
+        console.error(`❌ [${WORKER_ID}] First log entry:`, JSON.stringify(logs[0], null, 2));
         metrics.failuresLastMinute += logs.length;
 
-        // 🔄 Re-queue to failed queue for manual inspection
+        // 🔥 OPTIMIZED: Use pipeline for faster batch re-queue
         console.log(`🔄 [${WORKER_ID}] Re-queuing ${logs.length} failed logs...`);
+        const pipeline = redis.pipeline();
         for (const log of logs) {
-            await redis.lpush('audit:failed', JSON.stringify(log));
+            pipeline.lpush('audit:failed', JSON.stringify(log));
         }
+        await pipeline.exec();
     }
 }
 

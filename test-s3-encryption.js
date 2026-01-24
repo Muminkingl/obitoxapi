@@ -5,8 +5,8 @@
 import crypto from 'crypto';
 
 const API_URL = 'http://localhost:5500';
-const API_KEY = 'ox_f7dc6427f861ad84a7803651616e55f7245d352dc8b68a09';
-const API_SECRET = 'sk_0006067be525f03e92373a7b4b2040492b72a60e5b113e37c82bd401a093fd80';
+const API_KEY = 'ox_a409f2a37edf23b2ea5aec559d47fc066692ad5b67f32b0a';
+const API_SECRET = 'sk_aec7280bdbad52cc1ee27e15c647fd39f20f9f42356883d01e0e1a36ad3221e9';
 const S3_ACCESS_KEY = '8105c2c257b314edbc01fa0667cac2da';
 const S3_SECRET_KEY = '23b01e76dde5d81b913a36473676c077149bacf79049f0ba894ca7db08858e31';
 const S3_BUCKET = 'test';

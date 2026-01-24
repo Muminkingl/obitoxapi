@@ -65,8 +65,8 @@ export class SupabaseProvider extends BaseProvider<
      */
     private currentUploadController?: AbortController;
 
-    constructor(apiKey: string, baseUrl: string) {
-        super('SUPABASE', apiKey, baseUrl);
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+        super('SUPABASE', apiKey, baseUrl, apiSecret);
     }
 
     /**

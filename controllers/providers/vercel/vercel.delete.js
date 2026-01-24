@@ -1,15 +1,15 @@
 /**
  * Delete file from Vercel Blob
  * Uses Vercel Blob's del() function
+ * 
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import { del } from '@vercel/blob';
 import { validateVercelToken } from '../shared/validation.helper.js';
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 import { formatErrorResponse, handleProviderError, formatMissingFieldsError } from '../shared/error.helper.js';
-
-// NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
 
 /**
  * Delete file from Vercel Blob
@@ -22,23 +22,9 @@ export const deleteVercelFile = async (req, res) => {
         const { apiKeyId } = req;
         const userId = req.userId || apiKeyId;
 
-        // ========================================================================
-        // QUOTA CHECK (Database RPC) 💰
-        // ========================================================================
+        // 1. Check User Quota
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/vercel/delete',
-                method: 'DELETE',
-                provider: 'vercel',
-                operation: 'delete',
-                statusCode: 403,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(403).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
@@ -48,7 +34,7 @@ export const deleteVercelFile = async (req, res) => {
             });
         }
 
-        // 1. Validate required fields
+        // 2. Validate required fields
         if (!fileUrl || !vercelToken) {
             updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
                 .catch(err => console.error('Metrics error:', err));
@@ -60,7 +46,7 @@ export const deleteVercelFile = async (req, res) => {
             );
         }
 
-        // 2. Validate Vercel token
+        // 3. Validate Vercel token
         const tokenValidation = validateVercelToken(vercelToken);
         if (!tokenValidation.isValid) {
             updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
@@ -74,7 +60,7 @@ export const deleteVercelFile = async (req, res) => {
             );
         }
 
-        // 3. Delete from Vercel Blob with timeout
+        // 4. Delete from Vercel Blob with timeout
         try {
             const deletePromise = del(fileUrl, { token: vercelToken });
 
@@ -114,33 +100,17 @@ export const deleteVercelFile = async (req, res) => {
             );
         }
 
-        // 4. Update metrics (non-blocking)
+        // 5. Update metrics via Redis (non-blocking, single call)
         updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', true)
             .catch(err => console.error('Metrics error:', err));
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/vercel/delete',
-            method: 'DELETE',
-            provider: 'vercel',
-            operation: 'delete',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
-
-        // 5. Return success
+        // 6. Return success
         return res.status(200).json({
             success: true,
             message: 'File deleted successfully from Vercel Blob',
             fileUrl,
             provider: 'vercel',
-            timestamp: new Date().toISOString(),
-            debug_userId: userId // DEBUGGING
+            timestamp: new Date().toISOString()
         });
 
     } catch (error) {
@@ -148,19 +118,6 @@ export const deleteVercelFile = async (req, res) => {
 
         updateRequestMetrics(req.apiKeyId, req.userId, 'vercel', false)
             .catch(err => console.error('Metrics error:', err));
-
-        trackApiUsage({
-            userId: req.userId || req.apiKeyId,
-            endpoint: '/api/v1/upload/vercel/delete',
-            method: 'DELETE',
-            provider: 'vercel',
-            operation: 'delete',
-            statusCode: 500,
-            success: false,
-            apiKeyId: req.apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
 
         return res.status(500).json(
             formatErrorResponse(

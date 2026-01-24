@@ -61,8 +61,8 @@ export class UploadcareProvider extends BaseProvider<
      */
     private lastUploadcareUrl?: string;
 
-    constructor(apiKey: string, baseUrl: string) {
-        super('UPLOADCARE', apiKey, baseUrl);
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+        super('UPLOADCARE', apiKey, baseUrl, apiSecret);
     }
 
     /**

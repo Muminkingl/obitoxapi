@@ -14,6 +14,7 @@
  */
 
 import { BaseProvider } from '../base.provider.js';
+import { put } from '@vercel/blob';
 import type {
     VercelUploadOptions,
     VercelDeleteOptions,
@@ -50,12 +51,12 @@ export class VercelProvider extends BaseProvider<
     private currentUploadController?: AbortController;
 
     /**
-     * Last uploaded blob URL (stored for tracking)
+     * Progress interval ID for cleanup
      */
-    private lastBlobUrl?: string;
+    private progressIntervalId?: NodeJS.Timeout;
 
-    constructor(apiKey: string, baseUrl: string) {
-        super('VERCEL', apiKey, baseUrl);
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+        super('VERCEL', apiKey, baseUrl, apiSecret);
     }
 
     /**
@@ -219,23 +220,29 @@ export class VercelProvider extends BaseProvider<
         }
 
         try {
-            // Import the Vercel Blob SDK dynamically
-            const { put } = await import('@vercel/blob');
-
-            // Upload using the Vercel Blob SDK
+            // Upload using the Vercel Blob SDK (static import)
             const blob = await put(filename, file, {
                 token: vercelToken,
                 access: 'public', // Make the blob publicly accessible
             });
 
-            // Store the blob URL
-            this.lastBlobUrl = blob.url;
+            // Clear progress interval on success
+            if (this.progressIntervalId) {
+                clearInterval(this.progressIntervalId);
+                this.progressIntervalId = undefined;
+            }
 
             console.log(`✅ Uploaded to Vercel Blob: ${blob.url}`);
 
             return blob.url;
 
         } catch (error) {
+            // Clear progress interval on error
+            if (this.progressIntervalId) {
+                clearInterval(this.progressIntervalId);
+                this.progressIntervalId = undefined;
+            }
+
             // Handle cancellation
             if (error instanceof Error && error.name === 'AbortError') {
                 if (onCancel) {
@@ -267,19 +274,20 @@ export class VercelProvider extends BaseProvider<
     ): void {
         let bytesUploaded = 0;
 
-        const progressInterval = setInterval(() => {
+        // Store interval ID for cleanup when upload completes
+        this.progressIntervalId = setInterval(() => {
             bytesUploaded += Math.ceil(totalBytes / 10); // Simulate 10% increments
 
             if (bytesUploaded >= totalBytes) {
                 bytesUploaded = totalBytes;
-                clearInterval(progressInterval);
+                if (this.progressIntervalId) {
+                    clearInterval(this.progressIntervalId);
+                    this.progressIntervalId = undefined;
+                }
             }
 
             const progress = (bytesUploaded / totalBytes) * 100;
             onProgress(progress, bytesUploaded, totalBytes);
         }, 100); // Update every 100ms
-
-        // Clean up interval after 5 seconds (max upload time simulation)
-        setTimeout(() => clearInterval(progressInterval), 5000);
     }
 }

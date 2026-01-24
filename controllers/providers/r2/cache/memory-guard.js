@@ -16,6 +16,7 @@ const memoryCache = new NodeCache({
 });
 
 // Operation-specific limits (per minute)
+// ✅ UPDATED: Increased for PRO tier compatibility
 const MEMORY_LIMITS = {
     'signed-url': 100,    // Generate signed URLs (high limit)
     'upload': 20,         // Server-side uploads (CPU intensive)

@@ -48,7 +48,8 @@ import {
   validateUploadcareFile,
   getUploadcareProjectSettings,
   validateUploadcareSvg,
-  uploadcareHealthCheck
+  uploadcareHealthCheck,
+  trackUploadcareEvent  // ✅ NEW: Redis-based tracking (NO deprecated tables)
 } from '../controllers/providers/uploadcare/index.js';
 
 // ✅ NEW: Import all from modular R2 structure (enterprise caching + pure crypto!)
@@ -193,6 +194,9 @@ router.post('/uploadcare/remove-infected', validateApiKey, unifiedRateLimitMiddl
 router.post('/uploadcare/validate', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, validateUploadcareFile);
 router.post('/uploadcare/project-settings', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, getUploadcareProjectSettings);
 router.post('/uploadcare/validate-svg', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, validateUploadcareSvg);
+
+// ✅ NEW: Uploadcare tracking endpoint (uses Redis metrics - NO deprecated tables)
+router.post('/uploadcare/track', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, trackUploadcareEvent);
 
 // ===== CLOUDFLARE R2 PROVIDER ROUTES =====
 

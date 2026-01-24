@@ -209,14 +209,7 @@ export const deleteSupabaseFile = async (req, res) => {
             userAgent: req.headers['user-agent']
         });
 
-        // Update upload log (non-blocking)
-        supabaseAdmin
-            .from('upload_logs')
-            .update({ deleted_at: new Date().toISOString() })
-            .eq('filename', targetFilename)
-            .eq('bucket', targetBucket)
-            .then(() => { })
-            .catch(err => console.error('Upload log update error:', err));
+        // NOTE: upload_logs table has been deleted - metrics tracked via Redis now
 
         // Success response
         res.status(200).json({

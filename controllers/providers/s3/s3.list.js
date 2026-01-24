@@ -1,35 +1,25 @@
 /**
  * AWS S3 List Controller
- * 
  * List files in S3 bucket
  * 
- * Performance: 100-300ms (1 AWS API call)
- * 
- * CRITICAL:
- * - Makes AWS API call (not pure crypto)
- * - Supports pagination (up to 1000 files per request)
- * - Optional prefix filtering
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import {
     validateS3Credentials,
     getS3Client,
-    formatS3Response,
     formatS3Error
 } from './s3.config.js';
 import { isValidRegion, getInvalidRegionError } from '../../../utils/aws/s3-regions.js';
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
-import { incrementQuota, checkUsageWarnings } from '../../../utils/quota-manager.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
+import { incrementQuota } from '../../../utils/quota-manager.js';
 
-console.log('🔄 [S3 LIST] Module loaded!');
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * List files in S3 bucket
- * POST /api/v1/upload/s3/list
- * 
- * @param {Object} req - Express request
- * @param {Object} res - Express response
  */
 export const listS3Files = async (req, res) => {
     const requestId = `list_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -42,9 +32,9 @@ export const listS3Files = async (req, res) => {
             s3SecretKey,
             s3Bucket,
             s3Region = 'us-east-1',
-            prefix,                      // Optional: Filter by prefix (e.g., "uploads/")
-            maxKeys = 1000,              // Optional: Max files to return (default: 1000)
-            continuationToken            // Optional: For pagination
+            prefix,
+            maxKeys = 1000,
+            continuationToken
         } = req.body;
 
         apiKeyId = req.apiKeyId;
@@ -57,9 +47,7 @@ export const listS3Files = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Credentials
-        // ============================================================================
+        // VALIDATION
         if (!s3AccessKey || !s3SecretKey || !s3Bucket) {
             return res.status(400).json(formatS3Error(
                 'MISSING_S3_CREDENTIALS',
@@ -67,9 +55,6 @@ export const listS3Files = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Credentials & Region
-        // ============================================================================
         const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
         if (!credValidation.valid) {
             return res.status(400).json({
@@ -88,9 +73,6 @@ export const listS3Files = async (req, res) => {
             });
         }
 
-        // ============================================================================
-        // VALIDATION: MaxKeys
-        // ============================================================================
         if (maxKeys < 1 || maxKeys > 1000) {
             return res.status(400).json(formatS3Error(
                 'INVALID_MAX_KEYS',
@@ -99,34 +81,17 @@ export const listS3Files = async (req, res) => {
             ));
         }
 
-        // ============================================================================
         // QUOTA CHECK
-        // ============================================================================
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/s3/list',
-                method: 'POST',
-                provider: 's3',
-                operation: 'list',
-                statusCode: 429,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded'
             ));
         }
 
-        // ============================================================================
-        // AWS API CALL: List Objects
-        // ============================================================================
+        // AWS API CALL
         const apiCallStart = Date.now();
-
         const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
 
         const commandParams = {
@@ -143,15 +108,12 @@ export const listS3Files = async (req, res) => {
         }
 
         const command = new ListObjectsV2Command(commandParams);
-
         const result = await s3Client.send(command);
 
         const apiCallTime = Date.now() - apiCallStart;
         const totalTime = Date.now() - startTime;
 
-        // ============================================================================
-        // FORMAT: Files Array
-        // ============================================================================
+        // FORMAT FILES
         const files = (result.Contents || []).map(obj => ({
             key: obj.Key,
             size: obj.Size,
@@ -161,28 +123,12 @@ export const listS3Files = async (req, res) => {
             owner: obj.Owner?.DisplayName || null
         }));
 
-        // ============================================================================
-        // ANALYTICS
-        // ============================================================================
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/s3/list',
-            method: 'POST',
-            provider: 's3',
-            operation: 'list',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 's3', true)
+            .catch(() => { });
 
-        console.log(`[${requestId}] ✅ S3 list: ${result.KeyCount} files in ${totalTime}ms (API: ${apiCallTime}ms)`);
+        console.log(`[${requestId}] ✅ S3 list: ${result.KeyCount} files in ${totalTime}ms`);
 
-        // ============================================================================
-        // RESPONSE
-        // ============================================================================
         const response = {
             success: true,
             files,
@@ -204,15 +150,12 @@ export const listS3Files = async (req, res) => {
         };
 
         res.status(200).json(response);
-
-        // Increment quota (fire-and-forget)
         incrementQuota(userId, 1).catch(() => { });
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
         console.error(`[${requestId}] 💥 S3 list error after ${totalTime}ms:`, error);
 
-        // Handle specific S3 errors
         if (error.name === 'NoSuchBucket' || error.message.includes('NoSuchBucket')) {
             return res.status(404).json(formatS3Error(
                 'BUCKET_NOT_FOUND',
@@ -230,18 +173,8 @@ export const listS3Files = async (req, res) => {
         }
 
         if (apiKeyId) {
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/s3/list',
-                method: 'POST',
-                provider: 's3',
-                operation: 'list',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
+                .catch(() => { });
         }
 
         return res.status(500).json(formatS3Error(

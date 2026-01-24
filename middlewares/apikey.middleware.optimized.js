@@ -45,10 +45,11 @@ const fetchApiKeyFromDatabase = async (apiKey) => {
     console.log('✅ API key fetched from database:', apiKeyData.id);
   }
 
-  // Get user profile data (for caching)
+  // Get user profile data with computed tier (for caching)
+  // ✅ NEW: Query profiles_with_tier view for computed tier
   const { data: profile } = await supabaseAdmin
-    .from('profiles')
-    .select('plan, subscription_tier')
+    .from('profiles_with_tier')
+    .select('subscription_tier, subscription_tier_paid, subscription_status, is_subscription_expired, is_in_grace_period, api_requests_limit, plan_name')
     .eq('id', apiKeyData.user_id)
     .single();
 
@@ -208,20 +209,9 @@ const validateApiKey = async (req, res, next) => {
       .then(() => { })
       .catch(err => console.error('Failed to update last_used_at:', err));
 
-    // Log API usage for analytics/monitoring (non-blocking, async)
-    supabaseAdmin
-      .from('api_usage_logs')
-      .insert({
-        api_key_id: apiKeyData.id,
-        user_id: apiKeyData.user_id,
-        endpoint: req.path,
-        method: req.method,
-        ip_address: req.ip || req.connection.remoteAddress,
-        user_agent: req.headers['user-agent'],
-        created_at: new Date().toISOString()
-      })
-      .then(() => { })
-      .catch(err => console.error('Failed to log API usage:', err));
+    // ✅ REMOVED: Direct api_usage_logs insert
+    // API usage is now logged via trackApiUsage() in controllers
+    // This prevents duplicate writes and database bottleneck at 10K+ req/min
 
     // Attach user data to request
     req.userId = apiKeyData.user_id;

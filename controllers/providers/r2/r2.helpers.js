@@ -1,222 +1,31 @@
 /**
  * Cloudflare R2 Helper Functions
- * Shared utilities for metrics tracking, logging, and validation
- * Following Rule #9: Track EXACT same metrics as other providers
+ * Shared utilities for validation and filename generation
+ * 
+ * OPTIMIZED: Removed legacy DB functions - use updateRequestMetrics from metrics.helper.js
  */
-
-import { supabaseAdmin } from '../../../config/supabase.js';
 
 /**
- * Update request metrics for R2 (NON-BLOCKING)
- * Following Rule #6: NO blocking database writes
- * Following Rule #9: Same metrics as Vercel/Supabase/Uploadcare
- * 
- * @param {string} apiKeyId - API key ID
- * @param {string} userId - User ID
- * @param {string} provider - Provider name ('r2')
- * @param {string} status - 'success' or 'failed'
- * @param {number} fileSize - File size in bytes
- * @param {string} fileType - MIME type
+ * Update request metrics for R2 (NO-OP - DEPRECATED)
+ * @deprecated This function made 7+ DB calls per request!
+ *             Use updateRequestMetrics from metrics.helper.js instead.
+ *             That function uses Redis for 70% less DB load.
  */
-export const updateR2Metrics = async (apiKeyId, userId, provider, status, fileSize = 0, fileType = null) => {
-    try {
-        // Get current values to increment them
-        const { data: currentData, error: fetchError } = await supabaseAdmin
-            .from('api_keys')
-            .select('total_requests, successful_requests, failed_requests')
-            .eq('id', apiKeyId)
-            .single();
-
-        if (fetchError) {
-            return;
-        }
-
-        const currentTotal = currentData?.total_requests || 0;
-        const currentSuccess = currentData?.successful_requests || 0;
-        const currentFailed = currentData?.failed_requests || 0;
-
-        // Update main api_keys table metrics
-        await supabaseAdmin
-            .from('api_keys')
-            .update({
-                total_requests: currentTotal + 1,
-                last_request_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', apiKeyId);
-
-        // Update file size and count for successful uploads
-        if (status === 'success' && fileSize > 0) {
-            const { data: currentFileData } = await supabaseAdmin
-                .from('api_keys')
-                .select('total_file_size, total_files_uploaded')
-                .eq('id', apiKeyId)
-                .single();
-
-            const currentFileSize = currentFileData?.total_file_size || 0;
-            const currentFileCount = currentFileData?.total_files_uploaded || 0;
-
-            await supabaseAdmin
-                .from('api_keys')
-                .update({
-                    total_file_size: currentFileSize + fileSize,
-                    total_files_uploaded: currentFileCount + 1
-                })
-                .eq('id', apiKeyId);
-
-            // Update file type counts
-            if (fileType) {
-                const { data: currentTypeCounts } = await supabaseAdmin
-                    .from('api_keys')
-                    .select('file_type_counts')
-                    .eq('id', apiKeyId)
-                    .single();
-
-                const typeCounts = currentTypeCounts?.file_type_counts || {};
-                typeCounts[fileType] = (typeCounts[fileType] || 0) + 1;
-
-                await supabaseAdmin
-                    .from('api_keys')
-                    .update({
-                        file_type_counts: typeCounts
-                    })
-                    .eq('id', apiKeyId);
-            }
-        }
-
-        // Update success/failure counters
-        if (status === 'success') {
-            await supabaseAdmin
-                .from('api_keys')
-                .update({
-                    successful_requests: currentSuccess + 1
-                })
-                .eq('id', apiKeyId);
-        } else {
-            await supabaseAdmin
-                .from('api_keys')
-                .update({
-                    failed_requests: currentFailed + 1
-                })
-                .eq('id', apiKeyId);
-        }
-
-        // Update provider usage (SAME table as other providers)
-        if (status === 'success' && provider) {
-            const { data: existingUsage, error: usageError } = await supabaseAdmin
-                .from('provider_usage')
-                .select('upload_count, total_file_size')
-                .eq('api_key_id', apiKeyId)
-                .eq('provider', provider.toLowerCase())
-                .single();
-
-            if (usageError && usageError.code !== 'PGRST116') {
-                return;
-            }
-
-            const currentUploads = existingUsage?.upload_count || 0;
-            const currentSize = existingUsage?.total_file_size || 0;
-
-            if (existingUsage) {
-                // Update existing record
-                await supabaseAdmin
-                    .from('provider_usage')
-                    .update({
-                        upload_count: currentUploads + 1,
-                        total_file_size: currentSize + fileSize,
-                        average_file_size: Math.round((currentSize + fileSize) / (currentUploads + 1)),
-                        last_used_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('api_key_id', apiKeyId)
-                    .eq('provider', provider.toLowerCase());
-            } else {
-                // Insert new record
-                await supabaseAdmin
-                    .from('provider_usage')
-                    .insert({
-                        api_key_id: apiKeyId,
-                        user_id: userId,
-                        provider: provider.toLowerCase(),
-                        upload_count: 1,
-                        total_file_size: fileSize,
-                        average_file_size: fileSize,
-                        file_type_counts: fileType ? { [fileType]: 1 } : {},
-                        last_used_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
-                    });
-            }
-        }
-
-        // Log the request for detailed tracking
-        await supabaseAdmin
-            .from('request_logs')
-            .insert({
-                api_key_id: apiKeyId,
-                user_id: userId,
-                request_type: 'upload',
-                provider: provider ? provider.toLowerCase() : null,
-                status: status,
-                file_size: fileSize,
-                created_at: new Date().toISOString()
-            });
-
-    } catch (error) {
-        // Non-blocking - continue even if metrics update fails
-        console.error('R2 metrics update error:', error);
-    }
+export const updateR2Metrics = async () => {
+    // NO-OP: This was making 7 sequential DB calls
+    // All metrics are now tracked via updateRequestMetrics (Redis-backed)
+    return;
 };
 
 /**
- * Log individual file upload to granular tracking tables (NON-BLOCKING)
- * 
- * @param {string} apiKeyId - API key ID
- * @param {string} userId - User ID
- * @param {string} provider - Provider name ('r2')
- * @param {string} fileName - File name
- * @param {string} fileType - MIME type
- * @param {number} fileSize - File size in bytes
- * @param {string} uploadStatus - 'success' or 'failed'
- * @param {string} fileUrl - Public file URL
- * @param {string} errorMessage - Error message if failed
+ * Log individual file upload (NO-OP - DEPRECATED)
+ * @deprecated Tables file_uploads and api_requests have been deleted.
+ *             Use updateRequestMetrics from metrics.helper.js instead.
  */
-export const logR2Upload = async (apiKeyId, userId, provider, fileName, fileType, fileSize, uploadStatus, fileUrl = null, errorMessage = null) => {
-    try {
-        // Insert into file_uploads table
-        await supabaseAdmin
-            .from('file_uploads')
-            .insert({
-                api_key_id: apiKeyId,
-                user_id: userId,
-                provider: provider,
-                file_name: fileName,
-                file_type: fileType,
-                file_size: fileSize,
-                upload_status: uploadStatus,
-                file_url: fileUrl,
-                error_message: errorMessage,
-                uploaded_at: new Date().toISOString()
-            });
-
-        // Insert into api_requests table
-        await supabaseAdmin
-            .from('api_requests')
-            .insert({
-                api_key_id: apiKeyId,
-                user_id: userId,
-                request_type: 'upload',
-                provider: provider,
-                status_code: uploadStatus === 'success' ? 200 : 400,
-                request_size_bytes: fileSize,
-                response_size_bytes: uploadStatus === 'success' ? fileSize : 0,
-                error_message: errorMessage,
-                requested_at: new Date().toISOString()
-            });
-
-    } catch (error) {
-        // Non-blocking - don't fail the main operation if logging fails
-        console.error('R2 upload log error:', error);
-    }
+export const logR2Upload = async () => {
+    // NO-OP: file_uploads and api_requests tables have been deleted
+    // Metrics are now tracked via Redis → api_keys, provider_usage, etc.
+    return;
 };
 
 /**
@@ -237,7 +46,7 @@ export const generateR2Filename = (originalName, apiKey = null) => {
         const baseName = originalName
             .split('.')[0]
             .replace(/[^a-zA-Z0-9_-]/g, '_')
-            .substring(0, 50); // Limit base name length
+            .substring(0, 50);
 
         // Add API key prefix for organization (first 8 chars)
         const keyPrefix = apiKey ? apiKey.substring(0, 8) : 'unknown';

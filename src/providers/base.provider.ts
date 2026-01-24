@@ -184,8 +184,8 @@ export abstract class BaseProvider<
             const method = options.method || 'GET';
             const body = options.body;
 
-            // Generate signature
-            const signature = this.generateSignature(method, endpoint, timestamp, body);
+            // Generate signature (async for ESM compatibility)
+            const signature = await this.generateSignature(method, endpoint, timestamp, body);
 
             headers['X-API-Secret'] = this.apiSecret;
             headers['X-Signature'] = signature;
@@ -218,9 +218,9 @@ export abstract class BaseProvider<
      * 
      * @private
      */
-    private generateSignature(method: string, path: string, timestamp: number, body: any): string {
-        // Node.js crypto (will add browser support later)
-        const crypto = require('crypto');
+    private async generateSignature(method: string, path: string, timestamp: number, body: any): Promise<string> {
+        // Dynamic import for Node.js crypto (ESM compatible)
+        const { createHmac } = await import('crypto');
 
         // Normalize body
         const bodyString = typeof body === 'string'
@@ -233,7 +233,7 @@ export abstract class BaseProvider<
         const message = `${method.toUpperCase()}|${path}|${timestamp}|${bodyString}`;
 
         // Generate HMAC-SHA256
-        const hmac = crypto.createHmac('sha256', this.apiSecret!);
+        const hmac = createHmac('sha256', this.apiSecret!);
         hmac.update(message);
         return hmac.digest('hex');
     }
@@ -280,12 +280,16 @@ export abstract class BaseProvider<
         metadata?: Record<string, any>
     ): Promise<void> {
         try {
-            await this.makeRequest('/api/v1/upload/track', {
+            // Use provider-specific track endpoint
+            const providerPath = this.providerName.toLowerCase();
+            const endpoint = `/api/v1/upload/${providerPath}/track`;
+
+            await this.makeRequest(endpoint, {
                 method: 'POST',
                 body: JSON.stringify({
                     event,
                     fileUrl,
-                    provider: this.providerName.toLowerCase(),
+                    provider: providerPath,
                     ...metadata,
                 }),
             });

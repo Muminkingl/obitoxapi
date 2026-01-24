@@ -12,12 +12,14 @@
  * see: test-actual-sdk-uploadcare-advanced.js
  */
 
-import ObitoX from './dist/client.js';
+import ObitoX from '../../dist/index.esm.js';
 
 
-const API_KEY = 'ox_196aed8312066f42b12566f79bc30b55ff2e3209794abc23';
-const UPLOADCARE_PUBLIC_KEY = process.env.UPLOADCARE_PUBLIC_KEY || 'b538618c3e84a2fe4e0c';
-const UPLOADCARE_SECRET_KEY = process.env.UPLOADCARE_SECRET_KEY || '5f5aabee5aa61693d9dc';
+// Layer 2 Security: API Key + Secret for HMAC-SHA256 signatures
+const API_KEY = 'ox_a409f2a37edf23b2ea5aec559d47fc066692ad5b67f32b0a';
+const API_SECRET = 'sk_aec7280bdbad52cc1ee27e15c647fd39f20f9f42356883d01e0e1a36ad3221e9';
+const UPLOADCARE_PUBLIC_KEY = process.env.UPLOADCARE_PUBLIC_KEY || '161fe6bb917ca422b3c0';
+const UPLOADCARE_SECRET_KEY = process.env.UPLOADCARE_SECRET_KEY || '1e1be49777715a657cb4';
 
 console.log('🎯 ACTUAL REFACTORED SDK TEST - UPLOADCARE PROVIDER (Core)\n');
 console.log('='.repeat(80));
@@ -45,11 +47,15 @@ async function testSDKInit() {
     console.log('─'.repeat(80));
 
     try {
-        const client = new ObitoX({ apiKey: API_KEY });
+        const client = new ObitoX({
+            apiKey: API_KEY,
+            apiSecret: API_SECRET  // Layer 2: HMAC-SHA256 signatures
+        });
 
         console.log('   ✅ SDK initialized successfully!');
         console.log(`   🏗️  Constructor: ${client.constructor.name}`);
         console.log(`   📦 Type: ${typeof client}`);
+        console.log(`   🔐 Security: Layer 2 (HMAC-SHA256 Signatures) ✅`);
 
         results.sdkInit = true;
         return client;
@@ -98,19 +104,28 @@ async function testFileUpload(client) {
     console.log('─'.repeat(80));
 
     try {
-        // Create test content with proper file extension
-        const testContent = `UPLOADCARE SDK TEST - ${new Date().toISOString()}`;
-        const filename = `uploadcare-sdk-test-${Date.now()}.txt`;
+        // Create a minimal 1x1 pixel PNG image (valid image for Uploadcare)
+        // PNG signature + minimal IHDR chunk for 1x1 white pixel
+        const pngData = new Uint8Array([
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1 dimensions
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // bit depth, color, compression, filter, interlace, CRC
+            0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, // IDAT chunk
+            0x54, 0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, // compressed image data (white pixel)
+            0x00, 0x05, 0xFE, 0x02, 0xFE, 0xDC, 0xCC, 0x59, // CRC
+            0xE7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, // IEND chunk
+            0x44, 0xAE, 0x42, 0x60, 0x82                     // CRC
+        ]);
 
-        // Create a proper File object
-        const file = new File([testContent], filename, { type: 'text/plain' });
+        const filename = `uploadcare-sdk-test-${Date.now()}.png`;
+        const file = new File([pngData], filename, { type: 'image/png' });
 
-        console.log('   📦 Test file created');
+        console.log('   📦 Test file created (1x1 PNG image)');
         console.log(`   📏 Filename: ${filename}`);
         console.log(`   📏 Size: ${file.size} bytes`);
         console.log(`   📏 Type: ${file.type}`);
         console.log('   🔍 Calling client.uploadFile() with progress tracking...');
-
         let progressCount = 0;
         const startTime = Date.now();
 

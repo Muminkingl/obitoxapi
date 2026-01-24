@@ -1,22 +1,8 @@
 /**
  * AWS S3 Multipart Upload Controllers
- * 
  * For files >100MB (AWS recommendation)
  * 
- * CRITICAL POINTS:
- * - This DOES make AWS API calls (CreateMultipartUpload, CompleteMultipartUpload)
- * - Only used for large files (>100MB)
- * - Smaller files (<100MB) use regular signed URL (pure crypto, NO API calls)
- * 
- * Benefits:
- * - Faster uploads (parallel parts)
- * - Resumable (network failures)
- * - Required for files >5GB
- * 
- * Architecture:
- * 1. Client calls /multipart/initiate → Get uploadId + part URLs
- * 2. Client uploads parts in parallel → Directly to S3
- * 3. Client calls /multipart/complete → Finalize upload
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import {
@@ -28,42 +14,33 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
     validateS3Credentials,
-    validateFileSize,
-    validateStorageClass,
     validateEncryptionType,
     validateKmsKeyArn,
     getS3Client,
     generateObjectKey,
-    formatS3Response,
     formatS3Error,
     SIGNED_URL_EXPIRY,
-    DEFAULT_ENCRYPTION,
     MAX_FILE_SIZE,
     ENCRYPTION_TYPES
 } from './s3.config.js';
 import { buildS3PublicUrl, isValidRegion } from '../../../utils/aws/s3-regions.js';
 import { isValidStorageClass as validateStorageClassName } from '../../../utils/aws/s3-storage-classes.js';
 import { getCloudFrontUrl, isValidCloudFrontDomain } from '../../../utils/aws/s3-cloudfront.js';
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
-import { incrementQuota, checkUsageWarnings } from '../../../utils/quota-manager.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
+import { incrementQuota } from '../../../utils/quota-manager.js';
+
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 // Multipart upload constants
-const MIN_MULTIPART_SIZE = 100 * 1024 * 1024; // 100MB (recommended threshold)
-const PART_SIZE = 10 * 1024 * 1024; // 10MB per part (default)
-const MIN_PART_SIZE = 5 * 1024 * 1024; // 5MB (AWS minimum)
-const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5GB (AWS maximum)
-const MAX_PARTS = 10000; // AWS maximum parts
-
-console.log('🔄 [S3 MULTIPART] Module loaded!');
+const MIN_MULTIPART_SIZE = 100 * 1024 * 1024; // 100MB
+const PART_SIZE = 10 * 1024 * 1024; // 10MB per part
+const MIN_PART_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5GB
+const MAX_PARTS = 10000;
 
 /**
  * Initiate Multipart Upload
- * POST /api/v1/upload/s3/multipart/initiate
- * 
- * Creates a multipart upload and returns presigned URLs for each part
- * 
- * @param {Object} req - Express request
- * @param {Object} res - Express response
  */
 export const initiateS3MultipartUpload = async (req, res) => {
     const requestId = `mp_init_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -81,9 +58,9 @@ export const initiateS3MultipartUpload = async (req, res) => {
             s3Region = 'us-east-1',
             s3StorageClass = 'STANDARD',
             s3CloudFrontDomain,
-            s3EncryptionType = 'SSE-S3',      // OPTIONAL: Encryption type (Phase 3B)
-            s3KmsKeyId,                        // OPTIONAL: KMS key ARN (required if SSE-KMS)
-            s3EnableVersioning = false,       // OPTIONAL: Enable versioning info (Phase 3C)
+            s3EncryptionType = 'SSE-S3',
+            s3KmsKeyId,
+            s3EnableVersioning = false,
             partSize = PART_SIZE,
             expiresIn = SIGNED_URL_EXPIRY
         } = req.body;
@@ -98,9 +75,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Required Fields
-        // ============================================================================
+        // VALIDATION
         if (!filename || !contentType || !fileSize) {
             return res.status(400).json(formatS3Error(
                 'MISSING_PARAMETERS',
@@ -115,13 +90,10 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: File Size (must be >100MB for multipart)
-        // ============================================================================
         if (fileSize < MIN_MULTIPART_SIZE) {
             return res.status(400).json(formatS3Error(
                 'FILE_TOO_SMALL_FOR_MULTIPART',
-                `File size (${fileSize} bytes) is too small for multipart upload. Use regular signed URL for files <100MB.`,
+                `File size (${fileSize} bytes) is too small for multipart. Use regular signed URL for files <100MB.`,
                 'For files <100MB, use POST /api/v1/upload/s3/signed-url instead'
             ));
         }
@@ -133,9 +105,6 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Part Size
-        // ============================================================================
         if (partSize < MIN_PART_SIZE || partSize > MAX_PART_SIZE) {
             return res.status(400).json(formatS3Error(
                 'INVALID_PART_SIZE',
@@ -143,7 +112,6 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // Calculate number of parts needed
         const partCount = Math.ceil(fileSize / partSize);
         if (partCount > MAX_PARTS) {
             return res.status(400).json(formatS3Error(
@@ -152,9 +120,6 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Credentials, Region, Storage Class
-        // ============================================================================
         const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
         if (!credValidation.valid) {
             return res.status(400).json({
@@ -185,9 +150,6 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // VALIDATION: Encryption Type & KMS Key (Phase 3B)
-        // ============================================================================
         const encryptionValidation = validateEncryptionType(s3EncryptionType);
         if (!encryptionValidation.valid) {
             return res.status(400).json({
@@ -208,9 +170,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
             }
         }
 
-        // ============================================================================
         // QUOTA CHECK
-        // ============================================================================
         const quotaCheck = await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
@@ -219,20 +179,12 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // OPERATION: Generate Object Key
-        // ============================================================================
         const objectKey = generateObjectKey(filename);
 
-        // ============================================================================
-        // AWS API CALL: Create Multipart Upload
-        // This is the ONE network call for initiating
-        // ============================================================================
+        // AWS API CALL
         const apiCallStart = Date.now();
-
         const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
 
-        // Phase 3B: Support SSE-KMS encryption
         const encryptionParams = {
             ServerSideEncryption: ENCRYPTION_TYPES[s3EncryptionType]
         };
@@ -254,12 +206,10 @@ export const initiateS3MultipartUpload = async (req, res) => {
 
         const apiCallTime = Date.now() - apiCallStart;
 
-        // ============================================================================
-        // OPERATION: Generate Presigned URLs for Each Part (Pure Crypto)
-        // ============================================================================
+        // Generate Part URLs
         const signingStart = Date.now();
-
         const partUrls = [];
+
         for (let i = 1; i <= partCount; i++) {
             const partCommand = new UploadPartCommand({
                 Bucket: s3Bucket,
@@ -268,48 +218,23 @@ export const initiateS3MultipartUpload = async (req, res) => {
                 PartNumber: i
             });
 
-            const partUrl = await getSignedUrl(s3Client, partCommand, {
-                expiresIn
-            });
-
-            partUrls.push({
-                partNumber: i,
-                uploadUrl: partUrl
-            });
+            const partUrl = await getSignedUrl(s3Client, partCommand, { expiresIn });
+            partUrls.push({ partNumber: i, uploadUrl: partUrl });
         }
 
         const signingTime = Date.now() - signingStart;
 
-        // ============================================================================
-        // BUILD: Public URL
-        // ============================================================================
         const publicUrl = buildS3PublicUrl(s3Bucket, s3Region, objectKey);
         const cdnUrl = getCloudFrontUrl(objectKey, s3CloudFrontDomain);
 
         const totalTime = Date.now() - startTime;
 
-        // ============================================================================
-        // ANALYTICS
-        // ============================================================================
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/s3/multipart/initiate',
-            method: 'POST',
-            provider: 's3',
-            operation: 'multipart-initiate',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 's3', true)
+            .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Multipart initiated in ${totalTime}ms (API: ${apiCallTime}ms, signing: ${signingTime}ms)`);
+        console.log(`[${requestId}] ✅ Multipart initiated in ${totalTime}ms`);
 
-        // ============================================================================
-        // RESPONSE
-        // ============================================================================
         const response = {
             success: true,
             uploadId,
@@ -322,17 +247,12 @@ export const initiateS3MultipartUpload = async (req, res) => {
             provider: 's3',
             region: s3Region,
             storageClass: s3StorageClass,
-            encryption: {                 // Phase 3B
+            encryption: {
                 type: s3EncryptionType,
                 algorithm: ENCRYPTION_TYPES[s3EncryptionType],
                 ...(s3EncryptionType === 'SSE-KMS' && s3KmsKeyId && { kmsKeyId: s3KmsKeyId })
             },
-            versioning: s3EnableVersioning ? {  // Phase 3C
-                enabled: true,
-                note: 'Versioning must be enabled on your S3 bucket. AWS will auto-assign versionId on completion.',
-                how: 'AWS Console → S3 → Your Bucket → Properties → Bucket Versioning → Enable',
-                docs: 'https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html'
-            } : undefined,
+            versioning: s3EnableVersioning ? { enabled: true } : undefined,
             instructions: {
                 step1: 'Upload each part to its corresponding uploadUrl using PUT request',
                 step2: 'After all parts uploaded, call POST /api/v1/upload/s3/multipart/complete with uploadId and parts',
@@ -349,8 +269,6 @@ export const initiateS3MultipartUpload = async (req, res) => {
         };
 
         res.status(200).json(response);
-
-        // Increment quota (fire-and-forget)
         incrementQuota(userId, 1).catch(() => { });
 
     } catch (error) {
@@ -358,18 +276,8 @@ export const initiateS3MultipartUpload = async (req, res) => {
         console.error(`[${requestId}] 💥 Multipart initiate error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/s3/multipart/initiate',
-                method: 'POST',
-                provider: 's3',
-                operation: 'multipart-initiate',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
+                .catch(() => { });
         }
 
         return res.status(500).json(formatS3Error(
@@ -382,12 +290,6 @@ export const initiateS3MultipartUpload = async (req, res) => {
 
 /**
  * Complete Multipart Upload
- * POST /api/v1/upload/s3/multipart/complete
- * 
- * Finalizes the multipart upload after all parts uploaded
- * 
- * @param {Object} req - Express request
- * @param {Object} res - Express response
  */
 export const completeS3MultipartUpload = async (req, res) => {
     const requestId = `mp_complete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -398,7 +300,7 @@ export const completeS3MultipartUpload = async (req, res) => {
         const {
             uploadId,
             objectKey,
-            parts, // Array of { partNumber, etag }
+            parts,
             s3AccessKey,
             s3SecretKey,
             s3Bucket,
@@ -415,9 +317,7 @@ export const completeS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
         // VALIDATION
-        // ============================================================================
         if (!uploadId || !objectKey || !parts || !Array.isArray(parts)) {
             return res.status(400).json(formatS3Error(
                 'MISSING_PARAMETERS',
@@ -432,7 +332,6 @@ export const completeS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // Validate parts format
         for (const part of parts) {
             if (!part.partNumber || !part.etag) {
                 return res.status(400).json(formatS3Error(
@@ -442,11 +341,8 @@ export const completeS3MultipartUpload = async (req, res) => {
             }
         }
 
-        // ============================================================================
-        // AWS API CALL: Complete Multipart Upload
-        // ============================================================================
+        // AWS API CALL
         const apiCallStart = Date.now();
-
         const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
 
         const completeCommand = new CompleteMultipartUploadCommand({
@@ -466,28 +362,12 @@ export const completeS3MultipartUpload = async (req, res) => {
         const apiCallTime = Date.now() - apiCallStart;
         const totalTime = Date.now() - startTime;
 
-        // ============================================================================
-        // ANALYTICS
-        // ============================================================================
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/s3/multipart/complete',
-            method: 'POST',
-            provider: 's3',
-            operation: 'multipart-complete',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 's3', true)
+            .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Multipart completed in ${totalTime}ms (API: ${apiCallTime}ms)`);
+        console.log(`[${requestId}] ✅ Multipart completed in ${totalTime}ms`);
 
-        // ============================================================================
-        // RESPONSE
-        // ============================================================================
         res.status(200).json({
             success: true,
             location: completeResponse.Location,
@@ -508,18 +388,8 @@ export const completeS3MultipartUpload = async (req, res) => {
         console.error(`[${requestId}] 💥 Multipart complete error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/s3/multipart/complete',
-                method: 'POST',
-                provider: 's3',
-                operation: 'multipart-complete',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
+                .catch(() => { });
         }
 
         return res.status(500).json(formatS3Error(
@@ -532,12 +402,6 @@ export const completeS3MultipartUpload = async (req, res) => {
 
 /**
  * Abort Multipart Upload
- * POST /api/v1/upload/s3/multipart/abort
- * 
- * Cancels a multipart upload and cleans up parts
- * 
- * @param {Object} req - Express request
- * @param {Object} res - Express response
  */
 export const abortS3MultipartUpload = async (req, res) => {
     const requestId = `mp_abort_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -564,9 +428,7 @@ export const abortS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
         // VALIDATION
-        // ============================================================================
         if (!uploadId || !objectKey) {
             return res.status(400).json(formatS3Error(
                 'MISSING_PARAMETERS',
@@ -581,11 +443,8 @@ export const abortS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        // ============================================================================
-        // AWS API CALL: Abort Multipart Upload
-        // ============================================================================
+        // AWS API CALL
         const apiCallStart = Date.now();
-
         const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
 
         const abortCommand = new AbortMultipartUploadCommand({
@@ -599,28 +458,12 @@ export const abortS3MultipartUpload = async (req, res) => {
         const apiCallTime = Date.now() - apiCallStart;
         const totalTime = Date.now() - startTime;
 
-        // ============================================================================
-        // ANALYTICS
-        // ============================================================================
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/s3/multipart/abort',
-            method: 'POST',
-            provider: 's3',
-            operation: 'multipart-abort',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 's3', true)
+            .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Multipart aborted in ${totalTime}ms (API: ${apiCallTime}ms)`);
+        console.log(`[${requestId}] ✅ Multipart aborted in ${totalTime}ms`);
 
-        // ============================================================================
-        // RESPONSE
-        // ============================================================================
         res.status(200).json({
             success: true,
             message: 'Multipart upload aborted successfully',
@@ -639,18 +482,8 @@ export const abortS3MultipartUpload = async (req, res) => {
         console.error(`[${requestId}] 💥 Multipart abort error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/s3/multipart/abort',
-                method: 'POST',
-                provider: 's3',
-                operation: 'multipart-abort',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
+                .catch(() => { });
         }
 
         return res.status(500).json(formatS3Error(

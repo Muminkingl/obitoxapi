@@ -5,14 +5,14 @@ export const validateApiKey = async (req, res, next) => {
   try {
     // Get API key from header or query parameter
     const apiKey = req.headers['x-api-key'] || req.query.apiKey;
-    
+
     if (!apiKey) {
       return res.status(401).json({
         success: false,
         message: 'API key is required'
       });
     }
-    
+
     // Validate API key format (ox_randomstring)
     if (!apiKey.startsWith('ox_') || apiKey.length < 10) {
       return res.status(401).json({
@@ -20,55 +20,56 @@ export const validateApiKey = async (req, res, next) => {
         message: 'Invalid API key format'
       });
     }
-    
+
     // Validate API key in database with tracking metrics
     const { data: apiKeyData, error } = await supabaseAdmin
       .from('api_keys')
       .select('id, user_id, name, created_at, last_used_at, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded, file_type_counts')
       .eq('key_value', apiKey)
       .single();
-      
+
     if (error || !apiKeyData) {
       return res.status(401).json({
         success: false,
         message: 'Invalid API key'
       });
     }
-    
+
     // Update last_used_at timestamp
     await supabaseAdmin
       .from('api_keys')
       .update({ last_used_at: new Date() })
       .eq('id', apiKeyData.id);
-    
+
     // Get user information from Supabase
     const { data: { user }, error: userError } = await supabaseAdmin.auth.admin.getUserById(apiKeyData.user_id);
-    
+
     if (userError || !user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
-    // Get user's plan/profile information
+
+    // Get user's plan/profile information with computed tier
+    // ✅ NEW: Query profiles_with_tier view for computed tier and limits
     const { data: profile, error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .select('*')
+      .from('profiles_with_tier')
+      .select('subscription_tier, subscription_tier_paid, subscription_status, is_subscription_expired, is_in_grace_period, api_requests_limit, plan_name')
       .eq('id', apiKeyData.user_id)
       .single();
-    
+
     // Get provider usage statistics
     const { data: providerUsage, error: providerError } = await supabaseAdmin
       .from('provider_usage')
       .select('provider, upload_count, total_file_size')
       .eq('api_key_id', apiKeyData.id);
-    
+
     // Calculate success rate
-    const successRate = apiKeyData.total_requests > 0 
+    const successRate = apiKeyData.total_requests > 0
       ? Math.round((apiKeyData.successful_requests / apiKeyData.total_requests) * 100 * 100) / 100
       : 0;
-    
+
     // Format file size in human-readable format
     const formatFileSize = (bytes) => {
       if (bytes === 0) return '0 bytes';
@@ -77,7 +78,7 @@ export const validateApiKey = async (req, res, next) => {
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
-    
+
     // Format provider usage data
     const providerStats = {};
     if (providerUsage && !providerError) {
@@ -88,7 +89,7 @@ export const validateApiKey = async (req, res, next) => {
         };
       });
     }
-    
+
     return res.status(200).json({
       success: true,
       message: 'Valid API key',
@@ -134,14 +135,14 @@ export const validateApiKeyPost = async (req, res, next) => {
   try {
     // Get API key from request body or header
     const apiKey = req.body.apiKey || req.headers['x-api-key'];
-    
+
     if (!apiKey) {
       return res.status(401).json({
         success: false,
         message: 'API key is required'
       });
     }
-    
+
     // Call the same validation logic
     req.headers['x-api-key'] = apiKey;
     return validateApiKey(req, res, next);

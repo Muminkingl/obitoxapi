@@ -1,6 +1,8 @@
 /**
  * Uploadcare File Listing
  * WITH ENTERPRISE MULTI-LAYER CACHING
+ * 
+ * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
  */
 
 import {
@@ -8,14 +10,16 @@ import {
     validateUploadcareCredentials,
     getUploadcareHeaders
 } from './uploadcare.config.js';
-import { updateUploadcareMetrics } from './uploadcare.helpers.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
 
-// NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+// Quota check
+import { checkUserQuota } from '../shared/analytics.new.js';
+
+// 🚀 REDIS METRICS: Single source of truth
+import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
  * List files from Uploadcare
@@ -24,11 +28,12 @@ export const listUploadcareFiles = async (req, res) => {
     const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
     let apiKeyId;
+    let userId;
 
     try {
         const { uploadcarePublicKey, uploadcareSecretKey, limit = 100, offset = 0 } = req.body;
         apiKeyId = req.apiKeyId;
-        const userId = req.userId || apiKeyId;
+        userId = req.userId || apiKeyId;
 
         if (!apiKeyId) {
             return res.status(401).json({
@@ -54,7 +59,6 @@ export const listUploadcareFiles = async (req, res) => {
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -69,12 +73,23 @@ export const listUploadcareFiles = async (req, res) => {
         const redisTime = Date.now() - redisStart;
 
         if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis in ${redisTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
                 message: 'Rate limit exceeded',
                 layer: redisLimit.layer
+            });
+        }
+
+        // LAYER 3: Quota check
+        const quotaCheck = await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.used
             });
         }
 
@@ -97,7 +112,8 @@ export const listUploadcareFiles = async (req, res) => {
                 statusCode = 403;
             }
 
-            updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'failed', 0).catch(() => { });
+            updateRequestMetrics(apiKeyId, userId, 'uploadcare', false)
+                .catch(() => { });
 
             return res.status(statusCode).json({
                 success: false,
@@ -114,23 +130,9 @@ export const listUploadcareFiles = async (req, res) => {
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (${listData.results?.length || 0} files)`);
 
-        // Background metrics update
-        updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
-
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/uploadcare/list',
-            method: 'POST',
-            provider: 'uploadcare',
-            operation: 'list',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+        // 🚀 SINGLE METRICS CALL (Redis-backed)
+        updateRequestMetrics(apiKeyId, userId, 'uploadcare', true)
+            .catch(() => { });
 
         res.status(200).json({
             success: true,
@@ -160,20 +162,8 @@ export const listUploadcareFiles = async (req, res) => {
         console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
 
         if (apiKeyId) {
-            updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
-
-            trackApiUsage({
-                userId: req.userId || apiKeyId,
-                endpoint: '/api/v1/upload/uploadcare/list',
-                method: 'POST',
-                provider: 'uploadcare',
-                operation: 'list',
-                statusCode: 500,
-                success: false,
-                apiKeyId,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+            updateRequestMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', false)
+                .catch(() => { });
         }
 
         res.status(500).json({
