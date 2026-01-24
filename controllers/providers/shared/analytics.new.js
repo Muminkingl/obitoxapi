@@ -1,19 +1,18 @@
 /**
  * NEW Analytics & Quota Helper
- * Implements the new schema tracking logic:
- * 1. Quota Check (can_make_request)
- * 2. Usage Increment (increment_request_count)
  * 
- * NOTE: API usage is tracked via Redis metrics in provider_usage and api_keys tables.
- * Audit logs are reserved for low-volume security/billing events only (rate limits, bans, etc.)
+ * 🚀 OPTIMIZED: Uses Redis-only quota check (NO database RPC!)
+ * 
+ * Before: checkUserQuota → Supabase RPC (~50-100ms)
+ * After:  checkUserQuota → Redis GET (~1-5ms)
  */
 
-import { supabaseAdmin } from '../../../database/supabase.js';
-// NOTE: logAudit removed - API usage should NOT go to audit_logs (high volume)
+import { checkQuota, MONTHLY_QUOTAS } from '../../../utils/quota-manager.js';
+import { getUserTierCached } from '../../../utils/tier-cache.js';
 
 /**
  * Check if a user has sufficient quota to make a request
- * Uses the database RPC function `can_make_request`
+ * 🚀 OPTIMIZED: Uses Redis instead of database RPC!
  * 
  * @param {string} userId - The user ID to check
  * @returns {Promise<{allowed: boolean, error?: string}>}
@@ -24,40 +23,41 @@ export const checkUserQuota = async (userId) => {
             return { allowed: false, error: 'User ID required for quota check' };
         }
 
-        const { data: allowed, error } = await supabaseAdmin
-            .rpc('can_make_request', { p_user_id: userId });
+        // 🚀 Get tier from Redis cache (NOT database!)
+        const tierData = await getUserTierCached(userId);
+        const tier = tierData.tier || 'free';
 
-        if (error) {
-            console.error('❌ Quota check error:', error);
-            return { allowed: false, error: error.message };
-        }
+        // 🚀 Check quota from Redis (NOT database RPC!)
+        const quotaResult = await checkQuota(userId, tier);
 
-        return { allowed: !!allowed };
+        return {
+            allowed: quotaResult.allowed,
+            current: quotaResult.current,
+            limit: quotaResult.limit,
+            percentage: quotaResult.percentage,
+            tier
+        };
     } catch (err) {
-        console.error('❌ Quota check exception:', err);
-        return { allowed: false, error: err.message };
+        console.error('❌ Quota check exception:', err.message);
+        // Fail open - allow request if Redis fails
+        return { allowed: true, error: err.message };
     }
 };
 
 /**
- * Track API usage - Increments user's request count via RPC
+ * Track API usage - DEPRECATED
  * 
- * NOTE: This ONLY increments the quota counter. API usage metrics are tracked
- * separately via Redis in provider_usage and api_keys tables (metrics.helper.js).
- * Audit logs are NOT used for API usage (too high volume).
+ * ⚠️ This function is now a NO-OP!
  * 
- * @param {Object} params
- * @param {string} params.userId - User ID
- * @param {string} params.endpoint - API Endpoint (for logging only)
- * @param {string} params.method - HTTP Method (for logging only)
- * @param {string} params.provider - 'r2', 'vercel', 's3', etc.
- * @param {string} params.operation - 'signed-url', 'upload', 'delete', 'list'
- * @param {number} params.statusCode - HTTP Status Code
- * @param {boolean} params.success - Whether request succeeded
- * @param {number} [params.requestCount=1] - Number of requests
- * @param {string} [params.apiKeyId] - Optional API Key ID
- * @param {string} [params.ipAddress] - Request IP
- * @param {string} [params.userAgent] - Request User Agent
+ * Metrics are tracked via updateRequestMetrics() in metrics.helper.js
+ * which uses Redis counters instead of database writes.
+ * 
+ * The old RPC `increment_request_count` is no longer needed because:
+ * 1. Quota is tracked via Redis in quota-manager.js (incrementQuota)
+ * 2. Metrics are tracked via Redis in redis-counters.js (updateRequestMetrics)
+ * 3. Daily rollup syncs Redis → Database once per day
+ * 
+ * @deprecated Use updateRequestMetrics() instead
  */
 export const trackApiUsage = async ({
     userId,
@@ -72,29 +72,24 @@ export const trackApiUsage = async ({
     ipAddress = null,
     userAgent = null
 }) => {
+    // 🚀 NO-OP: All tracking now done via Redis in updateRequestMetrics()
+    // This eliminates the database RPC call that was adding ~50-100ms latency
+
+    // NOTE: If you still need to call the database RPC for some reason,
+    // uncomment the code below. But this should NOT be needed.
+
+    /*
     try {
-        // Increment usage counter (for real-time quota tracking)
         if (userId) {
             const { error: rpcError } = await supabaseAdmin
                 .rpc('increment_request_count', {
                     p_user_id: userId,
                     p_count: requestCount
                 });
-
             if (rpcError) console.error('❌ Failed to increment usage:', rpcError);
         }
-
-        // NOTE: API usage metrics are tracked via Redis in:
-        // - provider_usage table (via metrics.helper.js → incrementProviderMetrics)
-        // - api_keys table (via metrics.helper.js → incrementApiKeyMetrics)
-        // 
-        // Audit logs are ONLY for low-volume security/billing events:
-        // - rate_limit_exceeded, rate_limit_ban_applied, rate_limit_ban_expired
-        // - usage_warning_50_percent, usage_warning_80_percent, usage_limit_reached
-        // - api_key_created, api_key_deleted, permanent_ban_applied, etc.
-
     } catch (err) {
         console.error('❌ Track API usage exception:', err);
     }
+    */
 };
-

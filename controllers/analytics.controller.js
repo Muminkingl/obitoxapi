@@ -1,14 +1,52 @@
 /**
- * Analytics Controller (UPDATED to use new Redis-backed tables)
+ * Analytics Controller (v2 - with Redis caching)
  * 
  * Uses these tables:
  * - api_keys (running totals)
  * - provider_usage (per-provider running totals)
  * - api_key_usage_daily (daily snapshots)
  * - provider_usage_daily (per-provider daily snapshots)
+ * 
+ * CACHING:
+ * - 60s Redis cache for frequently accessed data
+ * - Cache-Control headers for browser/CDN caching
  */
 
 import { supabaseAdmin } from '../database/supabase.js';
+import { getRedis } from '../config/redis.js';
+
+const CACHE_TTL = 60; // 60 seconds
+
+/**
+ * Simple cache helper - get from Redis or fetch from DB
+ */
+const withCache = async (cacheKey, fetchFn) => {
+  const redis = getRedis();
+
+  try {
+    // Try cache first
+    if (redis?.status === 'ready') {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        return { data: JSON.parse(cached), fromCache: true };
+      }
+    }
+
+    // Cache miss - fetch from database
+    const data = await fetchFn();
+
+    // Store in cache (fire and forget)
+    if (redis?.status === 'ready') {
+      redis.setex(cacheKey, CACHE_TTL, JSON.stringify(data)).catch(() => { });
+    }
+
+    return { data, fromCache: false };
+  } catch (error) {
+    // On cache error, just fetch from DB
+    const data = await fetchFn();
+    return { data, fromCache: false };
+  }
+};
 
 /**
  * Get comprehensive analytics from running totals
@@ -17,7 +55,6 @@ export const getUploadAnalytics = async (req, res) => {
   try {
     const { provider, startDate, endDate, limit = 100, offset = 0 } = req.query;
     const apiKeyId = req.apiKeyId;
-    const userId = req.userId;
 
     if (!apiKeyId) {
       return res.status(401).json({
@@ -27,66 +64,76 @@ export const getUploadAnalytics = async (req, res) => {
       });
     }
 
-    // Get API key summary
-    const { data: apiKeyData, error: apiKeyError } = await supabaseAdmin
-      .from('api_keys')
-      .select('total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded, file_type_counts')
-      .eq('id', apiKeyId)
-      .single();
+    // Cache key includes apiKeyId and provider filter
+    const cacheKey = `analytics:upload:${apiKeyId}:${provider || 'all'}`;
 
-    if (apiKeyError) throw apiKeyError;
+    const { data, fromCache } = await withCache(cacheKey, async () => {
+      // Get API key summary
+      const { data: apiKeyData, error: apiKeyError } = await supabaseAdmin
+        .from('api_keys')
+        .select('total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded, file_type_counts')
+        .eq('id', apiKeyId)
+        .single();
 
-    // Get provider usage breakdown
-    let providerQuery = supabaseAdmin
-      .from('provider_usage')
-      .select('provider, upload_count, total_file_size, last_used_at')
-      .eq('api_key_id', apiKeyId);
+      if (apiKeyError) throw apiKeyError;
 
-    if (provider) {
-      const providers = Array.isArray(provider) ? provider : [provider];
-      providerQuery = providerQuery.in('provider', providers);
-    }
+      // Get provider usage breakdown
+      let providerQuery = supabaseAdmin
+        .from('provider_usage')
+        .select('provider, upload_count, total_file_size, last_used_at')
+        .eq('api_key_id', apiKeyId);
 
-    const { data: providerData, error: providerError } = await providerQuery;
+      if (provider) {
+        const providers = Array.isArray(provider) ? provider : [provider];
+        providerQuery = providerQuery.in('provider', providers);
+      }
 
-    if (providerError) throw providerError;
+      const { data: providerData, error: providerError } = await providerQuery;
+      if (providerError) throw providerError;
 
-    // Calculate summary
-    const summary = {
-      totalUploads: apiKeyData?.total_files_uploaded || 0,
-      totalRequests: apiKeyData?.total_requests || 0,
-      successfulRequests: apiKeyData?.successful_requests || 0,
-      failedRequests: apiKeyData?.failed_requests || 0,
-      totalBytes: apiKeyData?.total_file_size || 0,
-      averageFileSize: apiKeyData?.total_files_uploaded > 0
-        ? Math.round((apiKeyData?.total_file_size || 0) / apiKeyData.total_files_uploaded)
-        : 0,
-      successRate: apiKeyData?.total_requests > 0
-        ? Math.round((apiKeyData?.successful_requests || 0) / apiKeyData.total_requests * 100)
-        : 0
-    };
-
-    // Provider breakdown
-    const providerBreakdown = (providerData || []).reduce((acc, p) => {
-      acc[p.provider] = {
-        uploads: p.upload_count || 0,
-        totalBytes: p.total_file_size || 0,
-        lastUsed: p.last_used_at
+      // Calculate summary
+      const summary = {
+        totalUploads: apiKeyData?.total_files_uploaded || 0,
+        totalRequests: apiKeyData?.total_requests || 0,
+        successfulRequests: apiKeyData?.successful_requests || 0,
+        failedRequests: apiKeyData?.failed_requests || 0,
+        totalBytes: apiKeyData?.total_file_size || 0,
+        averageFileSize: apiKeyData?.total_files_uploaded > 0
+          ? Math.round((apiKeyData?.total_file_size || 0) / apiKeyData.total_files_uploaded)
+          : 0,
+        successRate: apiKeyData?.total_requests > 0
+          ? Math.round((apiKeyData?.successful_requests || 0) / apiKeyData.total_requests * 100)
+          : 0
       };
-      return acc;
-    }, {});
 
-    res.json({
-      success: true,
-      data: {
+      // Provider breakdown
+      const providerBreakdown = (providerData || []).reduce((acc, p) => {
+        acc[p.provider] = {
+          uploads: p.upload_count || 0,
+          totalBytes: p.total_file_size || 0,
+          lastUsed: p.last_used_at
+        };
+        return acc;
+      }, {});
+
+      return {
         summary,
         providers: providerBreakdown,
         fileTypes: apiKeyData?.file_type_counts || {}
-      },
+      };
+    });
+
+    // Set cache header
+    res.set('Cache-Control', 'private, max-age=60');
+
+    res.json({
+      success: true,
+      data,
       pagination: {
         limit: parseInt(limit),
         offset: parseInt(offset)
-      }
+      },
+      meta: { cached: fromCache }
     });
 
   } catch (error) {
@@ -115,38 +162,39 @@ export const getDailyUsageAnalytics = async (req, res) => {
       });
     }
 
-    // Query daily usage table
-    let query = supabaseAdmin
-      .from('api_key_usage_daily')
-      .select('usage_date, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
-      .eq('api_key_id', apiKeyId)
-      .order('usage_date', { ascending: false })
-      .limit(parseInt(limit));
+    const safeLimit = Math.min(parseInt(limit), 90); // Max 90 days
+    const cacheKey = `analytics:daily:${apiKeyId}:${startDate || 'none'}:${endDate || 'none'}:${safeLimit}`;
 
-    if (startDate) {
-      query = query.gte('usage_date', startDate);
-    }
-    if (endDate) {
-      query = query.lte('usage_date', endDate);
-    }
+    const { data, fromCache } = await withCache(cacheKey, async () => {
+      // Query daily usage table
+      let query = supabaseAdmin
+        .from('api_key_usage_daily')
+        .select('usage_date, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
+        .eq('api_key_id', apiKeyId)
+        .order('usage_date', { ascending: false })
+        .limit(safeLimit);
 
-    const { data: dailyData, error } = await query;
+      if (startDate) {
+        query = query.gte('usage_date', startDate);
+      }
+      if (endDate) {
+        query = query.lte('usage_date', endDate);
+      }
 
-    if (error) throw error;
+      const { data: dailyData, error } = await query;
+      if (error) throw error;
 
-    // Calculate totals for period
-    const totals = (dailyData || []).reduce((acc, day) => {
-      acc.totalRequests += day.total_requests || 0;
-      acc.successfulRequests += day.successful_requests || 0;
-      acc.failedRequests += day.failed_requests || 0;
-      acc.totalBytes += day.total_file_size || 0;
-      acc.totalUploads += day.total_files_uploaded || 0;
-      return acc;
-    }, { totalRequests: 0, successfulRequests: 0, failedRequests: 0, totalBytes: 0, totalUploads: 0 });
+      // Calculate totals for period
+      const totals = (dailyData || []).reduce((acc, day) => {
+        acc.totalRequests += day.total_requests || 0;
+        acc.successfulRequests += day.successful_requests || 0;
+        acc.failedRequests += day.failed_requests || 0;
+        acc.totalBytes += day.total_file_size || 0;
+        acc.totalUploads += day.total_files_uploaded || 0;
+        return acc;
+      }, { totalRequests: 0, successfulRequests: 0, failedRequests: 0, totalBytes: 0, totalUploads: 0 });
 
-    res.json({
-      success: true,
-      data: {
+      return {
         daily: dailyData || [],
         totals,
         period: {
@@ -154,7 +202,15 @@ export const getDailyUsageAnalytics = async (req, res) => {
           startDate: dailyData?.[dailyData.length - 1]?.usage_date || null,
           endDate: dailyData?.[0]?.usage_date || null
         }
-      }
+      };
+    });
+
+    res.set('Cache-Control', 'private, max-age=60');
+
+    res.json({
+      success: true,
+      data,
+      meta: { cached: fromCache }
     });
 
   } catch (error) {

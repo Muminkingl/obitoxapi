@@ -39,9 +39,9 @@ export async function getUserTierCached(userId) {
 
         if (cachedData) {
             const data = JSON.parse(cachedData);
-            const cacheAge = Date.now() - data.cachedAt;
+            const cacheAge = data.cachedAt ? Math.round((Date.now() - data.cachedAt) / 1000) : 0;
 
-            console.log(`[TierCache] ✅ Cache HIT for ${userId.substring(0, 8)}... (age: ${cacheAge}ms)`);
+            console.log(`[TierCache] ✅ Cache HIT for ${userId.substring(0, 8)}... (age: ${cacheAge}s)`);
 
             return {
                 ...data,
