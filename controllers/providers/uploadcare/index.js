@@ -9,9 +9,6 @@ import { deleteUploadcareFile } from './uploadcare.delete.js';
 import { downloadUploadcareFile } from './uploadcare.download.js';
 import { listUploadcareFiles } from './uploadcare.list.js';
 
-// Advanced operations
-import { cancelUploadcareUpload } from './uploadcare.cancel.js';
-
 // Malware scanning (✅ Phase 5)
 import {
     scanUploadcareFileForMalware,
@@ -40,9 +37,6 @@ export {
     deleteUploadcareFile,
     downloadUploadcareFile,
     listUploadcareFiles,
-
-    // Advanced operations
-    cancelUploadcareUpload,
 
     // Malware scanning
     scanUploadcareFileForMalware,

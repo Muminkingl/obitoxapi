@@ -232,21 +232,6 @@ export class UploadcareProvider extends BaseProvider<
             throw new Error(`Failed to get Uploadcare download URL: ${errorMessage}`);
         }
     }
-
-    /**
-     * Cancel an in-progress upload
-     * 
-     * @param uploadId - Upload ID (not used for Uploadcare, uses AbortController)
-     */
-    async cancel(uploadId: string): Promise<void> {
-        if (this.currentUploadController) {
-            this.currentUploadController.abort();
-            console.log(`✅ Cancelled Uploadcare upload: ${uploadId}`);
-        } else {
-            console.warn(`⚠️  No active upload to cancel: ${uploadId}`);
-        }
-    }
-
     // ============================================================================
     // Virus Scanning Methods
     // ============================================================================

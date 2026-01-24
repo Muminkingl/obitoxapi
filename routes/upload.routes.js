@@ -11,7 +11,6 @@ import {
   generateVercelSignedUrl,
   uploadToVercelBlob,
   trackUploadEvent,
-  cancelVercelUpload,
   deleteVercelFile,
   downloadVercelFile,
   completeVercelUpload
@@ -39,7 +38,6 @@ import {
   generateUploadcareSignedUrl,
   deleteUploadcareFile,
   downloadUploadcareFile,
-  cancelUploadcareUpload,
   listUploadcareFiles,
   scanUploadcareFileForMalware,
   checkUploadcareMalwareScanStatus,
@@ -49,7 +47,7 @@ import {
   getUploadcareProjectSettings,
   validateUploadcareSvg,
   uploadcareHealthCheck,
-  trackUploadcareEvent  // ✅ NEW: Redis-based tracking (NO deprecated tables)
+  trackUploadcareEvent  // ✅ Redis-based tracking (NO deprecated tables)
 } from '../controllers/providers/uploadcare/index.js';
 
 // ✅ NEW: Import all from modular R2 structure (enterprise caching + pure crypto!)
@@ -126,9 +124,6 @@ router.post('/vercel/track', validateApiKey, unifiedRateLimitMiddleware, signatu
 // Vercel Blob provider routes
 // Health check removed - use main /health endpoint instead
 
-// Cancel ongoing uploads
-router.post('/vercel/cancel', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, cancelVercelUpload);
-
 // Delete files from Vercel Blob
 router.delete('/vercel/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, deleteVercelFile);
 
@@ -169,8 +164,7 @@ router.post('/supabase/complete', validateApiKey, unifiedRateLimitMiddleware, si
 // Generate signed URL for Uploadcare (zero bandwidth cost)
 router.post('/uploadcare/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateUploadcareSignedUrl);
 
-// Cancel Uploadcare uploads (not applicable - uploads are immediate)
-router.post('/uploadcare/cancel', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, cancelUploadcareUpload);
+
 
 // Delete files from Uploadcare
 router.delete('/uploadcare/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, deleteUploadcareFile);

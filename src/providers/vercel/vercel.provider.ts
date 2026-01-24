@@ -156,21 +156,6 @@ export class VercelProvider extends BaseProvider<
         // Vercel Blobs are public by default, just return the URL
         return options.fileUrl!;
     }
-
-    /**
-     * Cancel an in-progress upload
-     * 
-     * @param uploadId - Upload ID (not used for Vercel, uses AbortController)
-     */
-    async cancel(uploadId: string): Promise<void> {
-        if (this.currentUploadController) {
-            this.currentUploadController.abort();
-            console.log(`✅ Cancelled Vercel Blob upload: ${uploadId}`);
-        } else {
-            console.warn(`⚠️  No active upload to cancel: ${uploadId}`);
-        }
-    }
-
     // ============================================================================
     // Private Helper Methods
     // ============================================================================

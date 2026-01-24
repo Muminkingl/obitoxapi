@@ -8,7 +8,6 @@ export { uploadToVercelBlob } from './vercel.upload.js';
 export { deleteVercelFile } from './vercel.delete.js';
 export { completeVercelUpload } from './vercel.complete.js';
 export { trackUploadEvent } from './vercel.track.js';
-export { cancelVercelUpload } from './vercel.cancel.js';
 export { downloadVercelFile } from './vercel.download.js';
 
 export {

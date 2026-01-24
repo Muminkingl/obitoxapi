@@ -233,20 +233,6 @@ export class SupabaseProvider extends BaseProvider<
     }
 
     /**
-     * Cancel an in-progress upload
-     * 
-     * @param uploadId - Upload ID (not used for Supabase, uses AbortController)
-     */
-    async cancel(uploadId: string): Promise<void> {
-        if (this.currentUploadController) {
-            this.currentUploadController.abort();
-            console.log(`✅ Cancelled Supabase upload: ${uploadId}`);
-        } else {
-            console.warn(`⚠️  No active upload to cancel: ${uploadId}`);
-        }
-    }
-
-    /**
      * List all buckets in Supabase project
      * 
      * @param options - List buckets options

@@ -90,21 +90,6 @@ export type DownloadFileOptions =
     | R2DownloadOptions
     | S3DownloadOptions;
 
-// ============================================================================
-// Unified Cancel Options
-// ============================================================================
-
-import type { VercelCancelOptions } from './vercel.types';
-import type { SupabaseCancelOptions } from './supabase.types';
-import type { UploadcareCancelOptions } from './uploadcare.types';
-
-/**
- * Union type of all provider cancel options
- */
-export type CancelUploadOptions =
-    | VercelCancelOptions
-    | SupabaseCancelOptions
-    | UploadcareCancelOptions;
 
 // ============================================================================
 // List Buckets Options

@@ -26,7 +26,6 @@ import type {
   UploadOptions,
   DeleteFileOptions,
   DownloadFileOptions,
-  CancelUploadOptions,
   ListBucketsOptions,
 } from './types/index.js';
 
@@ -265,34 +264,6 @@ export class ObitoX {
     };
   }
 
-  /**
-   * Cancel an in-progress upload
-   * 
-   * @param options - Cancel options
-   * @throws Error if provider doesn't support cancellation or operation fails
-   * 
-   * @example
-   * ```typescript
-   * await client.cancelUpload({
-   *   uploadId: 'upload-123',
-   *   provider: 'VERCEL',
-   *   vercelToken: 'vercel_blob_rw_xxx...'
-   * });
-   * ```
-   */
-  async cancelUpload(options: CancelUploadOptions): Promise<void> {
-    const provider = this.providers.get(options.provider);
-
-    if (!provider) {
-      throw new Error(`Unsupported provider: ${options.provider}`);
-    }
-
-    if (!provider.cancel) {
-      throw new Error(`Provider ${options.provider} does not support upload cancellation`);
-    }
-
-    return provider.cancel(options.uploadId);
-  }
 
   // ============================================================================
   // Bucket Management (Supabase)
@@ -778,7 +749,6 @@ export type {
   UploadOptions,
   DeleteFileOptions,
   DownloadFileOptions,
-  CancelUploadOptions,
   ListBucketsOptions,
   BucketInfo,
   TrackOptions,
