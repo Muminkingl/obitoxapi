@@ -220,6 +220,9 @@ const validateApiKey = async (req, res, next) => {
     req.apiKeyData = apiKeyData; // Include full data for potential use
     req.fromCache = result.fromCache; // Track if data came from cache (for monitoring)
 
+    // 🚀 OPTIMIZATION: Pass secret_hash to signature validator to avoid DB call
+    req.secretHash = apiKeyData.secret_hash;
+
     // CRITICAL: Set consistent identifier for rate limiting & bans
     // This ensures all middlewares (chaos, tier, behavioral) use the same identifier
     req.rateLimitIdentifier = apiKeyData.user_id;

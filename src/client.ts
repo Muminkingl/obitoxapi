@@ -313,34 +313,24 @@ export class ObitoX {
   /**
    * Track an upload event for analytics
    * 
-   * This is automatically called by uploadFile, but can be used manually for custom tracking.
+   * NO-OP: Analytics are already tracked server-side by updateRequestMetrics()
+   * in the controller layer when signed URLs are generated.
+   * This method exists for interface compatibility.
    * 
-   * @param options - Track options
-   * @returns Promise resolving when tracking is complete
+   * @param options - Track options (ignored)
+   * @returns Promise resolving immediately
    * 
    * @example
    * ```typescript
-   * await client.track({
-   *   event: 'completed',
-   *   fileUrl: 'https://example.com/file.jpg',
-   *   filename: 'photo.jpg',
-   *   fileSize: 1024000,
-   *   provider: 'vercel'
-   * });
+   * // Tracking is automatic - no need to call manually
+   * await client.uploadFile(file, options);
+   * // Analytics are already recorded when the signed URL was generated
    * ```
    */
-  async track(options: TrackOptions): Promise<void> {
-    try {
-      // Build provider-specific endpoint path
-      const providerPath = options.provider?.toLowerCase() || 'vercel';
-      await this.makeRequest(`/api/v1/upload/${providerPath}/track`, {
-        method: 'POST',
-        body: JSON.stringify(options),
-      });
-    } catch (error) {
-      // Non-blocking: log error but don't throw
-      console.warn('Failed to track event:', error);
-    }
+  async track(_options: TrackOptions): Promise<void> {
+    // NO-OP: Server-side analytics are handled by updateRequestMetrics()
+    // in controllers/providers/shared/metrics.helper.js
+    return;
   }
 
   /**

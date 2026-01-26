@@ -265,38 +265,24 @@ export abstract class BaseProvider<
     /**
      * Track analytics event
      * 
-     * Helper to track upload events for analytics
-     * Non-blocking, errors are logged but don't fail the operation
+     * NO-OP: Analytics are already tracked server-side by updateRequestMetrics()
+     * in the controller layer. This method exists for interface compatibility.
      * 
-     * @param event - Event type
-     * @param fileUrl - File URL
-     * @param metadata - Additional metadata
+     * @param event - Event type (ignored)
+     * @param fileUrl - File URL (ignored)
+     * @param metadata - Additional metadata (ignored)
      * 
      * @protected
      */
     protected async trackEvent(
-        event: string,
-        fileUrl: string,
-        metadata?: Record<string, any>
+        _event: string,
+        _fileUrl: string,
+        _metadata?: Record<string, any>
     ): Promise<void> {
-        try {
-            // Use provider-specific track endpoint
-            const providerPath = this.providerName.toLowerCase();
-            const endpoint = `/api/v1/upload/${providerPath}/track`;
-
-            await this.makeRequest(endpoint, {
-                method: 'POST',
-                body: JSON.stringify({
-                    event,
-                    fileUrl,
-                    provider: providerPath,
-                    ...metadata,
-                }),
-            });
-        } catch (error) {
-            // Non-blocking: log error but don't throw
-            console.warn(`Failed to track ${event} event:`, error);
-        }
+        // NO-OP: Server-side analytics are handled by updateRequestMetrics()
+        // in controllers/providers/shared/metrics.helper.js
+        // No need for a separate SDK tracking call
+        return;
     }
 }
 
