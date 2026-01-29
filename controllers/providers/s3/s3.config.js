@@ -83,23 +83,29 @@ export const validateS3Credentials = (accessKey, secretKey, bucket, region) => {
     }
 
     // Access Key format (typically 20 characters, starts with AKIA)
+    // TEST_MODE=true bypasses this check for MinIO/LocalStack testing
     if (accessKey.length < 16 || accessKey.length > 128) {
-        return {
-            valid: false,
-            error: 'INVALID_ACCESS_KEY_FORMAT',
-            message: 'AWS Access Key ID must be between 16-128 characters',
-            hint: 'AWS Access Keys typically start with "AKIA" and are 20 characters long'
-        };
+        if (process.env.S3_TEST_MODE !== 'true') {
+            return {
+                valid: false,
+                error: 'INVALID_ACCESS_KEY_FORMAT',
+                message: 'AWS Access Key ID must be between 16-128 characters',
+                hint: 'AWS Access Keys typically start with "AKIA" and are 20 characters long'
+            };
+        }
     }
 
     // Secret Key format (typically 40 characters, base64-encoded)
+    // TEST_MODE=true bypasses this check for MinIO/LocalStack testing
     if (secretKey.length < 32 || secretKey.length > 128) {
-        return {
-            valid: false,
-            error: 'INVALID_SECRET_KEY_FORMAT',
-            message: 'AWS Secret Access Key must be between 32-128 characters',
-            hint: 'Your Secret Access Key is shown only once when created. Make sure you saved it correctly.'
-        };
+        if (process.env.S3_TEST_MODE !== 'true') {
+            return {
+                valid: false,
+                error: 'INVALID_SECRET_KEY_FORMAT',
+                message: 'AWS Secret Access Key must be between 32-128 characters',
+                hint: 'Your Secret Access Key is shown only once when created. Make sure you saved it correctly.'
+            };
+        }
     }
 
     // Bucket name format (S3 naming rules)
@@ -145,8 +151,8 @@ export const validateS3Credentials = (accessKey, secretKey, bucket, region) => {
  * @param {string} secretKey - AWS Secret Access Key
  * @returns {S3Client} Configured S3 client
  */
-export const getS3Client = (region, accessKey, secretKey) => {
-    return new S3Client({
+export const getS3Client = (region, accessKey, secretKey, endpoint = null) => {
+    const config = {
         region, // Actual AWS region (not 'auto' like R2)
         credentials: {
             accessKeyId: accessKey,
@@ -158,7 +164,15 @@ export const getS3Client = (region, accessKey, secretKey) => {
             connectionTimeout: 3000,
             socketTimeout: 3000
         }
-    });
+    };
+
+    // Add custom endpoint for S3-compatible services (MinIO, LocalStack)
+    if (endpoint) {
+        config.endpoint = endpoint;
+        config.forcePathStyle = true; // Required for MinIO
+    }
+
+    return new S3Client(config);
 };
 
 // ============================================================================

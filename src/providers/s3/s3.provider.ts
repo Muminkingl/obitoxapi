@@ -149,6 +149,7 @@ export class S3Provider extends BaseProvider<
                         s3SecretKey: options.s3SecretKey,
                         s3Bucket: options.s3Bucket,
                         s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint,  // Custom endpoint for MinIO/LocalStack
                         s3StorageClass: options.s3StorageClass,
                         s3EncryptionType: options.s3EncryptionType,
                         s3KmsKeyId: options.s3KmsKeyId,
@@ -237,7 +238,8 @@ export class S3Provider extends BaseProvider<
                         s3AccessKey: options.s3AccessKey,
                         s3SecretKey: options.s3SecretKey,
                         s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1'
+                        s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint
                     }),
                 }
             );
@@ -292,6 +294,7 @@ export class S3Provider extends BaseProvider<
                         s3SecretKey: options.s3SecretKey,
                         s3Bucket: options.s3Bucket,
                         s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint,
                         s3CloudFrontDomain: options.s3CloudFrontDomain,
                         expiresIn: options.expiresIn || 3600,
                         responseContentType: options.responseContentType,
@@ -425,7 +428,8 @@ export class S3Provider extends BaseProvider<
                         s3AccessKey: options.s3AccessKey,
                         s3SecretKey: options.s3SecretKey,
                         s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1'
+                        s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint
                     }),
                 }
             );
@@ -478,6 +482,7 @@ export class S3Provider extends BaseProvider<
                         s3SecretKey: options.s3SecretKey,
                         s3Bucket: options.s3Bucket,
                         s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint,
                         prefix: options.prefix,
                         maxKeys: options.maxKeys || 1000,
                         continuationToken: options.continuationToken
@@ -532,6 +537,7 @@ export class S3Provider extends BaseProvider<
                         s3SecretKey: options.s3SecretKey,
                         s3Bucket: options.s3Bucket,
                         s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint,
                         versionId: options.versionId
                     }),
                 }

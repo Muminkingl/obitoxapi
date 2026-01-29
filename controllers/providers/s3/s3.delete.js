@@ -32,7 +32,8 @@ export const deleteS3File = async (req, res) => {
             s3AccessKey,
             s3SecretKey,
             s3Bucket,
-            s3Region = 'us-east-1'
+            s3Region = 'us-east-1',
+            s3Endpoint  // Custom endpoint for MinIO/LocalStack
         } = req.body;
 
         apiKeyId = req.apiKeyId;
@@ -90,7 +91,7 @@ export const deleteS3File = async (req, res) => {
 
         // AWS API CALL
         const apiCallStart = Date.now();
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
         const command = new DeleteObjectCommand({
             Bucket: s3Bucket,
@@ -176,7 +177,8 @@ export const batchDeleteS3Files = async (req, res) => {
             s3AccessKey,
             s3SecretKey,
             s3Bucket,
-            s3Region = 'us-east-1'
+            s3Region = 'us-east-1',
+            s3Endpoint  // Custom endpoint for MinIO/LocalStack
         } = req.body;
 
         apiKeyId = req.apiKeyId;
@@ -242,7 +244,7 @@ export const batchDeleteS3Files = async (req, res) => {
 
         // AWS API CALL
         const apiCallStart = Date.now();
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
         const command = new DeleteObjectsCommand({
             Bucket: s3Bucket,

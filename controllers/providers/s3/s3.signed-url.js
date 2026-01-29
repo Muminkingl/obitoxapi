@@ -55,6 +55,7 @@ export const generateS3SignedUrl = async (req, res) => {
             s3EncryptionType = 'SSE-S3',
             s3KmsKeyId,
             s3EnableVersioning = false,
+            s3Endpoint,  // Custom endpoint for MinIO/LocalStack
             expiresIn = SIGNED_URL_EXPIRY
         } = req.body;
 
@@ -199,21 +200,24 @@ export const generateS3SignedUrl = async (req, res) => {
         // CRYPTO SIGNING (Target: 7-12ms)
         const signingStart = Date.now();
 
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
-        const encryptionParams = {
-            ServerSideEncryption: ENCRYPTION_TYPES[s3EncryptionType]
-        };
-
-        if (s3EncryptionType === 'SSE-KMS' && s3KmsKeyId) {
-            encryptionParams.SSEKMSKeyId = s3KmsKeyId;
+        // Only add encryption params for real AWS S3 (not custom endpoints like MinIO)
+        let encryptionParams = {};
+        if (!s3Endpoint) {
+            encryptionParams = {
+                ServerSideEncryption: ENCRYPTION_TYPES[s3EncryptionType]
+            };
+            if (s3EncryptionType === 'SSE-KMS' && s3KmsKeyId) {
+                encryptionParams.SSEKMSKeyId = s3KmsKeyId;
+            }
         }
 
         const command = new PutObjectCommand({
             Bucket: s3Bucket,
             Key: objectKey,
             ContentType: contentType,
-            StorageClass: s3StorageClass,
+            StorageClass: !s3Endpoint ? s3StorageClass : undefined,  // Skip for custom endpoints
             ...encryptionParams
         });
 
@@ -234,6 +238,11 @@ export const generateS3SignedUrl = async (req, res) => {
             .catch(() => { });
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (signing: ${signingTime}ms)`);
+
+
+
+
+
 
         // RESPONSE
         const response = {

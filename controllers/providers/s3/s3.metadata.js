@@ -33,6 +33,7 @@ export const getS3Metadata = async (req, res) => {
             s3SecretKey,
             s3Bucket,
             s3Region = 'us-east-1',
+            s3Endpoint,  // Custom endpoint for MinIO/LocalStack
             versionId
         } = req.body;
 
@@ -91,7 +92,7 @@ export const getS3Metadata = async (req, res) => {
 
         // AWS API CALL
         const apiCallStart = Date.now();
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
         const commandParams = {
             Bucket: s3Bucket,

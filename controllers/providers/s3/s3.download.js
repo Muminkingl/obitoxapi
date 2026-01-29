@@ -41,6 +41,7 @@ export const generateS3DownloadUrl = async (req, res) => {
             s3Bucket,
             s3Region = 'us-east-1',
             s3CloudFrontDomain,
+            s3Endpoint,  // Custom endpoint for MinIO/LocalStack
             expiresIn = SIGNED_URL_EXPIRY,
             responseContentType,
             responseContentDisposition
@@ -131,7 +132,7 @@ export const generateS3DownloadUrl = async (req, res) => {
 
         // CRYPTO SIGNING
         const signingStart = Date.now();
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
         const commandParams = {
             Bucket: s3Bucket,
