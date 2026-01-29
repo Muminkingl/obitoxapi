@@ -45,16 +45,6 @@ export class VercelProvider extends BaseProvider<
     VercelDeleteOptions,
     VercelDownloadOptions
 > {
-    /**
-     * Current upload AbortController for cancellation support
-     */
-    private currentUploadController?: AbortController;
-
-    /**
-     * Progress interval ID for cleanup
-     */
-    private progressIntervalId?: NodeJS.Timeout;
-
     constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
         super('VERCEL', apiKey, baseUrl, apiSecret);
     }
@@ -185,7 +175,8 @@ export class VercelProvider extends BaseProvider<
     /**
      * Upload to Vercel Blob using their SDK
      * 
-     * Direct upload with progress tracking and cancellation support.
+     * Direct upload without progress tracking or cancellation.
+     * The @vercel/blob SDK doesn't expose these features.
      * 
      * @private
      */
@@ -196,83 +187,21 @@ export class VercelProvider extends BaseProvider<
         onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
         onCancel?: () => void
     ): Promise<string> {
-        // Create AbortController for cancellation
-        this.currentUploadController = new AbortController();
-
-        // Progress tracking simulation
-        if (onProgress) {
-            this.simulateProgress(file.size, onProgress);
-        }
-
         try {
-            // Upload using the Vercel Blob SDK (static import)
+            // Upload using the Vercel Blob SDK
             const blob = await put(filename, file, {
                 token: vercelToken,
                 access: 'public', // Make the blob publicly accessible
             });
-
-            // Clear progress interval on success
-            if (this.progressIntervalId) {
-                clearInterval(this.progressIntervalId);
-                this.progressIntervalId = undefined;
-            }
 
             console.log(`✅ Uploaded to Vercel Blob: ${blob.url}`);
 
             return blob.url;
 
         } catch (error) {
-            // Clear progress interval on error
-            if (this.progressIntervalId) {
-                clearInterval(this.progressIntervalId);
-                this.progressIntervalId = undefined;
-            }
-
-            // Handle cancellation
-            if (error instanceof Error && error.name === 'AbortError') {
-                if (onCancel) {
-                    onCancel();
-                }
-                throw new Error('Upload cancelled');
-            }
-
-            // Handle other errors
+            // Handle errors
             const errorMessage = error instanceof Error ? error.message : String(error);
             throw new Error(`Vercel Blob upload failed: ${errorMessage}`);
-        } finally {
-            // Clean up
-            this.currentUploadController = undefined;
         }
-    }
-
-    /**
-     * Simulate upload progress for Node.js environments
-     * 
-     * In browser environments with XHR, real progress tracking is available.
-     * This is a simulation for Node.js compatibility.
-     * 
-     * @private
-     */
-    private simulateProgress(
-        totalBytes: number,
-        onProgress: (progress: number, bytesUploaded: number, totalBytes: number) => void
-    ): void {
-        let bytesUploaded = 0;
-
-        // Store interval ID for cleanup when upload completes
-        this.progressIntervalId = setInterval(() => {
-            bytesUploaded += Math.ceil(totalBytes / 10); // Simulate 10% increments
-
-            if (bytesUploaded >= totalBytes) {
-                bytesUploaded = totalBytes;
-                if (this.progressIntervalId) {
-                    clearInterval(this.progressIntervalId);
-                    this.progressIntervalId = undefined;
-                }
-            }
-
-            const progress = (bytesUploaded / totalBytes) * 100;
-            onProgress(progress, bytesUploaded, totalBytes);
-        }, 100); // Update every 100ms
     }
 }

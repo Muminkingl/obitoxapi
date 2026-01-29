@@ -244,7 +244,7 @@ export class ObitoX {
    * });
    * ```
    */
-  async downloadFile(options: DownloadFileOptions): Promise<DownloadResponse> {
+  async downloadFile(options: DownloadFileOptions): Promise<string> {
     const provider = this.providers.get(options.provider);
 
     if (!provider) {
@@ -255,13 +255,9 @@ export class ObitoX {
       throw new Error(`Provider ${options.provider} does not support download operations`);
     }
 
+    // Return URL string directly as documented
     const downloadUrl = await provider.download(options as any);
-
-    return {
-      success: true,
-      downloadUrl,
-      filename: options.filename || '',
-    };
+    return downloadUrl;
   }
 
 

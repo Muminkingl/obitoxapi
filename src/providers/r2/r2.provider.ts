@@ -221,7 +221,7 @@ export class R2Provider extends BaseProvider<
 
         try {
             // Get signed URLs for all files in ONE API call
-            const response = await this.makeRequest<R2BatchUploadResponse>(
+            const apiResponse = await this.makeRequest<any>(
                 '/api/v1/upload/r2/batch/signed-urls',
                 {
                     method: 'POST',
@@ -239,7 +239,21 @@ export class R2Provider extends BaseProvider<
             const totalTime = Date.now() - startTime;
             console.log(`✅ Generated ${files.length} R2 URLs in ${totalTime}ms (${(totalTime / files.length).toFixed(1)}ms per file)`);
 
-            return response;
+            // Transform API response to match documented structure
+            // API returns 'results', docs expect 'urls'
+            // API returns 'summary.total', docs expect 'total'
+            const transformedResponse: R2BatchUploadResponse = {
+                success: true,
+                urls: apiResponse.results || apiResponse.urls || [],
+                total: apiResponse.summary?.total || apiResponse.total || files.length,
+                provider: 'r2',
+                performance: apiResponse.performance || {
+                    totalTime: `${totalTime}ms`,
+                    averagePerFile: `${(totalTime / files.length).toFixed(1)}ms`
+                }
+            };
+
+            return transformedResponse;
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -273,7 +287,7 @@ export class R2Provider extends BaseProvider<
         ]);
 
         try {
-            const response = await this.makeRequest<R2DownloadResponse>(
+            const response = await this.makeRequest<any>(
                 '/api/v1/upload/r2/download-url',
                 {
                     method: 'POST',
@@ -292,7 +306,16 @@ export class R2Provider extends BaseProvider<
             const totalTime = Date.now() - startTime;
             console.log(`✅ R2 download URL generated in ${totalTime}ms`);
 
-            return response.downloadUrl;
+            // Ensure we always return a string URL (handle various API response shapes)
+            const url = typeof response === 'string'
+                ? response
+                : (response.downloadUrl || response.url || response.data?.downloadUrl || response.data?.url);
+
+            if (!url || typeof url !== 'string') {
+                throw new Error('Invalid download URL response from API');
+            }
+
+            return url;
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -559,7 +582,7 @@ export class R2Provider extends BaseProvider<
         ]);
 
         try {
-            const response = await this.makeRequest<R2ListResponse>(
+            const apiResponse = await this.makeRequest<any>(
                 '/api/v1/upload/r2/list',
                 {
                     method: 'POST',
@@ -575,9 +598,28 @@ export class R2Provider extends BaseProvider<
                 }
             );
 
-            console.log(`✅ R2 listed ${response.count} files`);
+            // Transform API response to match documented structure
+            // API may return nested data or different field names
+            const rawFiles = apiResponse.data?.Contents || apiResponse.files || apiResponse.Contents || [];
+            const files = rawFiles.map((f: any) => ({
+                key: f.Key || f.key,
+                size: f.Size || f.size || 0,
+                lastModified: f.LastModified || f.lastModified || '',
+                etag: f.ETag || f.etag || ''
+            }));
 
-            return response;
+            const transformedResponse: R2ListResponse = {
+                success: true,
+                files: files,
+                count: apiResponse.data?.KeyCount || apiResponse.count || files.length,
+                truncated: apiResponse.data?.IsTruncated || apiResponse.truncated || false,
+                continuationToken: apiResponse.data?.NextContinuationToken || apiResponse.continuationToken,
+                provider: 'r2'
+            };
+
+            console.log(`✅ R2 listed ${transformedResponse.count} files`);
+
+            return transformedResponse;
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
