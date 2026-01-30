@@ -135,6 +135,9 @@ export class S3Provider extends BaseProvider<
             }
         }
 
+        // Create AbortController for cancellation
+        const controller = new AbortController();
+
         try {
             // STEP 1: Get presigned URL from ObitoX API (pure crypto, 5-15ms)
             const response = await this.makeRequest<S3UploadResponse>(
@@ -169,17 +172,13 @@ export class S3Provider extends BaseProvider<
 
             console.log(`✅ S3 signed URL generated in ${performance?.totalTime || 'N/A'}`);
 
-            // STEP 2: Upload directly to S3 (PUT request)
-            const uploadResponse = await fetch(uploadUrl, {
-                method: 'PUT',
-                body: file,
-                headers: {
-                    'Content-Type': contentType
-                }
-            });
-
-            if (!uploadResponse.ok) {
-                throw new Error(`S3 upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
+            // STEP 2: Upload directly to S3 with progress tracking
+            if (typeof XMLHttpRequest !== 'undefined') {
+                // Browser: Use XHR for real progress
+                await this.uploadWithXHR(uploadUrl, file, contentType, options.onProgress, controller.signal);
+            } else {
+                // Node.js: Use fetch with 0%→100%
+                await this.uploadWithFetch(uploadUrl, file, contentType, options.onProgress, controller.signal);
             }
 
             const totalTime = Date.now() - startTime;
@@ -195,6 +194,14 @@ export class S3Provider extends BaseProvider<
             return cdnUrl || publicUrl;
 
         } catch (error) {
+            // Handle cancellation
+            if (error instanceof Error && (error.name === 'AbortError' || error.message === 'Upload cancelled')) {
+                if (options.onCancel) {
+                    options.onCancel();
+                }
+                throw new Error('Upload cancelled');
+            }
+
             const totalTime = Date.now() - startTime;
             console.error(`❌ S3 upload failed after ${totalTime}ms:`, error);
 
@@ -207,6 +214,82 @@ export class S3Provider extends BaseProvider<
             throw error;
         }
     }
+
+    /**
+     * Upload using XMLHttpRequest for REAL progress tracking (Browser)
+     * @private
+     */
+    private uploadWithXHR(
+        signedUrl: string,
+        file: File | Blob,
+        contentType: string,
+        onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+        signal?: AbortSignal
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+
+            if (onProgress) {
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const progress = (e.loaded / e.total) * 100;
+                        onProgress(progress, e.loaded, e.total);
+                    }
+                });
+            }
+
+            if (signal) {
+                signal.addEventListener('abort', () => {
+                    xhr.abort();
+                    reject(new Error('Upload cancelled'));
+                });
+            }
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    if (onProgress) onProgress(100, file.size, file.size);
+                    resolve();
+                } else {
+                    reject(new Error(`S3 upload failed: ${xhr.status} ${xhr.statusText}`));
+                }
+            });
+
+            xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+            xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+
+            xhr.open('PUT', signedUrl);
+            xhr.setRequestHeader('Content-Type', contentType);
+            xhr.send(file);
+        });
+    }
+
+    /**
+     * Upload using fetch for Node.js environments
+     * @private
+     */
+    private async uploadWithFetch(
+        signedUrl: string,
+        file: File | Blob,
+        contentType: string,
+        onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+        signal?: AbortSignal
+    ): Promise<void> {
+        if (onProgress) onProgress(0, 0, file.size);
+
+        const response = await fetch(signedUrl, {
+            method: 'PUT',
+            body: file,
+            headers: { 'Content-Type': contentType },
+            signal,
+        });
+
+        if (!response.ok) {
+            throw new Error(`S3 upload failed: ${response.status} ${response.statusText}`);
+        }
+
+        if (onProgress) onProgress(100, file.size, file.size);
+    }
+
 
     // ============================================================================
     // CORE: Delete File

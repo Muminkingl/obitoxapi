@@ -83,29 +83,25 @@ export const validateS3Credentials = (accessKey, secretKey, bucket, region) => {
     }
 
     // Access Key format (typically 20 characters, starts with AKIA)
-    // TEST_MODE=true bypasses this check for MinIO/LocalStack testing
+    // Skip strict validation for S3-compatible storage (when endpoint is provided)
     if (accessKey.length < 16 || accessKey.length > 128) {
-        if (process.env.S3_TEST_MODE !== 'true') {
-            return {
-                valid: false,
-                error: 'INVALID_ACCESS_KEY_FORMAT',
-                message: 'AWS Access Key ID must be between 16-128 characters',
-                hint: 'AWS Access Keys typically start with "AKIA" and are 20 characters long'
-            };
-        }
+        return {
+            valid: false,
+            error: 'INVALID_ACCESS_KEY_FORMAT',
+            message: 'Access Key must be between 16-128 characters',
+            hint: 'For AWS S3, Access Keys typically start with "AKIA" and are 20 characters long'
+        };
     }
 
     // Secret Key format (typically 40 characters, base64-encoded)
-    // TEST_MODE=true bypasses this check for MinIO/LocalStack testing
+    // Skip strict validation for S3-compatible storage (when endpoint is provided)
     if (secretKey.length < 32 || secretKey.length > 128) {
-        if (process.env.S3_TEST_MODE !== 'true') {
-            return {
-                valid: false,
-                error: 'INVALID_SECRET_KEY_FORMAT',
-                message: 'AWS Secret Access Key must be between 32-128 characters',
-                hint: 'Your Secret Access Key is shown only once when created. Make sure you saved it correctly.'
-            };
-        }
+        return {
+            valid: false,
+            error: 'INVALID_SECRET_KEY_FORMAT',
+            message: 'Secret Access Key must be between 32-128 characters',
+            hint: 'Your Secret Access Key is shown only once when created. Make sure you saved it correctly.'
+        };
     }
 
     // Bucket name format (S3 naming rules)

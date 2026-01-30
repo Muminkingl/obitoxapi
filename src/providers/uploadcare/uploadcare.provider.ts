@@ -209,9 +209,16 @@ export class UploadcareProvider extends BaseProvider<
      * @returns Promise resolving to the CDN URL
      */
     async download(options: UploadcareDownloadOptions): Promise<string> {
-        // Validate required fields
-        this.validateRequiredFields(options, ['uploadcarePublicKey']);
+        // Validate required field
+        this.validateRequiredFields(options, ['fileUrl']);
 
+        // Uploadcare CDN files are publicly accessible by default
+        // Just return the fileUrl directly - no API call needed!
+        if (options.fileUrl && options.fileUrl.includes('ucarecdn.com')) {
+            return options.fileUrl;
+        }
+
+        // Fallback: If fileUrl doesn't look like Uploadcare URL, try API call
         try {
             const response = await this.makeRequest<{ downloadUrl: string }>(
                 '/api/v1/upload/uploadcare/download',
@@ -419,55 +426,50 @@ export class UploadcareProvider extends BaseProvider<
         formData: Record<string, string>,
         onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
         onCancel?: () => void
-    ): Promise<Response> {
+    ): Promise<void> {
         // Create AbortController for cancellation
         this.currentUploadController = new AbortController();
 
-        // Progress tracking simulation
-        if (onProgress) {
-            this.simulateProgress(file.size, onProgress);
-        }
+        const filename = file instanceof File ? file.name : 'uploaded-file';
+
+        // Create FormData for Uploadcare upload
+        const uploadFormData = new FormData();
+
+        // Add all form data parameters
+        Object.entries(formData).forEach(([key, value]) => {
+            if (key !== 'file') {
+                uploadFormData.append(key, value);
+            }
+        });
+
+        // Add the file
+        uploadFormData.append('file', file);
 
         try {
-            // Create FormData for Uploadcare upload
-            const uploadFormData = new FormData();
-
-            // Add all form data parameters
-            Object.entries(formData).forEach(([key, value]) => {
-                if (key !== 'file') {
-                    uploadFormData.append(key, value);
-                }
-            });
-
-            // Add the file
-            uploadFormData.append('file', file);
-
-            // Upload directly to Uploadcare
-            const response = await fetch('https://upload.uploadcare.com/base/', {
-                method: 'POST',
-                body: uploadFormData,
-                signal: this.currentUploadController.signal,
-            });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(
-                    `Uploadcare upload failed: ${response.status} ${response.statusText} - ${errorText}`
+            // Use XHR for real progress in browser, fetch for Node.js
+            if (typeof XMLHttpRequest !== 'undefined') {
+                await this.uploadWithXHR(
+                    'https://upload.uploadcare.com/base/',
+                    uploadFormData,
+                    file.size,
+                    onProgress,
+                    this.currentUploadController.signal
+                );
+            } else {
+                await this.uploadWithFetch(
+                    'https://upload.uploadcare.com/base/',
+                    uploadFormData,
+                    file.size,
+                    onProgress,
+                    this.currentUploadController.signal
                 );
             }
 
-            const result = await response.json();
-
-            // Store the UUID for later use - construct proper CDN URL with filename
-            const filename = file instanceof File ? file.name : 'uploaded-file';
-            this.lastUploadcareUrl = `https://ucarecdn.com/${(result as any).file}/${filename}`;
-
             console.log(`✅ Uploaded to Uploadcare: ${this.lastUploadcareUrl}`);
 
-            return response;
         } catch (error) {
             // Handle cancellation
-            if (error instanceof Error && error.name === 'AbortError') {
+            if (error instanceof Error && (error.name === 'AbortError' || error.message === 'Upload cancelled')) {
                 if (onCancel) {
                     onCancel();
                 }
@@ -484,29 +486,117 @@ export class UploadcareProvider extends BaseProvider<
     }
 
     /**
-     * Simulate upload progress for Node.js environments
+     * Upload using XMLHttpRequest for REAL progress tracking (Browser)
+     * 
+     * XHR provides real-time upload progress via upload.progress events.
+     * For Uploadcare, we use POST with FormData.
      * 
      * @private
      */
-    private simulateProgress(
+    private uploadWithXHR(
+        url: string,
+        formData: FormData,
         totalBytes: number,
-        onProgress: (progress: number, bytesUploaded: number, totalBytes: number) => void
-    ): void {
-        let bytesUploaded = 0;
+        onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+        signal?: AbortSignal
+    ): Promise<Response> {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
 
-        const progressInterval = setInterval(() => {
-            bytesUploaded += Math.ceil(totalBytes / 10); // Simulate 10% increments
-
-            if (bytesUploaded >= totalBytes) {
-                bytesUploaded = totalBytes;
-                clearInterval(progressInterval);
+            // Real progress tracking via XHR upload events
+            if (onProgress) {
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const progress = (e.loaded / e.total) * 100;
+                        onProgress(progress, e.loaded, e.total);
+                    }
+                });
             }
 
-            const progress = (bytesUploaded / totalBytes) * 100;
-            onProgress(progress, bytesUploaded, totalBytes);
-        }, 100); // Update every 100ms
+            // Cancel support via AbortSignal
+            if (signal) {
+                signal.addEventListener('abort', () => {
+                    xhr.abort();
+                    reject(new Error('Upload cancelled'));
+                });
+            }
 
-        // Clean up interval after 5 seconds
-        setTimeout(() => clearInterval(progressInterval), 5000);
+            // Success handler
+            xhr.addEventListener('load', () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    // Final progress update
+                    if (onProgress) {
+                        onProgress(100, totalBytes, totalBytes);
+                    }
+
+                    // Parse response and store URL
+                    try {
+                        const result = JSON.parse(xhr.responseText);
+                        const filename = (formData.get('file') as File)?.name || 'uploaded-file';
+                        this.lastUploadcareUrl = `https://ucarecdn.com/${result.file}/${filename}`;
+                    } catch (e) {
+                        // Continue even if parsing fails
+                    }
+
+                    resolve(new Response(xhr.responseText, { status: xhr.status }));
+                } else {
+                    reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+                }
+            });
+
+            // Error handlers
+            xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+            xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+
+            // Open and send (no Content-Type header for FormData - browser sets it)
+            xhr.open('POST', url);
+            xhr.send(formData);
+        });
+    }
+
+    /**
+     * Upload using fetch for Node.js environments
+     * 
+     * Fetch doesn't support upload progress, so we report 0% at start
+     * and 100% on completion. Cancel still works via AbortSignal.
+     * 
+     * @private
+     */
+    private async uploadWithFetch(
+        url: string,
+        formData: FormData,
+        totalBytes: number,
+        onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+        signal?: AbortSignal
+    ): Promise<Response> {
+        // Report start (0%)
+        if (onProgress) {
+            onProgress(0, 0, totalBytes);
+        }
+
+        const response = await fetch(url, {
+            method: 'POST',
+            body: formData,
+            signal,
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Uploadcare upload failed: ${response.status} ${response.statusText} - ${errorText}`);
+        }
+
+        const result = await response.json();
+
+        // Store the UUID for later use - construct proper CDN URL with filename
+        const filename = (formData.get('file') as File)?.name || 'uploaded-file';
+        this.lastUploadcareUrl = `https://ucarecdn.com/${(result as any).file}/${filename}`;
+
+        // Report completion (100%)
+        if (onProgress) {
+            onProgress(100, totalBytes, totalBytes);
+        }
+
+        return response;
     }
 }
+

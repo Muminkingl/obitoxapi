@@ -21,6 +21,22 @@ console.log('✅ Uploaded:', url);
 // https://myapp-uploads-2026.s3.us-east-1.amazonaws.com/photo-xxxxx.jpg`
 
 
+Progress tracking ; `const url = await client.uploadFile(file, {
+  provider: 'S3',
+  s3AccessKey: process.env.AWS_ACCESS_KEY_ID,
+  s3SecretKey: process.env.AWS_SECRET_ACCESS_KEY,
+  s3Bucket: 'my-uploads',
+  s3Region: 'us-east-1',
+  
+  onProgress: (progress, bytesUploaded, totalBytes) => {
+    console.log(`${progress.toFixed(1)}% uploaded`);
+    // Browser: 0% → 15% → 32% → 58% → 100%
+    // Node.js: 0% → 100%
+  },
+  
+  onCancel: () => console.log('Upload cancelled')
+});`
+
 
 
 Basic upload ; `const url = await client.uploadFile(file, {
@@ -191,4 +207,51 @@ const url = await s3Provider.multipartUpload(largeFile, {
 
 console.log('✅ Large file uploaded:', url);`
 
+
+S3-Compatible Storage ; `// Use ANY S3-compatible storage with s3Endpoint!
+// Works with: MinIO, Backblaze B2, DigitalOcean Spaces, Wasabi, etc.
+
+const url = await client.uploadFile(file, {
+  provider: 'S3',
+  s3AccessKey: 'your-access-key',
+  s3SecretKey: 'your-secret-key',
+  s3Bucket: 'my-bucket',
+  s3Region: 'us-east-1',
+  s3Endpoint: 'http://localhost:9000'  // Your MinIO/S3-compatible endpoint
+});
+
+// Works with all operations: upload, download, delete, list, metadata!`
+
+
+MinIO example ; `// MinIO (self-hosted S3)
+const url = await client.uploadFile(file, {
+  provider: 'S3',
+  s3AccessKey: 'minioadmin',
+  s3SecretKey: 'minioadmin123',
+  s3Bucket: 'my-bucket',
+  s3Region: 'us-east-1',
+  s3Endpoint: 'http://localhost:9000'
+});`
+
+
+Backblaze B2 example ; `// Backblaze B2 (S3-compatible)
+const url = await client.uploadFile(file, {
+  provider: 'S3',
+  s3AccessKey: process.env.B2_KEY_ID,
+  s3SecretKey: process.env.B2_APPLICATION_KEY,
+  s3Bucket: 'my-bucket',
+  s3Region: 'us-west-001',
+  s3Endpoint: 'https://s3.us-west-001.backblazeb2.com'
+});`
+
+
+DigitalOcean Spaces example ; `// DigitalOcean Spaces
+const url = await client.uploadFile(file, {
+  provider: 'S3',
+  s3AccessKey: process.env.SPACES_KEY,
+  s3SecretKey: process.env.SPACES_SECRET,
+  s3Bucket: 'my-space',
+  s3Region: 'nyc3',
+  s3Endpoint: 'https://nyc3.digitaloceanspaces.com'
+});`
 

@@ -112,27 +112,30 @@ export class SupabaseProvider extends BaseProvider<
 
             // Step 3: Get final URL (signed URL for private buckets)
             let finalFileUrl = signedUrlResult.data.fileUrl;
+            const uploadedFilename = signedUrlResult.data.filename || filename;
 
-            // For private buckets with expiry, get signed download URL
-            if (options.bucket === 'admin' && options.expiresIn) {
+            // If backend didn't return a public URL, it's a private bucket - get signed URL
+            // (Backend returns null fileUrl for private buckets)
+            if (!finalFileUrl) {
                 try {
                     console.log('🔗 Getting signed URL for private Supabase file...');
 
                     const downloadInfo = await this.download({
-                        filename: signedUrlResult.data.filename || filename,
+                        filename: uploadedFilename,
                         provider: 'SUPABASE',
                         supabaseToken: options.supabaseToken,
                         supabaseUrl: options.supabaseUrl,
                         bucket: options.bucket,
-                        expiresIn: options.expiresIn,
+                        expiresIn: options.expiresIn || 3600,  // Default 1 hour if not specified
                     });
 
                     finalFileUrl = downloadInfo;
                     console.log('✅ Got signed URL with proper expiration');
 
                 } catch (error) {
-                    console.warn('⚠️  Failed to get signed URL, using original URL:', error);
-                    // Continue with original URL if download fails
+                    console.warn('⚠️  Failed to get signed URL, constructing path:', error);
+                    // Fallback: construct path-based response
+                    finalFileUrl = `${options.bucket}/${uploadedFilename}`;
                 }
             }
 
@@ -198,19 +201,25 @@ export class SupabaseProvider extends BaseProvider<
      * @returns Promise resolving to the download URL
      */
     async download(options: SupabaseDownloadOptions): Promise<string> {
-        // For public buckets, construct URL if we have enough info
+        // For public buckets, we can construct the URL with just supabaseUrl
+        if (options.supabaseUrl && options.bucket && options.filename && !options.supabaseToken) {
+            // Construct public URL directly (no API call needed)
+            return `${options.supabaseUrl}/storage/v1/object/public/${options.bucket}/${options.filename}`;
+        }
+
+        // If we have a fileUrl, return it directly
         if (!options.supabaseUrl || !options.supabaseToken) {
             if (options.fileUrl) {
                 return options.fileUrl;
             }
-            throw new Error('Cannot generate download URL: missing supabaseUrl and supabaseToken');
+            throw new Error('Cannot generate download URL: missing supabaseUrl and supabaseToken (or provide fileUrl)');
         }
 
         // Validate required fields for signed URL generation
         this.validateRequiredFields(options, ['supabaseUrl', 'supabaseToken', 'bucket']);
 
         try {
-            // Call ObitoX API to get download URL
+            // Call ObitoX API to get download URL (for private buckets)
             const response = await this.makeRequest<{ success: boolean; data: { downloadUrl: string } }>('/api/v1/upload/supabase/download', {
                 method: 'POST',
                 body: JSON.stringify({
@@ -243,7 +252,7 @@ export class SupabaseProvider extends BaseProvider<
         this.validateRequiredFields(options, ['supabaseUrl', 'supabaseToken']);
 
         try {
-            const response = await this.makeRequest<{ data: { buckets: SupabaseBucketInfo[] } }>(
+            const response = await this.makeRequest<{ data: SupabaseBucketInfo[] }>(
                 '/api/v1/upload/supabase/buckets',
                 {
                     method: 'POST',
@@ -255,7 +264,7 @@ export class SupabaseProvider extends BaseProvider<
                 }
             );
 
-            return response.data.buckets;
+            return response.data;  // Backend returns data directly as array
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -295,7 +304,7 @@ export class SupabaseProvider extends BaseProvider<
     /**
      * Upload to Supabase using signed URL
      * 
-     * Direct upload with progress tracking and cancellation support.
+     * Direct upload with REAL progress tracking using XHR (browser) or fetch (Node.js).
      * 
      * @private
      */
@@ -311,31 +320,21 @@ export class SupabaseProvider extends BaseProvider<
         // Create AbortController for cancellation
         this.currentUploadController = new AbortController();
 
-        // Progress tracking simulation
-        if (onProgress) {
-            this.simulateProgress(file.size, onProgress);
-        }
+        const contentType = file instanceof File ? file.type : 'application/octet-stream';
 
         try {
-            // Upload directly to Supabase signed URL
-            const response = await fetch(signedUrl, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': file instanceof File ? file.type : 'application/octet-stream',
-                },
-                body: file,
-                signal: this.currentUploadController.signal,
-            });
-
-            if (!response.ok) {
-                throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+            // Use XHR for real progress in browser, fetch for Node.js
+            if (typeof XMLHttpRequest !== 'undefined') {
+                await this.uploadWithXHR(signedUrl, file, contentType, onProgress, this.currentUploadController.signal);
+            } else {
+                await this.uploadWithFetch(signedUrl, file, contentType, onProgress, this.currentUploadController.signal);
             }
 
             console.log(`✅ Uploaded to Supabase: ${bucket}/${filename}`);
 
         } catch (error) {
             // Handle cancellation
-            if (error instanceof Error && error.name === 'AbortError') {
+            if (error instanceof Error && (error.name === 'AbortError' || error.message === 'Upload cancelled')) {
                 if (onCancel) {
                     onCancel();
                 }
@@ -351,29 +350,102 @@ export class SupabaseProvider extends BaseProvider<
     }
 
     /**
-     * Simulate upload progress for Node.js environments
+     * Upload using XMLHttpRequest for REAL progress tracking (Browser)
+     * 
+     * XHR provides real-time upload progress via upload.progress events.
+     * This gives accurate bytes-uploaded information.
      * 
      * @private
      */
-    private simulateProgress(
-        totalBytes: number,
-        onProgress: (progress: number, bytesUploaded: number, totalBytes: number) => void
-    ): void {
-        let bytesUploaded = 0;
+    private uploadWithXHR(
+        signedUrl: string,
+        file: File | Blob,
+        contentType: string,
+        onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+        signal?: AbortSignal
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
 
-        const progressInterval = setInterval(() => {
-            bytesUploaded += Math.ceil(totalBytes / 10); // Simulate 10% increments
-
-            if (bytesUploaded >= totalBytes) {
-                bytesUploaded = totalBytes;
-                clearInterval(progressInterval);
+            // Real progress tracking via XHR upload events
+            if (onProgress) {
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const progress = (e.loaded / e.total) * 100;
+                        onProgress(progress, e.loaded, e.total);
+                    }
+                });
             }
 
-            const progress = (bytesUploaded / totalBytes) * 100;
-            onProgress(progress, bytesUploaded, totalBytes);
-        }, 100); // Update every 100ms
+            // Cancel support via AbortSignal
+            if (signal) {
+                signal.addEventListener('abort', () => {
+                    xhr.abort();
+                    reject(new Error('Upload cancelled'));
+                });
+            }
 
-        // Clean up interval after 5 seconds
-        setTimeout(() => clearInterval(progressInterval), 5000);
+            // Success handler
+            xhr.addEventListener('load', () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    // Final progress update
+                    if (onProgress) {
+                        onProgress(100, file.size, file.size);
+                    }
+                    resolve();
+                } else {
+                    reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+                }
+            });
+
+            // Error handlers
+            xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+            xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+
+            // Open and send
+            xhr.open('PUT', signedUrl);
+            xhr.setRequestHeader('Content-Type', contentType);
+            xhr.send(file);
+        });
+    }
+
+    /**
+     * Upload using fetch for Node.js environments
+     * 
+     * Fetch doesn't support upload progress, so we report 0% at start
+     * and 100% on completion. Cancel still works via AbortSignal.
+     * 
+     * @private
+     */
+    private async uploadWithFetch(
+        signedUrl: string,
+        file: File | Blob,
+        contentType: string,
+        onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
+        signal?: AbortSignal
+    ): Promise<void> {
+        // Report start (0%)
+        if (onProgress) {
+            onProgress(0, 0, file.size);
+        }
+
+        const response = await fetch(signedUrl, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': contentType,
+            },
+            body: file,
+            signal,
+        });
+
+        if (!response.ok) {
+            throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+        }
+
+        // Report completion (100%)
+        if (onProgress) {
+            onProgress(100, file.size, file.size);
+        }
     }
 }
+

@@ -175,8 +175,8 @@ export class VercelProvider extends BaseProvider<
     /**
      * Upload to Vercel Blob using their SDK
      * 
-     * Direct upload without progress tracking or cancellation.
-     * The @vercel/blob SDK doesn't expose these features.
+     * The @vercel/blob SDK doesn't expose progress events.
+     * We report 0% at start and 100% on completion for consistency.
      * 
      * @private
      */
@@ -188,11 +188,21 @@ export class VercelProvider extends BaseProvider<
         onCancel?: () => void
     ): Promise<string> {
         try {
+            // Report start (0%)
+            if (onProgress) {
+                onProgress(0, 0, file.size);
+            }
+
             // Upload using the Vercel Blob SDK
             const blob = await put(filename, file, {
                 token: vercelToken,
                 access: 'public', // Make the blob publicly accessible
             });
+
+            // Report completion (100%)
+            if (onProgress) {
+                onProgress(100, file.size, file.size);
+            }
 
             console.log(`✅ Uploaded to Vercel Blob: ${blob.url}`);
 

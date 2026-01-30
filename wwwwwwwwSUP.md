@@ -1,6 +1,5 @@
 ### Supabase documentation 
 
-
 First upload `import ObitoX from 'obitox';
 
 const client = new ObitoX({
@@ -71,4 +70,46 @@ buckets.forEach(bucket => {
   console.log(`${bucket.name} - Public: ${bucket.public}`);
 });`
 
+
+
+Progress tracking ; `const url = await client.uploadFile(file, {
+  provider: 'SUPABASE',
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabaseToken: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  bucket: 'avatars',
+  
+  onProgress: (progress, bytesUploaded, totalBytes) => {
+    console.log(`${progress.toFixed(1)}% uploaded`);
+    // Browser: 0% → 15% → 32% → 58% → 100%
+    // Node.js: 0% → 100%
+  }
+});`
+
+
+Progress with UI (React example) ; `const [progress, setProgress] = useState(0);
+
+const url = await client.uploadFile(file, {
+  provider: 'SUPABASE',
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabaseToken: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  bucket: 'avatars',
+  
+  onProgress: (percent) => setProgress(percent)
+});
+
+// In JSX: <div style={{ width: progress + '%' }} />`
+
+
+Cancel upload ; `const url = await client.uploadFile(file, {
+  provider: 'SUPABASE',
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabaseToken: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  bucket: 'avatars',
+  
+  onCancel: () => {
+    console.log('Upload was cancelled');
+  }
+});
+
+// To cancel: client.cancel();`
 

@@ -21,6 +21,23 @@ console.log('Uploaded:', url);
 // https://pub-abc123.r2.dev/photo-xxxxx.jpg`
 
 
+Progress tracking ; `const url = await client.uploadFile(file, {
+  provider: 'R2',
+  r2AccessKey: process.env.R2_ACCESS_KEY,
+  r2SecretKey: process.env.R2_SECRET_KEY,
+  r2AccountId: process.env.R2_ACCOUNT_ID,
+  r2Bucket: 'my-uploads',
+  
+  onProgress: (progress, bytesUploaded, totalBytes) => {
+    console.log(`${progress.toFixed(1)}% uploaded`);
+    // Browser: 0% → 15% → 32% → 58% → 100%
+    // Node.js: 0% → 100%
+  },
+  
+  onCancel: () => console.log('Cancelled')
+});`
+
+
 Basic upload ; `const url = await client.uploadFile(file, {
   provider: 'R2',
   r2AccessKey: process.env.R2_ACCESS_KEY,
