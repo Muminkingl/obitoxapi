@@ -21,6 +21,9 @@ console.log('✅ Uploaded:', url);
 // https://myapp-uploads-2026.s3.us-east-1.amazonaws.com/photo-xxxxx.jpg`
 
 
+
+
+
 Progress tracking ; `const url = await client.uploadFile(file, {
   provider: 'S3',
   s3AccessKey: process.env.AWS_ACCESS_KEY_ID,

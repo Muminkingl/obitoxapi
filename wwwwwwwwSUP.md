@@ -72,6 +72,13 @@ buckets.forEach(bucket => {
 
 
 
+
+
+
+
+
+
+
 Progress tracking ; `const url = await client.uploadFile(file, {
   provider: 'SUPABASE',
   supabaseUrl: process.env.SUPABASE_URL,

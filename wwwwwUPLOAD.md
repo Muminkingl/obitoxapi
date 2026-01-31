@@ -116,6 +116,9 @@ Delete file ; `await client.deleteFile({
 });`
 
 
+
+
+
 Progress tracking ; `const url = await client.uploadFile(file, {
   provider: 'UPLOADCARE',
   uploadcarePublicKey: process.env.UPLOADCARE_PUBLIC_KEY,

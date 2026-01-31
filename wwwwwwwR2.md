@@ -21,6 +21,8 @@ console.log('Uploaded:', url);
 // https://pub-abc123.r2.dev/photo-xxxxx.jpg`
 
 
+
+
 Progress tracking ; `const url = await client.uploadFile(file, {
   provider: 'R2',
   r2AccessKey: process.env.R2_ACCESS_KEY,
