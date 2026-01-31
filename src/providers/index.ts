@@ -10,14 +10,6 @@
 export { BaseProvider, ProviderRegistry } from './base.provider';
 export type { IStorageProvider, IProviderRegistry, ProviderFactory } from './base.provider';
 
-// Vercel provider
-export { VercelProvider } from './vercel';
-export type {
-    VercelUploadOptions,
-    VercelDeleteOptions,
-    VercelDownloadOptions,
-} from './vercel';
-
 // Supabase provider
 export { SupabaseProvider } from './supabase';
 export type {

@@ -30,7 +30,7 @@ export interface ObitoXConfig {
 /**
  * Supported storage providers
  */
-export type StorageProvider = 'VERCEL' | 'SUPABASE' | 'UPLOADCARE' | 'R2';
+export type StorageProvider = 'SUPABASE' | 'UPLOADCARE' | 'R2' | 'S3';
 
 /**
  * Legacy provider types for backward compatibility

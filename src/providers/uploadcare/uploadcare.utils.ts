@@ -88,18 +88,25 @@ export function buildOptimizedUploadcareUrl(
         }
 
         // Quality transformation - map presets to Uploadcare values
+        // Uploadcare supports: best, better, normal, lighter, lightest, smart
         if (optimization.quality && optimization.quality !== 'normal') {
             let qualityValue: string;
 
             switch (optimization.quality) {
-                case 'better':
                 case 'best':
+                    qualityValue = 'best'; // Highest quality, largest file
+                    break;
+                case 'better':
+                    qualityValue = 'better'; // High quality
+                    break;
                 case 'lighter':
+                    qualityValue = 'lighter'; // Lower quality, smaller file
+                    break;
                 case 'lightest':
-                    qualityValue = 'smart'; // Uploadcare smart quality for all presets
+                    qualityValue = 'lightest'; // Lowest quality, smallest file
                     break;
                 default:
-                    qualityValue = 'smart';
+                    qualityValue = 'smart'; // AI-powered quality optimization
             }
 
             transformations.push(`quality/${qualityValue}`);

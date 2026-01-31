@@ -31,7 +31,6 @@ import type {
 
 // Import providers
 import { ProviderRegistry } from './providers/base.provider.js';
-import { VercelProvider } from './providers/vercel/index.js';
 import { SupabaseProvider } from './providers/supabase/index.js';
 import { UploadcareProvider } from './providers/uploadcare/index.js';
 import { R2Provider } from './providers/r2/index.js';
@@ -125,7 +124,6 @@ export class ObitoX {
    * @private
    */
   private registerProviders(): void {
-    this.providers.register('VERCEL', (apiKey, baseUrl, apiSecret) => new VercelProvider(apiKey, baseUrl, apiSecret));
     this.providers.register('SUPABASE', (apiKey, baseUrl, apiSecret) => new SupabaseProvider(apiKey, baseUrl, apiSecret));
     this.providers.register('UPLOADCARE', (apiKey, baseUrl, apiSecret) => new UploadcareProvider(apiKey, baseUrl, apiSecret));
     this.providers.register('R2', (apiKey, baseUrl, apiSecret) => new R2Provider(apiKey, baseUrl, apiSecret));

@@ -6,16 +6,6 @@ import { signatureValidator } from '../middlewares/signature-validator.middlewar
 // ✅ UNIFIED RATE LIMITER (replaces 4 conflicting middlewares!)
 import { unifiedRateLimitMiddleware } from '../middlewares/rate-limiter.middleware.js';
 
-// ✅ NEW: Import from modular Vercel structure
-import {
-  generateVercelSignedUrl,
-  uploadToVercelBlob,
-  trackUploadEvent,
-  deleteVercelFile,
-  downloadVercelFile,
-  completeVercelUpload
-} from '../controllers/providers/vercel/index.js';
-
 // ✅ UPDATED: Import from modular Supabase structure
 import {
   uploadToSupabaseStorage,
@@ -108,30 +98,6 @@ const upload = multer({
     cb(null, true);
   }
 });
-
-// ===== VERCEL PROVIDER ROUTES =====
-
-// Generate signed URL for Vercel Blob (recommended approach)
-// NOW WITH PHASE 2: Combined middleware (370ms → 80ms!) 🚀
-router.post('/vercel/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateVercelSignedUrl);
-
-// Direct upload to Vercel Blob (alternative approach)
-router.post('/vercel/upload', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, upload.single('file'), uploadToVercelBlob);
-
-// Track upload events for analytics
-router.post('/vercel/track', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, trackUploadEvent);
-
-// Vercel Blob provider routes
-// Health check removed - use main /health endpoint instead
-
-// Delete files from Vercel Blob
-router.delete('/vercel/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, deleteVercelFile);
-
-// Download files from Vercel Blob
-router.post('/vercel/download', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, downloadVercelFile);
-
-// Complete Vercel upload and update metrics
-router.post('/vercel/complete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, completeVercelUpload);
 
 // ===== SUPABASE PROVIDER ROUTES =====
 
@@ -266,16 +232,16 @@ router.post('/s3/metadata', validateApiKey, unifiedRateLimitMiddleware, signatur
 
 // ===== LEGACY ROUTES (for backward compatibility) =====
 
-// Legacy signed URL endpoint (redirects to Vercel)
-router.post('/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateVercelSignedUrl);
+// Legacy signed URL endpoint (now defaults to Supabase)
+router.post('/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateSupabaseSignedUrl);
 
-// Legacy upload endpoint (redirects to Vercel)
-router.post('/upload', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, upload.single('file'), uploadToVercelBlob);
+// Legacy upload endpoint (now defaults to Supabase)
+router.post('/upload', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, upload.single('file'), uploadToSupabaseStorage);
 
 // ===== ANALYTICS & TRACKING =====
 
-// Track any upload event
-router.post('/track', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, trackUploadEvent);
+// Track any upload event (uses Uploadcare's Redis-based tracking)
+router.post('/track', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, trackUploadcareEvent);
 
 // Get comprehensive upload analytics with all filter support
 router.get('/analytics', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, getUploadAnalytics);

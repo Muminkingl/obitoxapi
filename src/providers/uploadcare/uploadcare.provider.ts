@@ -319,7 +319,10 @@ export class UploadcareProvider extends BaseProvider<
     }
 
     /**
-     * Wait for virus scan to complete (with polling)
+     * Wait for virus scan to complete (with exponential backoff polling)
+     * 
+     * Uses progressive delays to reduce API calls while maintaining responsiveness.
+     * Interval pattern: 500ms → 1s → 2s → 3s → 5s (repeats 5s until timeout)
      * 
      * @private
      */
@@ -327,11 +330,16 @@ export class UploadcareProvider extends BaseProvider<
         requestId: string,
         options: { uploadcarePublicKey: string; uploadcareSecretKey?: string }
     ): Promise<boolean> {
-        let attempts = 0;
-        const maxAttempts = 30; // 30 seconds timeout
+        const intervals = [500, 1000, 2000, 3000, 5000]; // Progressive delays (ms)
+        let totalWaitTime = 0;
+        const maxWaitTime = 30000; // 30 seconds total timeout
+        let intervalIndex = 0;
 
-        while (attempts < maxAttempts) {
-            await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second
+        while (totalWaitTime < maxWaitTime) {
+            // Use exponential backoff intervals
+            const delay = intervals[Math.min(intervalIndex, intervals.length - 1)];
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            totalWaitTime += delay;
 
             const statusResult = await this.checkMalwareScanStatus({
                 requestId,
@@ -341,10 +349,11 @@ export class UploadcareProvider extends BaseProvider<
             });
 
             if (statusResult.data?.isComplete) {
+                console.log(`✅ Scan completed in ${totalWaitTime}ms`);
                 return true;
             }
 
-            attempts++;
+            intervalIndex++;
         }
 
         return false; // Timeout
