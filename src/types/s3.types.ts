@@ -15,7 +15,89 @@
  * @module types/s3
  */
 
-import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions } from './common.js';
+import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, NetworkInfo, ValidationConfig } from './common.js';
+
+// ============================================================================
+// S3 Configuration (Provider Instance Pattern)
+// ============================================================================
+
+/**
+ * S3 Provider Configuration
+ * 
+ * Used to initialize an S3 provider instance with stored credentials.
+ * Once configured, all methods use these credentials automatically.
+ * 
+ * @example
+ * ```typescript
+ * const s3 = client.s3({
+ *   accessKey: 'AKIA...',
+ *   secretKey: 'wJalr...',
+ *   bucket: 'my-uploads',
+ *   region: 'us-east-1',
+ *   storageClass: 'INTELLIGENT_TIERING'  // optional
+ * });
+ * 
+ * // All methods now use stored credentials
+ * await s3.uploadFile(file);
+ * await s3.configureCors({ origins: ['https://app.com'] });
+ * ```
+ */
+export interface S3Config {
+    /**
+     * AWS Access Key ID
+     * Get from: AWS Console → IAM → Users → Security Credentials
+     */
+    accessKey: string;
+
+    /**
+     * AWS Secret Access Key
+     */
+    secretKey: string;
+
+    /**
+     * S3 Bucket name
+     */
+    bucket: string;
+
+    /**
+     * AWS Region
+     * @default 'us-east-1'
+     */
+    region?: string;
+
+    /**
+     * Storage Class
+     * @default 'STANDARD'
+     */
+    storageClass?: 'STANDARD' | 'STANDARD_IA' | 'ONEZONE_IA' | 'INTELLIGENT_TIERING' | 'GLACIER' | 'DEEP_ARCHIVE';
+
+    /**
+     * Server-Side Encryption Type
+     * @default 'AES256'
+     */
+    encryptionType?: 'AES256' | 'SSE-KMS';
+
+    /**
+     * KMS Key ID (required if encryptionType is 'SSE-KMS')
+     */
+    kmsKeyId?: string;
+
+    /**
+     * CloudFront Distribution Domain (optional)
+     * For CDN-accelerated downloads
+     */
+    cloudFrontDomain?: string;
+
+    /**
+     * CloudFront Key Pair ID (optional)
+     */
+    cloudFrontKeyPairId?: string;
+
+    /**
+     * CloudFront Private Key (optional)
+     */
+    cloudFrontPrivateKey?: string;
+}
 
 // ============================================================================
 // S3 Upload Options
@@ -135,6 +217,34 @@ export interface S3UploadOptions extends BaseUploadOptions {
      * Maximum: 2KB total metadata
      */
     metadata?: Record<string, string>;
+
+    // ==================== SMART EXPIRY ====================
+    /**
+     * Network information for smart presigned URL expiry (optional)
+     * Auto-detected from browser if not provided
+     * Used to calculate optimal URL expiration time
+     */
+    networkInfo?: NetworkInfo | null;
+
+    // ==================== FILE VALIDATION ====================
+    /**
+     * File validation configuration (optional)
+     * Validates file before upload - blocks invalid files with clear error messages
+     * 
+     * @example
+     * ```typescript
+     * // Use a preset
+     * validation: 'images'
+     * 
+     * // Custom configuration
+     * validation: {
+     *   maxSize: 10 * 1024 * 1024,
+     *   allowedTypes: ['image/*'],
+     *   blockDangerous: true
+     * }
+     * ```
+     */
+    validation?: ValidationConfig | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'any' | null;
 }
 
 // ============================================================================
@@ -728,6 +838,160 @@ export interface S3MetadataResponse {
 }
 
 // ============================================================================
+// S3 CORS Configuration Types (Option A: Backend Auto-Configuration)
+// ============================================================================
+
+/**
+ * S3 CORS Configuration Options
+ * 
+ * Options for configuring CORS on an S3 bucket to enable direct browser uploads.
+ * This is Option A: Backend Auto-Configuration.
+ * 
+ * @example
+ * ```typescript
+ * const options: S3CorsConfigOptions = {
+ *   s3AccessKey: 'AKIA...',
+ *   s3SecretKey: 'xxx...',
+ *   s3Bucket: 'my-uploads',
+ *   s3Region: 'us-east-1',
+ *   allowedOrigins: ['https://myapp.com', 'https://www.myapp.com']
+ * };
+ * ```
+ */
+export interface S3CorsConfigOptions {
+    /**
+     * AWS Access Key ID
+     * Get from: AWS Console → IAM → Users → Security Credentials
+     */
+    s3AccessKey: string;
+
+    /**
+     * AWS Secret Access Key
+     * Get from: AWS Console → IAM → Users → Security Credentials
+     */
+    s3SecretKey: string;
+
+    /**
+     * S3 Bucket name
+     * The bucket to configure CORS on
+     */
+    s3Bucket: string;
+
+    /**
+     * AWS Region (optional)
+     * Default: 'us-east-1'
+     */
+    s3Region?: string;
+
+    /**
+     * Allowed origins for CORS
+     * These origins will be allowed to make cross-origin requests
+     * 
+     * @example ['https://myapp.com', 'https://www.myapp.com']
+     */
+    allowedOrigins?: string[];
+
+    /**
+     * Allowed HTTP methods (optional)
+     * Default: ['GET', 'PUT', 'POST', 'DELETE', 'HEAD']
+     */
+    allowedMethods?: string[];
+
+    /**
+     * Allowed headers (optional)
+     * Default: ['*']
+     */
+    allowedHeaders?: string[];
+
+    /**
+     * Max age seconds for preflight cache (optional)
+     * Default: 3600
+     */
+    maxAgeSeconds?: number;
+
+    /**
+     * Headers exposed to the client (optional)
+     * Default: []
+     */
+    exposeHeaders?: string[];
+
+    /**
+     * Status code for OPTIONS response (optional)
+     * Default: 204
+     */
+    optionsSuccessStatus?: number;
+}
+
+/**
+ * S3 CORS Configuration Response
+ */
+export interface S3CorsConfigResponse {
+    /** Request succeeded */
+    success: boolean;
+
+    /** Message from API */
+    message: string;
+
+    /** Applied CORS configuration */
+    configuration: {
+        CORSRules: Array<{
+            /** Headers allowed in cross-origin requests */
+            AllowedHeaders: string[];
+
+            /** HTTP methods allowed */
+            AllowedMethods: string[];
+
+            /** Origins allowed to make requests */
+            AllowedOrigins: string[];
+
+            /** Headers exposed to the client */
+            ExposeHeaders: string[];
+
+            /** How long (seconds) the browser can cache the CORS response */
+            MaxAgeSeconds: number;
+        }>;
+    };
+}
+
+/**
+ * S3 CORS Verification Response
+ */
+export interface S3CorsVerifyResponse {
+    /** Request succeeded */
+    success: boolean;
+
+    /** Message from API */
+    message: string;
+
+    /** Whether CORS is configured */
+    configured: boolean;
+
+    /** Whether CORS is valid */
+    isValid: boolean;
+
+    /** CORS rules (if configured) */
+    corsRules?: Array<{
+        /** HTTP methods allowed */
+        AllowedMethods: string[];
+
+        /** Origins allowed */
+        AllowedOrigins: string[];
+
+        /** Headers allowed */
+        AllowedHeaders: string[];
+
+        /** Headers exposed */
+        ExposeHeaders: string[];
+    }>;
+
+    /** Any issues found */
+    issues: string[];
+
+    /** Recommendation */
+    recommendation: string;
+}
+
+// ============================================================================
 // Utility Types
 // ============================================================================
 
@@ -735,3 +999,13 @@ export interface S3MetadataResponse {
  * Extract S3-specific options from generic options
  */
 export type ExtractS3Options<T> = T extends { provider: 'S3' } ? T : never;
+
+/**
+ * S3 CORS Verification Options
+ */
+export interface S3CorsVerifyOptions {
+    s3AccessKey: string;
+    s3SecretKey: string;
+    s3Bucket: string;
+    s3Region?: string;
+}

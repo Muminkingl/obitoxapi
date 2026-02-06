@@ -44,6 +44,205 @@ export type LegacyProvider = 'AWS' | 'CLOUDINARY';
 export type AllProviders = StorageProvider | LegacyProvider;
 
 // ============================================================================
+// Network Information (Shared)
+// ============================================================================
+
+/**
+ * Network information for smart presigned URL expiry
+ * Auto-detected from Navigator.connection API in browsers
+ */
+export interface NetworkInfo {
+    /** Network type: 'slow-2g' | '2g' | '3g' | '4g' | 'wifi' | 'unknown' */
+    effectiveType?: string;
+    /** Actual download speed in Mbps (if available) */
+    downlink?: number;
+    /** Round-trip time in ms */
+    rtt?: number;
+}
+
+// ============================================================================
+// File Validation Types
+// ============================================================================
+
+/**
+ * Validation presets for common use cases
+ */
+export type ValidationPreset = 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'any';
+
+/**
+ * File validation configuration
+ * 
+ * @example
+ * ```typescript
+ * // Use a preset
+ * const validation: ValidationConfig = 'images';
+ * 
+ * // Custom configuration
+ * const validation: ValidationConfig = {
+ *   maxSize: 10 * 1024 * 1024,  // 10MB
+ *   allowedTypes: ['image/*'],
+ *   blockDangerous: true
+ * };
+ * ```
+ */
+export interface ValidationConfig {
+    /** 
+     * Preset for common validation scenarios
+     * Use preset OR custom config (not both)
+     */
+    preset?: ValidationPreset;
+
+    /**
+     * Maximum file size in bytes
+     * Default: 100MB (104857600 bytes)
+     */
+    maxSize?: number;
+
+    /**
+     * Minimum file size in bytes
+     * Default: 1 byte
+     */
+    minSize?: number;
+
+    /**
+     * Allowed MIME type patterns
+     * Examples: ['image/*', 'video/mp4', 'application/pdf']
+     */
+    allowedTypes?: string[];
+
+    /**
+     * Blocked MIME type patterns
+     * Examples: ['application/x-msdownload']
+     */
+    blockedTypes?: string[];
+
+    /**
+     * Allowed file extensions (with or without dot)
+     * Examples: ['.jpg', 'png', 'mp4']
+     */
+    allowedExtensions?: string[];
+
+    /**
+     * Blocked file extensions (with or without dot)
+     * Examples: ['.exe', 'bat', 'sh']
+     */
+    blockedExtensions?: string[];
+
+    /**
+     * Block known dangerous file types
+     * Default: true
+     */
+    blockDangerous?: boolean;
+
+    /**
+     * Validate magic bytes to detect MIME spoofing
+     * Default: true
+     */
+    checkMagicBytes?: boolean;
+
+    /**
+     * Callback when validation starts
+     */
+    onStart?: () => void;
+
+    /**
+     * Callback when validation completes
+     * @param result - Validation result
+     */
+    onComplete?: (result: ValidationResult) => void;
+
+    /**
+     * Callback when validation fails
+     * @param errors - Array of error messages
+     */
+    onError?: (errors: string[]) => void;
+}
+
+/**
+ * Individual validation check result
+ */
+export interface ValidationCheck {
+    /** Whether this check passed */
+    passed: boolean;
+    /** Error message if failed */
+    error?: string;
+    /** Additional details */
+    details?: any;
+}
+
+/**
+ * File validation result
+ */
+export interface ValidationResult {
+    /** Whether all validation checks passed */
+    valid: boolean;
+
+    /** Size check result */
+    size: ValidationCheck;
+
+    /** Extension check result */
+    extension: ValidationCheck;
+
+    /** MIME type check result */
+    mimeType: ValidationCheck;
+
+    /** Magic bytes check result */
+    magicBytes: ValidationCheck & {
+        /** Detected MIME type from magic bytes */
+        detectedType?: string | null;
+        /** Whether declared type matches detected */
+        typeMismatch?: boolean;
+    };
+
+    /** Dangerous file check result */
+    dangerous: ValidationCheck;
+
+    /** Filename sanitization result */
+    filename: ValidationCheck & {
+        /** Sanitized filename */
+        sanitized?: string;
+    };
+
+    /** Aggregated error messages */
+    errors: string[];
+
+    /** Aggregated warnings */
+    warnings: string[];
+
+    /** File information */
+    file: {
+        /** Original filename */
+        originalName: string;
+        /** Sanitized filename */
+        sanitizedName: string;
+        /** File size in bytes */
+        size: number;
+        /** Formatted file size (e.g., "5.2 MB") */
+        sizeFormatted: string;
+        /** File extension */
+        extension: string;
+        /** Declared MIME type (from File object) */
+        declaredType: string;
+        /** Detected MIME type (from magic bytes) */
+        detectedType: string | null;
+    };
+}
+
+/**
+ * Validation error thrown when file fails validation
+ */
+export class ValidationError extends Error {
+    /** Validation result */
+    result: ValidationResult;
+
+    constructor(result: ValidationResult) {
+        super(`File validation failed: ${result.errors.join(', ')}`);
+        this.name = 'ValidationError';
+        this.result = result;
+    }
+}
+
+// ============================================================================
 // Base Options Interfaces
 // ============================================================================
 
@@ -333,6 +532,155 @@ export interface ValidateApiKeyResponse {
 }
 
 // ============================================================================
+// Webhook Types
+// ============================================================================
+
+/**
+ * Webhook configuration for upload completion notifications
+ * 
+ * @example
+ * ```typescript
+ * // Manual confirmation (client calls confirm after upload)
+ * const webhook: WebhookConfig = {
+ *   url: 'https://myapp.com/webhooks/upload',
+ *   secret: 'webhook_secret_123',
+ *   trigger: 'manual',
+ *   metadata: { userId: '123' }
+ * };
+ * 
+ * // Auto confirmation (server polls for file)
+ * const webhook: WebhookConfig = {
+ *   url: 'https://myapp.com/webhooks/upload',
+ *   trigger: 'auto'
+ * };
+ * ```
+ */
+export interface WebhookConfig {
+    /**
+     * Webhook URL to receive notifications
+     * Must be a valid HTTP/HTTPS URL
+     */
+    url: string;
+
+    /**
+     * Webhook secret for HMAC signature verification (optional)
+     * If not provided, a random secret will be generated
+     * Use this to verify webhook payloads on your server
+     */
+    secret?: string;
+
+    /**
+     * Trigger mode for webhook delivery
+     * - 'manual': Client must call /webhooks/confirm after upload
+     * - 'auto': Server polls storage for file and auto-delivers
+     * 
+     * Default: 'manual'
+     */
+    trigger?: 'manual' | 'auto';
+
+    /**
+     * Custom metadata to include in webhook payload (optional)
+     * Useful for passing application-specific data
+     */
+    metadata?: Record<string, any>;
+
+    /**
+     * Whether to automatically confirm upload (optional)
+     * Only applies when trigger is 'manual'
+     * Default: true
+     */
+    autoConfirm?: boolean;
+}
+
+/**
+ * Webhook payload received by your server
+ */
+export interface WebhookPayload {
+    /** Event type */
+    event: 'upload.completed';
+
+    /** Webhook ID */
+    webhookId: string;
+
+    /** Timestamp of webhook delivery */
+    timestamp: string;
+
+    /** File information */
+    file: {
+        /** Public URL of the uploaded file */
+        url: string;
+
+        /** Original filename */
+        filename: string;
+
+        /** File key in storage */
+        key: string;
+
+        /** File size in bytes */
+        size: number;
+
+        /** MIME type */
+        contentType: string;
+
+        /** ETag from storage provider */
+        etag?: string;
+
+        /** Last modified timestamp */
+        lastModified?: string;
+    };
+
+    /** Storage provider */
+    provider: string;
+
+    /** Bucket name */
+    bucket: string;
+
+    /** Custom metadata from request */
+    metadata: Record<string, any>;
+}
+
+/**
+ * Webhook status response
+ */
+export interface WebhookStatus {
+    /** Webhook ID */
+    id: string;
+
+    /** Current status */
+    status: 'pending' | 'verifying' | 'delivering' | 'completed' | 'failed' | 'dead_letter';
+
+    /** Provider name */
+    provider: string;
+
+    /** Filename */
+    filename: string;
+
+    /** Creation timestamp */
+    createdAt: string;
+
+    /** Delivery timestamp (if completed) */
+    deliveredAt?: string;
+
+    /** Failure timestamp (if failed) */
+    failedAt?: string;
+
+    /** Number of delivery attempts */
+    attemptCount: number;
+
+    /** Last attempt timestamp */
+    lastAttemptAt?: string;
+
+    /** Next retry timestamp (if pending) */
+    nextRetryAt?: string;
+
+    /** Error message (if failed) */
+    errorMessage?: string;
+
+    /** Webhook URL */
+    webhookUrl: string;
+}
+
+// ============================================================================
 // Utility Types
 // ============================================================================
 
@@ -346,12 +694,12 @@ export type PartialOptions<T> = {
 /**
  * Extract provider-specific options
  */
-export type ProviderOptions<P extends AllProviders> = P extends 'VERCEL'
-    ? { provider: 'VERCEL' }
-    : P extends 'SUPABASE'
+export type ProviderOptions<P extends AllProviders> = P extends 'SUPABASE'
     ? { provider: 'SUPABASE' }
     : P extends 'UPLOADCARE'
     ? { provider: 'UPLOADCARE' }
     : P extends 'R2'
     ? { provider: 'R2' }
+    : P extends 'S3'
+    ? { provider: 'S3' }
     : never;

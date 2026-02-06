@@ -1,10 +1,18 @@
 import express from 'express';
 import multer from 'multer';
+import cors from 'cors';
 import validateApiKey from '../middlewares/apikey.middleware.js';
 import { signatureValidator } from '../middlewares/signature-validator.middleware.js';
 
 // ✅ UNIFIED RATE LIMITER (replaces 4 conflicting middlewares!)
 import { unifiedRateLimitMiddleware } from '../middlewares/rate-limiter.middleware.js';
+
+// ✅ CORS: Import route-specific CORS configuration
+import { createRouteCorsOptions } from '../middlewares/cors.middleware.js';
+import { uploadApiConfig } from '../config/cors.js';
+
+// ✅ Create upload-specific CORS middleware
+const uploadCorsMiddleware = cors(createRouteCorsOptions(uploadApiConfig));
 
 // ✅ UPDATED: Import from modular Supabase structure
 import {
@@ -78,12 +86,26 @@ import { listS3Files } from '../controllers/providers/s3/s3.list.js';
 // ✅ NEW: Import S3 Metadata controller
 import { getS3Metadata } from '../controllers/providers/s3/s3.metadata.js';
 
+// ✅ NEW: Import S3 CORS controllers (Tier 1 Feature #2 - Developer Pain Point!)
+import { setupS3BucketCors, verifyS3BucketCors } from '../middlewares/cors.middleware.js';
+
+// ✅ NEW: Import R2 CORS controllers (S3-compatible API)
+import { setupR2BucketCors, verifyR2BucketCors } from '../middlewares/cors.middleware.js';
+
 import {
   getUploadAnalytics,
   getDailyUsageAnalytics,
   getProviderUsageAnalytics,
   getFileTypeAnalytics
 } from '../controllers/analytics.controller.js';
+
+// ✅ NEW: Import Validation Controller (Tier 1 Feature #1 - File Validation)
+import {
+  validateFile,
+  validateFilesBatch,
+  validateAndGenerateSignedUrl,
+  getSupportedTypes
+} from '../controllers/validation.controller.js';
 
 const router = express.Router();
 
@@ -129,7 +151,6 @@ router.post('/supabase/complete', validateApiKey, unifiedRateLimitMiddleware, si
 
 // Generate signed URL for Uploadcare (zero bandwidth cost)
 router.post('/uploadcare/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateUploadcareSignedUrl);
-
 
 
 // Delete files from Uploadcare
@@ -191,7 +212,23 @@ router.post('/r2/batch/signed-urls', validateApiKey, unifiedRateLimitMiddleware,
 // Batch delete files (up to 1000 files)
 router.delete('/r2/batch/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, batchDeleteR2Files);
 
+// ===== R2 CORS CONFIGURATION (S3-Compatible API) =====
+
+// Configure CORS on R2 bucket
+router.post('/r2/cors/setup', validateApiKey, unifiedRateLimitMiddleware, setupR2BucketCors);
+
+// Verify R2 bucket CORS configuration
+router.post('/r2/cors/verify', validateApiKey, unifiedRateLimitMiddleware, verifyR2BucketCors);
+
 // ===== AWS S3 PROVIDER ROUTES (Phase 1: Enterprise Support) =====
+
+// ✅ NEW: S3 Bucket CORS Configuration (TIER 1 Feature #2 - Developer Pain Point!)
+// This is what developers are screaming for! Configures CORS on S3 buckets.
+// Eliminates the #1 frustration: CORS errors on direct uploads to S3.
+router.post('/s3/cors/setup', validateApiKey, unifiedRateLimitMiddleware, setupS3BucketCors);
+
+// Verify S3 bucket CORS configuration
+router.post('/s3/cors/verify', validateApiKey, unifiedRateLimitMiddleware, verifyS3BucketCors);
 
 // Generate signed URL for S3 upload (multi-region + storage classes + SSE-S3)
 router.post('/s3/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateS3SignedUrl);
@@ -237,6 +274,21 @@ router.post('/signed-url', validateApiKey, unifiedRateLimitMiddleware, signature
 
 // Legacy upload endpoint (now defaults to Supabase)
 router.post('/upload', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, upload.single('file'), uploadToSupabaseStorage);
+
+// ===== FILE VALIDATION (Tier 1 Feature #1 - Security & DX Win!) =====
+// ✅ CRITICAL: Client reads first 8 bytes and sends to backend - files NEVER hit backend!
+
+// Validate single file metadata (with optional magic bytes from client)
+router.post('/validate', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, validateFile);
+
+// Validate multiple files in batch (up to 50 files)
+router.post('/validate/batch', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, validateFilesBatch);
+
+// Validate and get signed URL in one request (convenience endpoint)
+router.post('/validate/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, validateAndGenerateSignedUrl);
+
+// Get supported file types for validation
+router.get('/validate/supported-types', getSupportedTypes);
 
 // ===== ANALYTICS & TRACKING =====
 

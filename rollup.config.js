@@ -3,7 +3,7 @@ import commonjs from '@rollup/plugin-commonjs';
 import typescript from '@rollup/plugin-typescript';
 
 export default {
-  input: 'src/client.ts',
+  input: 'src/index.ts',
   output: [
     {
       file: 'dist/index.js',
@@ -25,5 +25,5 @@ export default {
       declarationDir: './dist',
     }),
   ],
-  external: ['fetch', '@vercel/blob'],
-}; 
+  external: ['fetch'],
+};

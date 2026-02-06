@@ -1,8 +1,10 @@
 /**
- * R2 Batch Signed URLs
- * Generate multiple signed URLs in one request using parallel processing
+ * R2 Batch Signed URLs (Enhanced)
+ * Generate multiple signed URLs with validation + smart expiry
  * 
- * OPTIMIZED: Uses only updateRequestMetrics (Redis-backed)
+ * OPTIMIZED: Pure crypto signing, validation integration, smart expiry
+ * 
+ * @file controllers/providers/r2/r2.batch-signed-url.js
  */
 
 import { PutObjectCommand } from '@aws-sdk/client-s3';
@@ -24,6 +26,12 @@ import { checkUserQuota } from '../shared/analytics.new.js';
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
+// ✅ NEW: Import File Validator for server-side validation
+import { validateFileMetadata } from '../../../utils/file-validator.js';
+
+// ✅ NEW: Import Smart Expiry calculator
+import { calculateSmartExpiry } from '../../../utils/smart-expiry.js';
+
 /**
  * Generate multiple R2 signed URLs in one request
  * 
@@ -42,13 +50,20 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             r2AccountId,
             r2Bucket,
             r2PublicUrl,
-            expiresIn = SIGNED_URL_EXPIRY
+            expiresIn: requestedExpiresIn = SIGNED_URL_EXPIRY,
+            // ✅ NEW: Validation options (optional)
+            validation,
+            // ✅ NEW: Smart expiry options (optional)
+            networkInfo,
+            bufferMultiplier,
+            minExpirySeconds,
+            maxExpirySeconds
         } = req.body;
 
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
 
-        // LAYER 1: Memory Guard
+        // LAYER 1: Memory Guard (fastest possible)
         const memoryStart = Date.now();
         const memCheck = checkMemoryRateLimit(userId, 'r2-batch');
         const memoryTime = Date.now() - memoryStart;
@@ -100,13 +115,13 @@ export const generateR2BatchSignedUrls = async (req, res) => {
         }
 
         // VALIDATION: Expiry Time
-        const expiryInt = parseInt(expiresIn);
+        const expiryInt = parseInt(requestedExpiresIn);
 
         if (isNaN(expiryInt) || expiryInt < MIN_EXPIRY || expiryInt > MAX_EXPIRY) {
             return res.status(400).json(formatR2Error(
                 'INVALID_EXPIRY',
                 `expiresIn must be between ${MIN_EXPIRY} and ${MAX_EXPIRY} seconds`,
-                `You provided: ${expiresIn}`
+                `You provided: ${requestedExpiresIn}`
             ));
         }
 
@@ -117,6 +132,7 @@ export const generateR2BatchSignedUrls = async (req, res) => {
         const results = await Promise.all(
             files.map(async (file, index) => {
                 try {
+                    // VALIDATION: Required fields
                     if (!file.filename || !file.contentType) {
                         return {
                             success: false,
@@ -125,6 +141,45 @@ export const generateR2BatchSignedUrls = async (req, res) => {
                             error: 'MISSING_FILE_DATA',
                             message: 'filename and contentType are required for each file'
                         };
+                    }
+
+                    // ✅ NEW: Server-side file validation (metadata + magic bytes)
+                    // CRITICAL: Files never touch server - client sends magic bytes!
+                    if (validation || file.magicBytes) {
+                        const validationResult = validateFileMetadata({
+                            filename: file.filename,
+                            contentType: file.contentType,
+                            fileSize: file.fileSize || 0,
+                            magicBytes: file.magicBytes,
+                            validation: validation || {}
+                        });
+
+                        if (!validationResult.valid) {
+                            return {
+                                success: false,
+                                index,
+                                originalFilename: file.filename,
+                                error: 'VALIDATION_FAILED',
+                                validationErrors: validationResult.errors,
+                                checks: validationResult.checks
+                            };
+                        }
+                    }
+
+                    // ✅ NEW: Smart Expiry Calculation
+                    // Calculate optimal expiry per file based on file size
+                    let fileExpiry = expiryInt;
+                    let smartExpiryResult = null;
+
+                    if (file.fileSize && file.fileSize > 0) {
+                        smartExpiryResult = calculateSmartExpiry({
+                            fileSize: file.fileSize,
+                            networkInfo: networkInfo || {},
+                            bufferMultiplier: bufferMultiplier || 1.5,
+                            minExpirySeconds: minExpirySeconds || 60,
+                            maxExpirySeconds: maxExpirySeconds || MAX_EXPIRY
+                        });
+                        fileExpiry = smartExpiryResult.expirySeconds;
                     }
 
                     const uniqueFilename = generateR2Filename(file.filename, apiKeyId);
@@ -136,7 +191,7 @@ export const generateR2BatchSignedUrls = async (req, res) => {
                     });
 
                     const uploadUrl = await getSignedUrl(client, command, {
-                        expiresIn: expiryInt
+                        expiresIn: fileExpiry
                     });
 
                     const publicUrl = buildPublicUrl(r2AccountId, r2Bucket, uniqueFilename, r2PublicUrl);
@@ -149,7 +204,18 @@ export const generateR2BatchSignedUrls = async (req, res) => {
                         uploadUrl,
                         publicUrl,
                         contentType: file.contentType,
-                        fileSize: file.fileSize || null
+                        fileSize: file.fileSize || null,
+                        // ✅ NEW: Smart expiry info per file
+                        expiresIn: fileExpiry,
+                        expiresAt: new Date(Date.now() + fileExpiry * 1000).toISOString(),
+                        // ✅ NEW: Smart expiry details
+                        smartExpiry: smartExpiryResult ? {
+                            calculatedExpiry: smartExpiryResult.expirySeconds,
+                            estimatedUploadTime: smartExpiryResult.estimatedUploadTime,
+                            networkType: smartExpiryResult.networkType,
+                            bufferTime: smartExpiryResult.bufferTime,
+                            reasoning: smartExpiryResult.reasoning
+                        } : null
                     };
 
                 } catch (fileError) {
@@ -170,9 +236,18 @@ export const generateR2BatchSignedUrls = async (req, res) => {
         const successCount = results.filter(r => r.success).length;
         const failureCount = results.length - successCount;
 
+        // Calculate total bytes for successful uploads
+        const totalBytes = results
+            .filter(r => r.success && r.fileSize)
+            .reduce((sum, r) => sum + r.fileSize, 0);
+
         // 🚀 SINGLE METRICS CALL (Redis-backed)
-        updateRequestMetrics(apiKeyId, userId, 'r2', true)
-            .catch(() => { });
+        updateRequestMetrics(apiKeyId, userId, 'r2', successCount > 0, { 
+            fileSize: totalBytes,
+            batchSize: files.length,
+            successCount,
+            failureCount
+        }).catch(() => { });
 
         console.log(`[${requestId}] ✅ Batch complete: ${successCount}/${files.length} in ${totalTime}ms`);
 
@@ -183,10 +258,9 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             summary: {
                 total: files.length,
                 successful: successCount,
-                failed: failureCount
+                failed: failureCount,
+                totalBytes
             },
-            expiresIn: expiryInt,
-            expiresAt: new Date(Date.now() + expiryInt * 1000).toISOString(),
             performance: {
                 requestId,
                 totalTime: `${totalTime}ms`,

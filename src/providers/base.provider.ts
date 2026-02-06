@@ -2,7 +2,7 @@
  * Base Provider Interface
  * 
  * Foundation for all storage provider implementations.
- * Every provider (Vercel, Supabase, Uploadcare, R2) must implement this interface.
+ * Every provider (S3, R2, Supabase, Uploadcare) must implement this interface.
  * 
  * @module providers/base
  * 
@@ -91,7 +91,7 @@ export abstract class BaseProvider<
     TDownloadOptions = any
 > implements IStorageProvider<TUploadOptions, TDeleteOptions, TDownloadOptions> {
     /**
-     * Provider name (e.g., 'VERCEL', 'SUPABASE', 'UPLOADCARE')
+     * Provider name (e.g., 'S3', 'R2', 'SUPABASE', 'UPLOADCARE')
      */
     protected readonly providerName: string;
 

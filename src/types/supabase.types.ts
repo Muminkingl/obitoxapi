@@ -10,6 +10,48 @@
 import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, BucketInfo } from './common';
 
 // ============================================================================
+// Supabase Configuration (Provider Instance Pattern)
+// ============================================================================
+
+/**
+ * Supabase Provider Configuration
+ * 
+ * Used to initialize a Supabase provider instance with stored credentials.
+ * Once configured, all methods use these credentials automatically.
+ * 
+ * @example
+ * ```typescript
+ * const supabase = client.supabase({
+ *   url: 'https://xxx.supabase.co',
+ *   token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+ *   bucket: 'my-uploads'
+ * });
+ * 
+ * // All methods now use stored credentials
+ * await supabase.uploadFile(file);
+ * await supabase.listBuckets();
+ * ```
+ */
+export interface SupabaseConfig {
+    /**
+     * Supabase project URL
+     * Format: https://xxxxx.supabase.co
+     */
+    url: string;
+
+    /**
+     * Supabase service role key (secret!)
+     * Keep this secret - never expose in client-side code
+     */
+    token: string;
+
+    /**
+     * Default bucket name
+     */
+    bucket: string;
+}
+
+// ============================================================================
 // Supabase Upload Options
 // ============================================================================
 

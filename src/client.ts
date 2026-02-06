@@ -2,7 +2,7 @@
  * ObitoX SDK - Main Client
  * 
  * Unified SDK for managing file uploads across multiple storage providers.
- * Supports Vercel Blob, Supabase Storage, and Uploadcare CDN.
+ * Supports S3, Cloudflare R2, Supabase Storage, and Uploadcare CDN.
  * 
  * @module client
  * 
@@ -12,10 +12,13 @@
  * 
  * const client = new ObitoX({ apiKey: 'your-api-key' });
  * 
- * // Upload to Vercel
+ * // Upload to R2
  * const url = await client.uploadFile(file, {
- *   provider: 'VERCEL',
- *   vercelToken: 'your-token'
+ *   provider: 'R2',
+ *   r2AccessKey: 'your-key',
+ *   r2SecretKey: 'your-secret',
+ *   r2AccountId: 'your-account',
+ *   r2Bucket: 'your-bucket'
  * });
  * ```
  */
@@ -28,6 +31,20 @@ import type {
   DownloadFileOptions,
   ListBucketsOptions,
 } from './types/index.js';
+
+// Import provider config types
+import type {
+  R2Config,
+} from './types/r2.types.js';
+import type {
+  S3Config,
+} from './types/s3.types.js';
+import type {
+  SupabaseConfig,
+} from './types/supabase.types.js';
+import type {
+  UploadcareConfig,
+} from './types/uploadcare.types.js';
 
 // Import providers
 import { ProviderRegistry } from './providers/base.provider.js';
@@ -45,6 +62,14 @@ import type {
   ValidateApiKeyResponse,
   DownloadResponse,
 } from './types/common.js';
+
+// Import S3 CORS types from S3 types module
+import type {
+  S3CorsConfigOptions,
+  S3CorsConfigResponse,
+  S3CorsVerifyOptions,
+  S3CorsVerifyResponse,
+} from './types/s3.types.js';
 
 /**
  * ObitoX SDK Client
@@ -118,6 +143,103 @@ export class ObitoX {
     this.registerProviders();
   }
 
+  // ============================================================================
+  // Provider Factory Methods (Provider Instance Pattern)
+  // ============================================================================
+
+  /**
+   * Create an R2 provider instance with stored credentials
+   * 
+   * Once created, all R2 methods use these credentials automatically.
+   * No need to repeat credentials for each operation.
+   * 
+   * @param config - R2 configuration with credentials
+   * @returns R2Provider instance
+   * 
+   * @example
+   * ```typescript
+   * const client = new ObitoX({ apiKey: 'ox_xxx...' });
+   * 
+   * // Create R2 provider instance
+   * const r2 = client.r2({
+   *   accessKey: process.env.R2_ACCESS_KEY,
+   *   secretKey: process.env.R2_SECRET_KEY,
+   *   accountId: process.env.R2_ACCOUNT_ID,
+   *   bucket: 'my-uploads'
+   * });
+   * 
+   * // All methods use stored credentials
+   * await r2.uploadFile(file);
+   * await r2.configureCors({ origins: ['https://app.com'] });
+   * ```
+   */
+  r2(config: R2Config): R2Provider {
+    return new R2Provider(this.apiKey, this.baseUrl, this.apiSecret, config);
+  }
+
+  /**
+   * Create an S3 provider instance with stored credentials
+   * 
+   * @param config - S3 configuration with credentials
+   * @returns S3Provider instance
+   * 
+   * @example
+   * ```typescript
+   * const s3 = client.s3({
+   *   accessKey: process.env.AWS_ACCESS_KEY,
+   *   secretKey: process.env.AWS_SECRET_KEY,
+   *   bucket: 'my-bucket',
+   *   region: 'us-east-1'
+   * });
+   * 
+   * await s3.uploadFile(file);
+   * ```
+   */
+  s3(config: S3Config): S3Provider {
+    return new S3Provider(this.apiKey, this.baseUrl, this.apiSecret, config);
+  }
+
+  /**
+   * Create a Supabase provider instance with stored credentials
+   * 
+   * @param config - Supabase configuration with credentials
+   * @returns SupabaseProvider instance
+   * 
+   * @example
+   * ```typescript
+   * const supabase = client.supabase({
+   *   url: process.env.SUPABASE_URL,
+   *   token: process.env.SUPABASE_TOKEN,
+   *   bucket: 'my-bucket'
+   * });
+   * 
+   * await supabase.uploadFile(file);
+   * ```
+   */
+  supabase(config: SupabaseConfig): SupabaseProvider {
+    return new SupabaseProvider(this.apiKey, this.baseUrl, this.apiSecret, config);
+  }
+
+  /**
+   * Create an Uploadcare provider instance with stored credentials
+   * 
+   * @param config - Uploadcare configuration with credentials
+   * @returns UploadcareProvider instance
+   * 
+   * @example
+   * ```typescript
+   * const uploadcare = client.uploadcare({
+   *   publicKey: 'demopublickey',
+   *   secretKey: 'demosecretkey'
+   * });
+   * 
+   * await uploadcare.uploadFile(file);
+   * ```
+   */
+  uploadcare(config: UploadcareConfig): UploadcareProvider {
+    return new UploadcareProvider(this.apiKey, this.baseUrl, this.apiSecret, config);
+  }
+
   /**
    * Register all storage providers
    * 
@@ -150,10 +272,13 @@ export class ObitoX {
    * 
    * @example
    * ```typescript
-   * // Upload to Vercel Blob
+   * // Upload to R2 storage
    * const url = await client.uploadFile(file, {
-   *   provider: 'VERCEL',
-   *   vercelToken: 'vercel_blob_rw_xxx...'
+   *   provider: 'R2',
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads'
    * });
    * 
    * // Upload to Uploadcare with optimization
@@ -202,7 +327,7 @@ export class ObitoX {
    * @example
    * ```typescript
    * await client.deleteFile({
-            this.lastUploadcareUrl = `https://ucarecdn.com/${(result as any).file}/${filename}`;.jpg',
+   *   fileUrl,
    *   provider: 'UPLOADCARE',
    *   uploadcarePublicKey: 'demopublickey',
    *   uploadcareSecretKey: 'demosecretkey'
@@ -338,7 +463,7 @@ export class ObitoX {
    * await client.analytics({
    *   event: 'file_viewed',
    *   fileUrl: 'https://example.com/file.jpg',
-   *   provider: 'vercel'
+   *   provider: 'r2'
    * });
    * ```
    */
@@ -468,21 +593,22 @@ export class ObitoX {
   /**
    * Batch upload multiple files to R2
    * 
-   * R2's killer feature - generate presigned URLs for up to 100 files in a single API call.
-   * This is significantly faster than calling uploadFile() 100 times.
-   * 
+   * @deprecated Use `client.r2({ config }).uploadFiles(files)` instead
+   *        Example: client.r2({ accessKey, secretKey, accountId, bucket }).uploadFiles(files)
    * @param options - R2 batch upload options
    * @returns Promise resolving to batch upload response with URLs for all files
    * @throws Error if batch upload fails or exceeds 100 files limit
    * 
    * @example
    * ```typescript
-   * import type { R2BatchUploadOptions, R2BatchUploadResponse } from '@obitox/sdk';
-   * 
-   * const result: R2BatchUploadResponse = await client.batchUpload({
+   * // NEW API (recommended):
+   * const r2 = client.r2({ accessKey, secretKey, accountId, bucket });
+   * await r2.uploadFiles(files);
+   *
+   * // OLD API (deprecated):
+   * const result = await client.batchUploadR2({
    *   files: [
    *     { filename: 'photo1.jpg', contentType: 'image/jpeg', fileSize: 1024000 },
-   *     { filename: 'photo2.jpg', contentType: 'image/jpeg', fileSize: 2048000 },
    *     // ... up to 100 files
    *   ],
    *   r2AccessKey: 'xxx...',
@@ -490,253 +616,341 @@ export class ObitoX {
    *   r2AccountId: 'abc123...',
    *   r2Bucket: 'my-uploads'
    * });
-   * 
-   * console.log(`Generated ${result.total} URLs in ${result.performance.totalTime}`);
-   * 
-   * // Upload all files in parallel
-   * await Promise.all(
-   *   actualFiles.map((file, i) =>
-   *     fetch(result.urls[i].uploadUrl, {
-   *       method: 'PUT',
-   *       body: file
-   *     })
-   *   )
-   * );
    * ```
    */
-  async batchUpload(options: any): Promise<any> {
+  async batchUploadR2(options: any): Promise<any> {
     const provider = this.providers.get('R2');
     if (!provider) {
-      throw new Error('R2 provider not available');
+      throw new Error('R2 provider is not available');
     }
-
-    // Cast to R2Provider to access batchUpload method
-    const r2Provider = provider as any;
-    if (typeof r2Provider.batchUpload !== 'function') {
-      throw new Error('R2 provider does not support batch upload');
-    }
-
-    return r2Provider.batchUpload(options);
+    return (provider as any).batchUpload(options);
   }
 
   /**
-   * Batch delete multiple files from R2
+   * Generate R2 access token for direct uploads
    * 
-   * Delete up to 1000 files in a single API call.
-   * Much more efficient than calling deleteFile() 1000 times.
+   * Generates a JWT access token for direct uploads to R2.
+   * This is an alternative to presigned URLs for direct browser uploads.
    * 
-   * @param options - R2 batch delete options
-   * @returns Promise resolving to arrays of deleted and failed file keys
-   * @throws Error if batch delete fails or exceeds 1000 files limit
+   * @param options - R2 access token options
+   * @returns Promise resolving to access token response
+   * @throws Error if token generation fails
    * 
    * @example
    * ```typescript
-   * import type { R2BatchDeleteOptions, R2BatchDeleteResponse } from '@obitox/sdk';
+   * const tokenResponse = await client.generateR2AccessToken({
+   *   r2AccessKeyId: 'xxx...',
+   *   r2SecretAccessKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads',
+   *   r2ObjectKey: 'avatar.jpg',
+   *   expiresIn: 3600  // 1 hour
+   * });
    * 
-   * const result: R2BatchDeleteResponse = await client.batchDelete({
-   *   fileKeys: ['photo1.jpg', 'photo2.jpg', 'photo3.jpg'],
+   * // Use the token for direct upload
+   * const formData = new FormData();
+   * formData.append('file', file);
+   * 
+   * await fetch(`https://${tokenResponse.uploadHost}/my-uploads/avatar.jpg`, {
+   *   method: 'PUT',
+   *   headers: {
+   *     'Authorization': `Bearer ${tokenResponse.token}`,
+   *     'Content-Type': 'image/jpeg'
+   *   },
+   *   body: formData
+   * });
+   * ```
+   */
+  async generateR2AccessToken(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider is not available');
+    }
+    return (provider as any).generateAccessToken(options);
+  }
+
+  /**
+   * List files in an R2 bucket
+   * 
+   * Lists files in a specific R2 bucket with optional prefix filtering.
+   * 
+   * @param options - R2 list options
+   * @returns Promise resolving to list response
+   * @throws Error if list fails
+   * 
+   * @example
+   * ```typescript
+   * const result = await client.listR2Files({
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads',
+   *   prefix: 'images/'
+   * });
+   * 
+   * result.files.forEach(file => {
+   *   console.log(`${file.key} (${file.size} bytes)`);
+   * });
+   * ```
+   */
+  async listR2Files(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider is not available');
+    }
+    return (provider as any).listFiles(options);
+  }
+
+  /**
+   * Delete multiple files from R2
+   * 
+   * Deletes multiple files from an R2 bucket in a single request.
+   * 
+   * @param options - R2 batch delete options
+   * @returns Promise resolving to batch delete response
+   * @throws Error if batch delete fails
+   * 
+   * @example
+   * ```typescript
+   * const result = await client.batchDeleteR2({
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads',
+   *   keys: ['old-photo1.jpg', 'old-photo2.jpg']
+   * });
+   * 
+   * console.log(`Deleted ${result.deleted.length} files`);
+   * if (result.failed.length > 0) {
+   *   console.error('Failed to delete:', result.failed);
+   * }
+   * ```
+   */
+  async batchDeleteR2(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider is not available');
+    }
+    return (provider as any).batchDelete(options);
+  }
+
+  /**
+   * Get a presigned download URL for an R2 file
+   * 
+   * Generates a presigned URL for downloading a file from R2.
+   * 
+   * @param options - R2 download options
+   * @returns Promise resolving to download URL
+   * @throws Error if URL generation fails
+   * 
+   * @example
+   * ```typescript
+   * const downloadUrl = await client.getR2DownloadUrl({
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads',
+   *   key: 'photo.jpg',
+   *   expiresIn: 300  // 5 minutes
+   * });
+   * 
+   * console.log('Download URL:', downloadUrl);
+   * ```
+   */
+  async getR2DownloadUrl(options: any): Promise<string> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider is not available');
+    }
+    return (provider as any).getDownloadUrl(options);
+  }
+
+  /**
+   * Get file metadata from R2
+   * 
+   * Retrieves metadata for a specific file in an R2 bucket.
+   * 
+   * @param options - R2 metadata options
+   * @returns Promise resolving to file metadata
+   * @throws Error if metadata retrieval fails
+   * 
+   * @example
+   * ```typescript
+   * const metadata = await client.getR2Metadata({
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads',
+   *   key: 'avatar.jpg'
+   * });
+   * 
+   * console.log(`Size: ${metadata.size} bytes`);
+   * console.log(`Content-Type: ${metadata.contentType}`);
+   * console.log(`ETag: ${metadata.etag}`);
+   * ```
+   */
+  async getR2Metadata(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider is not available');
+    }
+    return (provider as any).getMetadata(options);
+  }
+
+  // ============================================================================
+  // R2 CORS Configuration (Developer Experience)
+  // ============================================================================
+
+  /**
+   * Configure CORS for R2 bucket
+   * 
+   * Sets up CORS rules to allow cross-origin uploads from web applications.
+   * Essential for browser-based uploads to R2.
+   * 
+   * @deprecated Use `client.r2({ config }).configureCors(options)` instead
+   *        Example: client.r2({ accessKey, secretKey, accountId, bucket }).configureCors({ origins })
+   * @param options - R2 CORS configuration options
+   * @returns Promise resolving to CORS configuration response
+   * @throws Error if configuration fails
+   * 
+   * @example
+   * ```typescript
+   * // NEW API (recommended):
+   * const r2 = client.r2({ accessKey, secretKey, accountId, bucket });
+   * await r2.configureCors({ origins: ['https://app.com'] });
+   *
+   * // OLD API (deprecated):
+   * const result = await client.configureR2Cors({
+   *   r2AccessKey: 'xxx...',
+   *   r2SecretKey: 'yyy...',
+   *   r2AccountId: 'abc123...',
+   *   r2Bucket: 'my-uploads',
+   *   allowedOrigins: ['https://myapp.com', 'http://localhost:3000'],
+   *   allowedMethods: ['PUT', 'GET', 'DELETE'],
+   *   allowedHeaders: ['*'],
+   *   exposeHeaders: ['ETag'],
+   *   maxAgeSeconds: 3600
+   * });
+   * 
+   * if (result.success) {
+   *   console.log('CORS configured successfully!');
+   * }
+   * ```
+   */
+  async configureR2Cors(options: any): Promise<any> {
+    const provider = this.providers.get('R2');
+    if (!provider) {
+      throw new Error('R2 provider is not available');
+    }
+    return (provider as any).configureCors(options);
+  }
+
+  /**
+   * Verify CORS configuration for R2 bucket
+   * 
+   * Checks if CORS is properly configured for the bucket.
+   * Useful for debugging and validation.
+   * 
+   * @deprecated Use `client.r2({ config }).verifyCors()` instead
+   *        Example: client.r2({ accessKey, secretKey, accountId, bucket }).verifyCors()
+   * @param options - R2 CORS verification options
+   * @returns Promise resolving to CORS verification response
+   * @throws Error if verification fails
+   * 
+   * @example
+   * ```typescript
+   * // NEW API (recommended):
+   * const r2 = client.r2({ accessKey, secretKey, accountId, bucket });
+   * const result = await r2.verifyCors();
+   *
+   * // OLD API (deprecated):
+   * const result = await client.verifyR2Cors({
    *   r2AccessKey: 'xxx...',
    *   r2SecretKey: 'yyy...',
    *   r2AccountId: 'abc123...',
    *   r2Bucket: 'my-uploads'
    * });
    * 
-   * console.log(`Deleted: ${result.deleted.length}, Failed: ${result.errors.length}`);
-   * ```
-   */
-  async batchDelete(options: any): Promise<any> {
-    const provider = this.providers.get('R2');
-    if (!provider) {
-      throw new Error('R2 provider not available');
-    }
-
-    // Cast to R2Provider to access batchDelete method
-    const r2Provider = provider as any;
-    if (typeof r2Provider.batchDelete !== 'function') {
-      throw new Error('R2 provider does not support batch delete');
-    }
-
-    return r2Provider.batchDelete(options);
-  }
-
-  /**
-   * Generate JWT access token for R2 file or bucket
-   * 
-   * Creates a time-limited token with specific permissions for secure file access.
-   * Use this for enterprise security scenarios where you need granular access control.
-   * 
-   * @param options - R2 access token options
-   * @returns Promise resolving to token and metadata
-   * @throws Error if token generation fails
-   * 
-   * @example
-   * ```typescript
-   * import type { R2AccessTokenOptions, R2AccessTokenResponse } from '@obitox/sdk';
-   * 
-   * // Generate read-only token for a specific file
-   * const token: R2AccessTokenResponse = await client.generateR2AccessToken({
-   *   r2Bucket: 'private-docs',
-   *   fileKey: 'confidential-report.pdf',
-   *   permissions: ['read'],
-   *   expiresIn: 3600  // 1 hour
-   * });
-   * 
-   * console.log('Share this token:', token.token);
-   * console.log('Expires at:', token.expiresAt);
-   * console.log('Usage:', token.usage.description);
-   * ```
-   */
-  async generateR2AccessToken(options: any): Promise<any> {
-    const provider = this.providers.get('R2');
-    if (!provider) {
-      throw new Error('R2 provider not available');
-    }
-
-    // Cast to R2Provider to access generateAccessToken method
-    const r2Provider = provider as any;
-    if (typeof r2Provider.generateAccessToken !== 'function') {
-      throw new Error('R2 provider does not support access tokens');
-    }
-
-    return r2Provider.generateAccessToken(options);
-  }
-
-  /**
-   * Revoke R2 access token
-   * 
-   * Immediately invalidates a previously issued token.
-   * Use this to revoke access when a token should no longer be valid.
-   * 
-   * @param token - JWT token to revoke
-   * @throws Error if revocation fails
-   * 
-   * @example
-   * ```typescript
-   * // Revoke a previously issued token
-   * await client.revokeR2AccessToken(token.token);
-   * console.log('Token revoked - access denied');
-   * ```
-   */
-  async revokeR2AccessToken(token: string): Promise<void> {
-    const provider = this.providers.get('R2');
-    if (!provider) {
-      throw new Error('R2 provider not available');
-    }
-
-    // Cast to R2Provider to access revokeAccessToken method
-    const r2Provider = provider as any;
-    if (typeof r2Provider.revokeAccessToken !== 'function') {
-      throw new Error('R2 provider does not support token revocation');
-    }
-
-    return r2Provider.revokeAccessToken(token);
-  }
-
-  /**
-   * List files in R2 bucket
-   * 
-   * Retrieves a list of files with pagination support.
-   * Use prefix to filter by folder, and continuationToken for pagination.
-   * 
-   * @param options - R2 list options
-   * @returns Promise resolving to file list and metadata
-   * @throws Error if listing fails
-   * 
-   * @example
-   * ```typescript
-   * import type { R2ListOptions, R2ListResponse } from '@obitox/sdk';
-   * 
-   * // List all PDFs in "documents/" folder
-   * const result: R2ListResponse = await client.listR2Files({
-   *   r2AccessKey: 'xxx...',
-   *   r2SecretKey: 'yyy...',
-   *   r2AccountId: 'abc123...',
-   *   r2Bucket: 'my-uploads',
-   *   prefix: 'documents/',
-   *   maxKeys: 50
-   * });
-   * 
-   * console.log(`Found ${result.count} files`);
-   * result.files.forEach(file => {
-   *   console.log(`- ${file.key} (${file.size} bytes, modified: ${file.lastModified})`);
-   * });
-   * 
-   * // Pagination for large buckets
-   * if (result.truncated) {
-   *   const nextPage = await client.listR2Files({
-   *     ...options,
-   *     continuationToken: result.continuationToken
-   *   });
+   * if (result.configured && result.isValid) {
+   *   console.log('CORS is properly configured!');
+   * } else {
+   *   console.log('Issues found:', result.issues);
+   *   console.log('Recommendation:', result.recommendation);
    * }
    * ```
    */
-  async listR2Files(options: any): Promise<any> {
+  async verifyR2Cors(options: any): Promise<any> {
     const provider = this.providers.get('R2');
     if (!provider) {
-      throw new Error('R2 provider not available');
+      throw new Error('R2 provider is not available');
     }
-
-    // Cast to R2Provider to access listFiles method
-    const r2Provider = provider as any;
-    if (typeof r2Provider.listFiles !== 'function') {
-      throw new Error('R2 provider does not support file listing');
-    }
-
-    return r2Provider.listFiles(options);
+    return (provider as any).verifyCors(options);
   }
 
   // ============================================================================
-  // Utility Methods
+  // S3-Specific Methods (Advanced Features)
   // ============================================================================
 
   /**
-   * Get list of available providers
+   * Configure CORS on an S3 bucket
    * 
-   * @returns Array of provider names
+   * Sets up Cross-Origin Resource Sharing (CORS) configuration on your S3 bucket
+   * to allow cross-origin requests from your web applications.
+   * 
+   * @param options - S3 CORS configuration options
+   * @returns Promise resolving to CORS configuration response
+   * @throws Error if CORS configuration fails
    * 
    * @example
    * ```typescript
-   * const providers = client.getAvailableProviders();
-   * console.log(`Available providers: ${providers.join(', ')}`);
-   * // Output: Available providers: VERCEL, SUPABASE, UPLOADCARE, R2
+   * await client.configureS3Cors({
+   *     s3AccessKey: 'xxx...',
+   *     s3SecretKey: 'yyy...',
+   *     s3Bucket: 'my-bucket',
+   *     s3Region: 'us-east-1',
+   *     allowedOrigins: ['https://myapp.com']
+   * });
    * ```
    */
-  getAvailableProviders(): string[] {
-    return this.providers.getProviderNames();
-
+  async configureS3Cors(options: S3CorsConfigOptions): Promise<S3CorsConfigResponse> {
+    const provider = this.providers.get('S3');
+    if (!provider) {
+      throw new Error('S3 provider is not available');
+    }
+    return (provider as S3Provider).configureCors(options);
   }
 
   /**
-   * Check if a provider is supported
+   * Verify CORS configuration on an S3 bucket
    * 
-   * @param providerName - Provider name to check
-   * @returns True if provider is supported
+   * Checks if CORS is properly configured on the S3 bucket.
+   * 
+   * @param options - S3 CORS verification options
+   * @returns Promise resolving to CORS verification response
+   * @throws Error if verification fails
    * 
    * @example
    * ```typescript
-   * if (client.isProviderSupported('VERCEL')) {
-   *   console.log('Vercel is supported!');
+   * const result = await client.verifyS3Cors({
+   *     s3AccessKey: 'xxx...',
+   *     s3SecretKey: 'yyy...',
+   *     s3Bucket: 'my-bucket',
+   *     s3Region: 'us-east-1'
+   * });
+   * 
+   * if (result.isValid) {
+   *     console.log('CORS is properly configured');
    * }
    * ```
    */
-  isProviderSupported(providerName: string): boolean {
-    return this.providers.has(providerName);
+  async verifyS3Cors(options: S3CorsVerifyOptions): Promise<S3CorsVerifyResponse> {
+    const provider = this.providers.get('S3');
+    if (!provider) {
+      throw new Error('S3 provider is not available');
+    }
+    return (provider as S3Provider).verifyCors(options);
   }
 }
 
 // Export as default for convenience
 export default ObitoX;
-
-// Re-export types for easy access
-export type {
-  ObitoXConfig,
-  UploadOptions,
-  DeleteFileOptions,
-  DownloadFileOptions,
-  ListBucketsOptions,
-  BucketInfo,
-  TrackOptions,
-  AnalyticsOptions,
-  AnalyticsResponse,
-  ValidateApiKeyResponse,
-} from './types';

@@ -23,6 +23,7 @@ import type {
     MalwareScanOptions,
     MalwareScanStatusOptions,
     MalwareScanResults,
+    UploadcareConfig,
 } from '../../types/uploadcare.types.js';
 import type { UploadResponse, ApiResponse } from '../../types/common.js';
 
@@ -61,8 +62,11 @@ export class UploadcareProvider extends BaseProvider<
      */
     private lastUploadcareUrl?: string;
 
-    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+    private config: UploadcareConfig;
+
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string, config?: UploadcareConfig) {
         super('UPLOADCARE', apiKey, baseUrl, apiSecret);
+        this.config = config || {} as UploadcareConfig;
     }
 
     /**
@@ -79,16 +83,27 @@ export class UploadcareProvider extends BaseProvider<
         file: File | Blob,
         options: Omit<UploadcareUploadOptions, 'filename' | 'contentType'>
     ): Promise<string> {
-        // Validate required fields
-        this.validateRequiredFields(options, ['uploadcarePublicKey']);
-
         // Extract filename from File object or use default
         const filename = file instanceof File ? file.name : 'uploaded-file';
         const contentType = file instanceof File ? file.type : 'application/octet-stream';
 
+        // Merge stored config with options (from provider instance pattern)
+        const mergedOptions: UploadcareUploadOptions = {
+            ...options,
+            // Stored config credentials as fallbacks
+            uploadcarePublicKey: options.uploadcarePublicKey || this.config.publicKey || '',
+            uploadcareSecretKey: options.uploadcareSecretKey || this.config.secretKey || '',
+            filename,
+            contentType,
+            provider: 'UPLOADCARE'
+        };
+
+        // Validate required fields
+        this.validateRequiredFields(mergedOptions, ['uploadcarePublicKey']);
+
         try {
             // Step 1: Get signed URL from ObitoX API
-            const signedUrlResult = await this.getSignedUrl(filename, contentType, options);
+            const signedUrlResult = await this.getSignedUrl(filename, contentType, mergedOptions);
 
             // Step 2: Upload directly to Uploadcare
             const uploadResult = await this.uploadToUploadcare(
@@ -106,8 +121,8 @@ export class UploadcareProvider extends BaseProvider<
                 const downloadInfo = await this.download({
                     fileUrl: this.lastUploadcareUrl,
                     provider: 'UPLOADCARE',
-                    uploadcarePublicKey: options.uploadcarePublicKey,
-                    uploadcareSecretKey: options.uploadcareSecretKey,
+                    uploadcarePublicKey: mergedOptions.uploadcarePublicKey,
+                    uploadcareSecretKey: mergedOptions.uploadcareSecretKey,
                 });
 
                 if (downloadInfo && typeof downloadInfo === 'string') {

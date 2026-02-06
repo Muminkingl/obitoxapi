@@ -21,6 +21,7 @@ import type {
     SupabaseDownloadOptions,
     SupabaseListBucketsOptions,
     SupabaseBucketInfo,
+    SupabaseConfig,
 } from '../../types/supabase.types.js';
 import type { UploadResponse, DownloadResponse } from '../../types/common.js';
 
@@ -65,8 +66,11 @@ export class SupabaseProvider extends BaseProvider<
      */
     private currentUploadController?: AbortController;
 
-    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+    private config: SupabaseConfig;
+
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string, config?: SupabaseConfig) {
         super('SUPABASE', apiKey, baseUrl, apiSecret);
+        this.config = config || {} as SupabaseConfig;
     }
 
     /**
@@ -81,17 +85,29 @@ export class SupabaseProvider extends BaseProvider<
      * @throws Error if upload fails or credentials are invalid
      */
     async upload(file: File | Blob, options: Omit<SupabaseUploadOptions, 'filename' | 'contentType'>): Promise<string> {
-        // Validate required fields
-        this.validateRequiredFields(options, ['supabaseUrl', 'supabaseToken', 'bucket']);
-
         // Extract filename from File object or use default
         const filename = file instanceof File ? file.name : 'uploaded-file';
         const contentType = file instanceof File ? file.type : 'application/octet-stream';
 
+        // Merge stored config with options (from provider instance pattern)
+        const mergedOptions: SupabaseUploadOptions = {
+            ...options,
+            // Stored config credentials as fallbacks
+            supabaseUrl: options.supabaseUrl || this.config.url || '',
+            supabaseToken: options.supabaseToken || this.config.token || '',
+            bucket: options.bucket || this.config.bucket || '',
+            filename,
+            contentType,
+            provider: 'SUPABASE'
+        };
+
+        // Validate required fields
+        this.validateRequiredFields(mergedOptions, ['supabaseUrl', 'supabaseToken', 'bucket']);
+
         try {
             // Step 1: Get signed URL from ObitoX API
             const signedUrlResult = await this.getSignedUrl(filename, contentType, {
-                ...options,
+                ...mergedOptions,
                 fileSize: file.size,  // Always pass actual file size
             });
 

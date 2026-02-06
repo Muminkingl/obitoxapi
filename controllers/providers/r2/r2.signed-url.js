@@ -26,6 +26,16 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 // Import memory guard only (Redis not needed for pure crypto!)
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 
+// ✅ NEW: Import File Validator for server-side validation
+import { validateFileMetadata } from '../../../utils/file-validator.js';
+
+// ✅ NEW: Import Smart Expiry calculator
+import { calculateSmartExpiry } from '../../../utils/smart-expiry.js';
+
+// ✅ NEW: Import Webhook utilities
+import { generateWebhookId, generateWebhookSecret } from '../../../utils/webhook/signature.js';
+import { supabaseAdmin } from '../../../config/supabase.js';
+
 /**
  * Generate presigned URL for R2 upload
  * Target Performance: 5-15ms P95
@@ -48,8 +58,11 @@ export const generateR2SignedUrl = async (req, res) => {
             r2AccountId,
             r2Bucket,
             r2PublicUrl,
-            expiresIn = SIGNED_URL_EXPIRY
+            expiresIn: requestedExpiresIn = SIGNED_URL_EXPIRY
         } = req.body;
+
+        // Use let so smart expiry can override
+        let expiresIn = requestedExpiresIn;
 
         apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
@@ -143,6 +156,71 @@ export const generateR2SignedUrl = async (req, res) => {
             });
         }
 
+        // ✅ NEW: VALIDATION: Server-side file validation (magic bytes from client)
+        // CRITICAL: Client reads first 8 bytes and sends to backend - files NEVER hit backend!
+        const { magicBytes, validation } = req.body;
+
+        if (validation || magicBytes) {
+            console.log(`[${requestId}] 🔍 Running server-side file validation...`);
+
+            const validationResult = validateFileMetadata({
+                filename,
+                contentType,
+                fileSize: fileSize || 0,
+                magicBytes,
+                validation: validation || {}
+            });
+
+            if (!validationResult.valid) {
+                console.log(`[${requestId}] ❌ Validation failed: ${validationResult.errors?.length} errors`);
+                updateRequestMetrics(apiKeyId, userId, 'r2', false).catch(() => { });
+
+                return res.status(400).json({
+                    success: false,
+                    provider: 'r2',
+                    error: 'VALIDATION_FAILED',
+                    message: 'File validation failed',
+                    validation: validationResult,
+                    checks: validationResult.checks,
+                    errors: validationResult.errors,
+                    warnings: validationResult.warnings
+                });
+            }
+
+            console.log(`[${requestId}] ✅ Validation passed`);
+            if (validationResult.detectedMimeType) {
+                console.log(`[${requestId}]    detected type: ${validationResult.detectedMimeType}`);
+            }
+        }
+
+        // ✅ NEW: SMART EXPIRY CALCULATION
+        // Calculate optimal expiry based on file size + network speed
+        const { networkInfo, bufferMultiplier, minExpirySeconds, maxExpirySeconds } = req.body;
+        let smartExpiryResult = null;
+
+        if (fileSize && fileSize > 0 && (networkInfo || bufferMultiplier || minExpirySeconds || maxExpirySeconds)) {
+            console.log(`[${requestId}] 🧠 Calculating smart expiry...`);
+
+            smartExpiryResult = calculateSmartExpiry({
+                fileSize: fileSize || 0,
+                networkInfo: networkInfo || {},
+                bufferMultiplier: bufferMultiplier || 1.5,
+                minExpirySeconds: minExpirySeconds || 60,
+                maxExpirySeconds: maxExpirySeconds || 7 * 24 * 60 * 60
+            });
+
+            // Override expiresIn with smart calculated value
+            expiresIn = smartExpiryResult.expirySeconds;
+
+            console.log(`[${requestId}] 🧠 Smart expiry calculated:`, {
+                fileSize: smartExpiryResult.reasoning.fileSize,
+                networkType: smartExpiryResult.networkType,
+                estimatedUpload: smartExpiryResult.reasoning.estimatedUploadTime,
+                buffer: smartExpiryResult.reasoning.bufferTime,
+                finalExpiry: smartExpiryResult.reasoning.finalExpiry
+            });
+        }
+
         // OPERATION: Generate Unique Object Key
         const objectKey = generateR2Filename(filename, apiKeyId);
 
@@ -186,6 +264,52 @@ export const generateR2SignedUrl = async (req, res) => {
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (signing: ${signingTime}ms)`);
 
+        // ✅ NEW: WEBHOOK CREATION
+        let webhookResult = null;
+        const { webhook } = req.body;
+
+        if (webhook && webhook.url) {
+            console.log(`[${requestId}] 🔗 Creating webhook for ${filename}...`);
+
+            try {
+                const webhookId = generateWebhookId();
+                const webhookSecret = webhook.secret || generateWebhookSecret();
+
+                const { data: insertedWebhook, error: insertError } = await supabaseAdmin.from('upload_webhooks').insert({
+                    id: webhookId,
+                    user_id: userId,
+                    api_key_id: apiKeyId,
+                    webhook_url: webhook.url,
+                    webhook_secret: webhookSecret,
+                    trigger_mode: webhook.trigger || 'manual',
+                    provider: 'R2',
+                    bucket: r2Bucket,
+                    file_key: objectKey,
+                    filename: filename,
+                    content_type: contentType,
+                    file_size: fileSize,
+                    etag: null,
+                    status: 'pending',
+                    metadata: webhook.metadata || {}
+                }).select().single();
+
+                if (insertError) {
+                    console.error(`[${requestId}] ⚠️ Webhook DB insert failed:`, insertError.message);
+                    console.error(`[${requestId}] ⚠️ Webhook DB error details:`, insertError);
+                } else {
+                    webhookResult = {
+                        webhookId,
+                        webhookSecret,
+                        triggerMode: webhook.trigger || 'manual'
+                    };
+                    console.log(`[${requestId}] ✅ Webhook created: ${webhookId}`);
+                }
+            } catch (webhookError) {
+                console.error(`[${requestId}] ⚠️ Webhook creation failed:`, webhookError.message);
+                // Continue without webhook - don't fail the entire request
+            }
+        }
+
         // RESPONSE: Match Vercel Format
         return res.status(200).json({
             success: true,
@@ -194,6 +318,7 @@ export const generateR2SignedUrl = async (req, res) => {
             uploadId: requestId,
             provider: 'r2',
             expiresIn,
+            expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
             data: {
                 filename: objectKey,
                 originalFilename: filename,
@@ -202,6 +327,16 @@ export const generateR2SignedUrl = async (req, res) => {
                 accountId: r2AccountId,
                 method: 'PUT'
             },
+            // ✅ NEW: Webhook Result
+            ...(webhookResult && { webhook: webhookResult }),
+            // ✅ NEW: Smart Expiry Info
+            smartExpiry: smartExpiryResult ? {
+                calculatedExpiry: smartExpiryResult.expirySeconds,
+                estimatedUploadTime: smartExpiryResult.estimatedUploadTime,
+                networkType: smartExpiryResult.networkType,
+                bufferTime: smartExpiryResult.bufferTime,
+                reasoning: smartExpiryResult.reasoning
+            } : null,
             performance: {
                 requestId,
                 totalTime: `${totalTime}ms`,

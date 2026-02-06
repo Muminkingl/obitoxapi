@@ -32,6 +32,12 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 // Import memory guard
 import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
 
+// ✅ NEW: Import File Validator for server-side validation
+import { validateFileMetadata } from '../../../utils/file-validator.js';
+
+// ✅ NEW: Import Smart Expiry calculator
+import { calculateSmartExpiry } from '../../../utils/smart-expiry.js';
+
 /**
  * Generate presigned URL for S3 upload
  * Target Performance: 7-15ms P95
@@ -56,8 +62,11 @@ export const generateS3SignedUrl = async (req, res) => {
             s3KmsKeyId,
             s3EnableVersioning = false,
             s3Endpoint,  // Custom endpoint for MinIO/LocalStack
-            expiresIn = SIGNED_URL_EXPIRY
+            expiresIn: requestedExpiresIn = SIGNED_URL_EXPIRY
         } = req.body;
+
+        // Use let so smart expiry can override
+        let expiresIn = requestedExpiresIn;
 
         apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
@@ -194,6 +203,71 @@ export const generateS3SignedUrl = async (req, res) => {
             });
         }
 
+        // ✅ NEW: VALIDATION: Server-side file validation (magic bytes from client)
+        // CRITICAL: Client reads first 8 bytes and sends to backend - files NEVER hit backend!
+        const { magicBytes, validation } = req.body;
+
+        if (validation || magicBytes) {
+            console.log(`[${requestId}] 🔍 Running server-side file validation...`);
+
+            const validationResult = validateFileMetadata({
+                filename,
+                contentType,
+                fileSize: fileSize || 0,
+                magicBytes,
+                validation: validation || {}
+            });
+
+            if (!validationResult.valid) {
+                console.log(`[${requestId}] ❌ Validation failed: ${validationResult.errors?.length} errors`);
+                updateRequestMetrics(apiKeyId, userId, 's3', false).catch(() => { });
+
+                return res.status(400).json({
+                    success: false,
+                    provider: 's3',
+                    error: 'VALIDATION_FAILED',
+                    message: 'File validation failed',
+                    validation: validationResult,
+                    checks: validationResult.checks,
+                    errors: validationResult.errors,
+                    warnings: validationResult.warnings
+                });
+            }
+
+            console.log(`[${requestId}] ✅ Validation passed`);
+            if (validationResult.detectedMimeType) {
+                console.log(`[${requestId}]    detected type: ${validationResult.detectedMimeType}`);
+            }
+        }
+
+        // ✅ NEW: SMART EXPIRY CALCULATION
+        // Calculate optimal expiry based on file size + network speed
+        const { networkInfo, bufferMultiplier, minExpirySeconds, maxExpirySeconds } = req.body;
+        let smartExpiryResult = null;
+
+        if (fileSize && fileSize > 0 && (networkInfo || bufferMultiplier || minExpirySeconds || maxExpirySeconds)) {
+            console.log(`[${requestId}] 🧠 Calculating smart expiry...`);
+
+            smartExpiryResult = calculateSmartExpiry({
+                fileSize: fileSize || 0,
+                networkInfo: networkInfo || {},
+                bufferMultiplier: bufferMultiplier || 1.5,
+                minExpirySeconds: minExpirySeconds || 60,
+                maxExpirySeconds: maxExpirySeconds || 7 * 24 * 60 * 60
+            });
+
+            // Override expiresIn with smart calculated value
+            expiresIn = smartExpiryResult.expirySeconds;
+
+            console.log(`[${requestId}] 🧠 Smart expiry calculated:`, {
+                fileSize: smartExpiryResult.reasoning.fileSize,
+                networkType: smartExpiryResult.networkType,
+                estimatedUpload: smartExpiryResult.reasoning.estimatedUploadTime,
+                buffer: smartExpiryResult.reasoning.bufferTime,
+                finalExpiry: smartExpiryResult.reasoning.finalExpiry
+            });
+        }
+
         // Generate Object Key
         const objectKey = generateObjectKey(filename);
 
@@ -264,6 +338,7 @@ export const generateS3SignedUrl = async (req, res) => {
                 note: 'Versioning must be enabled on your S3 bucket.'
             } : undefined,
             expiresIn,
+            expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
             data: {
                 filename: objectKey,
                 originalFilename: filename,
@@ -271,6 +346,14 @@ export const generateS3SignedUrl = async (req, res) => {
                 bucket: s3Bucket,
                 method: 'PUT'
             },
+            // ✅ NEW: Smart Expiry Info
+            smartExpiry: smartExpiryResult ? {
+                calculatedExpiry: smartExpiryResult.expirySeconds,
+                estimatedUploadTime: smartExpiryResult.estimatedUploadTime,
+                networkType: smartExpiryResult.networkType,
+                bufferTime: smartExpiryResult.bufferTime,
+                reasoning: smartExpiryResult.reasoning
+            } : null,
             performance: {
                 requestId,
                 totalTime: `${totalTime}ms`,

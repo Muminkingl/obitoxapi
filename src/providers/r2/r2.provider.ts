@@ -5,7 +5,7 @@
  * R2 is S3-compatible object storage with zero egress fees and exceptional performance.
  * 
  * Why R2 is Special:
- * - Pure crypto signing (5-10ms vs Vercel's 220ms)
+ * - Pure crypto signing (5-10ms response time)
  * - Zero egress fees (FREE bandwidth)
  * - S3-compatible API (battle-tested)
  * - Batch operations (100 files in <500ms)
@@ -34,8 +34,16 @@ import type {
     R2AccessTokenResponse,
     R2ListResponse,
     R2BatchDeleteResponse,
+    R2CorsConfigOptions,
+    R2CorsConfigResponse,
+    R2CorsVerifyOptions,
+    R2CorsVerifyResponse,
+    R2Config,
 } from '../../types/r2.types.js';
+import { normalizeNetworkInfo } from '../../utils/network-detector.js';
+import { validateFile, readMagicBytes } from '../../utils/file-validator.js';
 import { validateR2Credentials, validateBatchSize } from './r2.utils.js';
+import { WebhookConfig } from '../../types/common.js';
 
 /**
  * R2 Provider
@@ -64,8 +72,11 @@ export class R2Provider extends BaseProvider<
     { fileUrl: string; r2AccessKey: string; r2SecretKey: string; r2AccountId: string; r2Bucket: string },
     R2DownloadOptions
 > {
-    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+    private config: R2Config;
+
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string, config?: R2Config) {
         super('R2', apiKey, baseUrl, apiSecret);
+        this.config = config || {} as R2Config;
     }
 
     // ============================================================================
@@ -90,9 +101,21 @@ export class R2Provider extends BaseProvider<
         const filename = file instanceof File ? file.name : 'uploaded-file';
         const contentType = file instanceof File ? file.type : 'application/octet-stream';
 
+        // Merge stored config with passed options (passed options override stored config)
+        const mergedOptions = {
+            ...options,
+            // Stored config credentials as fallbacks (from provider instance pattern)
+            r2AccessKey: (options as any).r2AccessKey || this.config.accessKey,
+            r2SecretKey: (options as any).r2SecretKey || this.config.secretKey,
+            r2AccountId: (options as any).r2AccountId || this.config.accountId,
+            r2Bucket: (options as any).r2Bucket || this.config.bucket,
+            r2PublicUrl: (options as any).r2PublicUrl || this.config.publicUrl,
+            filename,
+            contentType
+        } as R2UploadOptions;
+
         // Validate R2 credentials format (client-side, instant)
-        const fullOptions = { ...options, filename, contentType } as R2UploadOptions;
-        const validation = validateR2Credentials(fullOptions);
+        const validation = validateR2Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`R2 Credentials Invalid: ${validation.error}`);
         }
@@ -101,6 +124,40 @@ export class R2Provider extends BaseProvider<
         const controller = new AbortController();
 
         try {
+            // ==================== FILE VALIDATION ====================
+            if (options.validation !== null && options.validation !== undefined) {
+                console.log('   🔍 Validating file...');
+
+                // Perform client-side validation
+                const validationResult = await validateFile(file, options.validation);
+
+                if (!validationResult.valid) {
+                    // Call error callback if provided
+                    if (options.validation && typeof options.validation === 'object' && options.validation.onError) {
+                        options.validation.onError(validationResult.errors);
+                    }
+
+                    // Throw validation error
+                    throw new Error(`Validation failed: ${validationResult.errors.join('; ')}`);
+                }
+
+                console.log(`   ✅ File validation passed (${validationResult.file.sizeFormatted})`);
+
+                // Log warnings if any
+                if (validationResult.warnings.length > 0) {
+                    console.log(`   ⚠️  Validation warnings: ${validationResult.warnings.join('; ')}`);
+                }
+            }
+
+            // Get network info for smart expiry
+            const networkInfo = normalizeNetworkInfo(options.networkInfo);
+
+            // ==================== READ MAGIC BYTES ====================
+            // Read magic bytes for server-side validation (skip for large files >100MB)
+            const magicBytes = file.size <= 100 * 1024 * 1024
+                ? await readMagicBytes(file)
+                : null;
+
             // STEP 1: Get presigned URL from ObitoX API (pure crypto, 5-15ms)
             const response = await this.makeRequest<R2UploadResponse>(
                 '/api/v1/upload/r2/signed-url',
@@ -110,13 +167,19 @@ export class R2Provider extends BaseProvider<
                         filename,
                         contentType,
                         fileSize: file.size,
-                        r2AccessKey: options.r2AccessKey,
-                        r2SecretKey: options.r2SecretKey,
-                        r2AccountId: options.r2AccountId,
-                        r2Bucket: options.r2Bucket,
-                        r2PublicUrl: options.r2PublicUrl,
-                        expiresIn: options.expiresIn || 3600,
-                        metadata: options.metadata
+                        r2AccessKey: mergedOptions.r2AccessKey,
+                        r2SecretKey: mergedOptions.r2SecretKey,
+                        r2AccountId: mergedOptions.r2AccountId,
+                        r2Bucket: mergedOptions.r2Bucket,
+                        r2PublicUrl: mergedOptions.r2PublicUrl,
+                        expiresIn: mergedOptions.expiresIn || 3600,
+                        metadata: mergedOptions.metadata,
+                        // ==================== SMART EXPIRY ====================
+                        networkInfo,
+                        // ==================== FILE VALIDATION ====================
+                        magicBytes,
+                        // ==================== WEBHOOK ====================
+                        ...(mergedOptions.webhook && { webhook: mergedOptions.webhook })
                     }),
                 }
             );
@@ -125,7 +188,7 @@ export class R2Provider extends BaseProvider<
                 throw new Error('Failed to generate R2 upload URL');
             }
 
-            const { uploadUrl, publicUrl, performance } = response;
+            const { uploadUrl, publicUrl, performance, webhook: webhookInfo } = response;
 
             console.log(`✅ R2 signed URL generated in ${performance?.totalTime || 'N/A'}`);
 
@@ -140,6 +203,25 @@ export class R2Provider extends BaseProvider<
 
             const totalTime = Date.now() - startTime;
             console.log(`🚀 R2 upload completed in ${totalTime}ms`);
+
+            // ==================== WEBHOOK CONFIRMATION ====================
+            if (webhookInfo?.webhookId) {
+                console.log(`🔗 Webhook configured: ${webhookInfo.webhookId}`);
+
+                // Optionally confirm upload to trigger webhook
+                if (options.webhook?.autoConfirm !== false) {
+                    try {
+                        await this.makeRequest('/api/v1/webhooks/confirm', {
+                            method: 'POST',
+                            body: JSON.stringify({ webhookId: webhookInfo.webhookId })
+                        });
+                        console.log(`✅ Webhook confirmed`);
+                    } catch (confirmError) {
+                        console.warn(`⚠️ Webhook confirmation failed:`, confirmError);
+                        // Don't throw - webhook will be delivered by worker
+                    }
+                }
+            }
 
             // Track analytics (non-blocking)
             this.trackEvent('completed', publicUrl, {
@@ -204,12 +286,17 @@ export class R2Provider extends BaseProvider<
                     if (onProgress) onProgress(100, file.size, file.size);
                     resolve();
                 } else {
-                    reject(new Error(`R2 upload failed: ${xhr.status} ${xhr.statusText}`));
+                    reject(new Error(`Upload failed with status ${xhr.status}`));
                 }
             });
 
-            xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
-            xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
+            xhr.addEventListener('error', () => {
+                reject(new Error('Upload failed - network error'));
+            });
+
+            xhr.addEventListener('abort', () => {
+                reject(new Error('Upload cancelled'));
+            });
 
             xhr.open('PUT', signedUrl);
             xhr.setRequestHeader('Content-Type', contentType);
@@ -218,7 +305,7 @@ export class R2Provider extends BaseProvider<
     }
 
     /**
-     * Upload using fetch for Node.js environments
+     * Upload using fetch (Node.js)
      * @private
      */
     private async uploadWithFetch(
@@ -226,21 +313,24 @@ export class R2Provider extends BaseProvider<
         file: File | Blob,
         contentType: string,
         onProgress?: (progress: number, bytesUploaded: number, totalBytes: number) => void,
-        signal?: AbortSignal
+        _signal?: AbortSignal
     ): Promise<void> {
+        // Report 0% progress
         if (onProgress) onProgress(0, 0, file.size);
 
         const response = await fetch(signedUrl, {
             method: 'PUT',
             body: file,
-            headers: { 'Content-Type': contentType },
-            signal,
+            headers: {
+                'Content-Type': contentType
+            }
         });
 
         if (!response.ok) {
-            throw new Error(`R2 upload failed: ${response.status} ${response.statusText}`);
+            throw new Error(`Upload failed: ${response.status}`);
         }
 
+        // Report 100% progress
         if (onProgress) onProgress(100, file.size, file.size);
     }
 
@@ -252,7 +342,7 @@ export class R2Provider extends BaseProvider<
      * Batch upload multiple files to R2
      * 
      * Returns presigned URLs for up to 100 files in a single API call.
-     * This is R2's killer feature - massive performance improvement.
+     * Supports validation presets and smart expiry per file.
      * 
      * @param options - R2 batch upload options
      * @returns Promise resolving to array of upload URLs
@@ -268,7 +358,11 @@ export class R2Provider extends BaseProvider<
      *   r2AccessKey: 'xxx...',
      *   r2SecretKey: 'yyy...',
      *   r2AccountId: 'abc123...',
-     *   r2Bucket: 'my-uploads'
+     *   r2Bucket: 'my-uploads',
+     *   // ✅ NEW: Validation preset
+     *   validation: 'images',
+     *   // ✅ NEW: Smart expiry
+     *   networkInfo: { effectiveType: '4g' }
      * });
      * 
      * // Upload all files in parallel
@@ -280,7 +374,16 @@ export class R2Provider extends BaseProvider<
      * ```
      */
     async batchUpload(options: R2BatchUploadOptions): Promise<R2BatchUploadResponse> {
-        const { files, ...credentials } = options;
+        const { files, validation, networkInfo, bufferMultiplier, ...passedCredentials } = options;
+
+        // Merge stored config with passed credentials (provider instance pattern)
+        const credentials = {
+            r2AccessKey: (passedCredentials as any).r2AccessKey || this.config.accessKey,
+            r2SecretKey: (passedCredentials as any).r2SecretKey || this.config.secretKey,
+            r2AccountId: (passedCredentials as any).r2AccountId || this.config.accountId,
+            r2Bucket: (passedCredentials as any).r2Bucket || this.config.bucket,
+            r2PublicUrl: (passedCredentials as any).r2PublicUrl || this.config.publicUrl,
+        };
 
         // Validate batch size
         const sizeValidation = validateBatchSize(files.length, 'upload');
@@ -308,12 +411,17 @@ export class R2Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        files: files.map(f => ({
+                        files: files.map((f) => ({
                             filename: f.filename,
                             contentType: f.contentType,
-                            fileSize: f.fileSize || 0
+                            fileSize: f.fileSize
                         })),
-                        ...credentials
+                        ...credentials,
+                        // ✅ NEW: Validation preset
+                        ...(validation && { validation }),
+                        // ✅ NEW: Smart expiry options
+                        ...(networkInfo && { networkInfo }),
+                        ...(bufferMultiplier && { bufferMultiplier })
                     }),
                 }
             );
@@ -321,18 +429,24 @@ export class R2Provider extends BaseProvider<
             const totalTime = Date.now() - startTime;
             console.log(`✅ Generated ${files.length} R2 URLs in ${totalTime}ms (${(totalTime / files.length).toFixed(1)}ms per file)`);
 
+            // Separate successful and failed results
+            const successfulUrls = (apiResponse.results || []).filter((r: any) => r.success);
+            const failedUrls = (apiResponse.results || []).filter((r: any) => !r.success);
+
             // Transform API response to match documented structure
-            // API returns 'results', docs expect 'urls'
-            // API returns 'summary.total', docs expect 'total'
             const transformedResponse: R2BatchUploadResponse = {
-                success: true,
-                urls: apiResponse.results || apiResponse.urls || [],
-                total: apiResponse.summary?.total || apiResponse.total || files.length,
+                success: apiResponse.success,
+                urls: apiResponse.results || [],
+                total: apiResponse.summary?.total || files.length,
+                successful: successfulUrls.length,
+                failed: failedUrls.length,
                 provider: 'r2',
                 performance: apiResponse.performance || {
                     totalTime: `${totalTime}ms`,
                     averagePerFile: `${(totalTime / files.length).toFixed(1)}ms`
-                }
+                },
+                // ✅ NEW: Include errors for failed files
+                errors: failedUrls.length > 0 ? failedUrls : undefined
             };
 
             return transformedResponse;
@@ -354,358 +468,236 @@ export class R2Provider extends BaseProvider<
      * 
      * @param options - R2 download options
      * @returns Promise resolving to the download URL
-     * @throws Error if download URL generation fails
      */
-    async download(options: R2DownloadOptions): Promise<string> {
-        const startTime = Date.now();
-
-        // Validate required fields
-        this.validateRequiredFields(options, [
-            'fileKey',
-            'r2AccessKey',
-            'r2SecretKey',
-            'r2AccountId',
-            'r2Bucket'
-        ]);
-
-        try {
-            const response = await this.makeRequest<any>(
-                '/api/v1/upload/r2/download-url',
-                {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        fileKey: options.fileKey,
-                        r2AccessKey: options.r2AccessKey,
-                        r2SecretKey: options.r2SecretKey,
-                        r2AccountId: options.r2AccountId,
-                        r2Bucket: options.r2Bucket,
-                        r2PublicUrl: options.r2PublicUrl,
-                        expiresIn: options.expiresIn || 3600
-                    }),
-                }
-            );
-
-            const totalTime = Date.now() - startTime;
-            console.log(`✅ R2 download URL generated in ${totalTime}ms`);
-
-            // Ensure we always return a string URL (handle various API response shapes)
-            const url = typeof response === 'string'
-                ? response
-                : (response.downloadUrl || response.url || response.data?.downloadUrl || response.data?.url);
-
-            if (!url || typeof url !== 'string') {
-                throw new Error('Invalid download URL response from API');
+    async getSignedDownloadUrl(options: R2DownloadOptions): Promise<string> {
+        const response = await this.makeRequest<R2DownloadResponse>(
+            '/api/v1/upload/r2/download-url',
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    fileKey: options.fileKey,
+                    r2AccessKey: options.r2AccessKey,
+                    r2SecretKey: options.r2SecretKey,
+                    r2AccountId: options.r2AccountId,
+                    r2Bucket: options.r2Bucket,
+                    expiresIn: options.expiresIn || 3600
+                })
             }
+        );
 
-            return url;
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            throw new Error(`R2 Download URL Failed: ${errorMessage}`);
+        if (!response.success) {
+            throw new Error('Failed to generate R2 download URL');
         }
+
+        return response.downloadUrl;
     }
 
     // ============================================================================
-    // DELETE: Remove Single File
+    // DELETE: File Deletion
     // ============================================================================
 
     /**
-     * Delete file from R2 storage
+     * Delete file from R2
      * 
      * @param options - R2 delete options
      * @throws Error if deletion fails
      */
-    async delete(options: {
-        fileUrl: string;
-        r2AccessKey: string;
-        r2SecretKey: string;
-        r2AccountId: string;
-        r2Bucket: string
-    }): Promise<void> {
-        // Validate required fields
-        this.validateRequiredFields(options, [
-            'fileUrl',
-            'r2AccessKey',
-            'r2SecretKey',
-            'r2AccountId',
-            'r2Bucket'
-        ]);
+    async delete(options: { fileUrl: string; r2AccessKey: string; r2SecretKey: string; r2AccountId: string; r2Bucket: string }): Promise<void> {
+        // Extract file key from URL
+        const fileKey = options.fileUrl.split('/').pop()?.split('?')[0];
 
-        // Extract fileKey from URL
-        // URL format: https://pub-{accountId}.r2.dev/{fileKey}
-        // or custom: https://cdn.example.com/{fileKey}
-        let fileKey = options.fileUrl;
-        try {
-            const urlObj = new URL(options.fileUrl);
-            // Remove leading slash from pathname
-            fileKey = urlObj.pathname.substring(1);
-        } catch (error) {
-            // If URL parsing fails, use the fileUrl as-is (might already be a key)
-            fileKey = options.fileUrl;
+        if (!fileKey) {
+            throw new Error('Invalid R2 file URL');
         }
 
-        try {
-            await this.makeRequest(
-                '/api/v1/upload/r2/delete',
-                {
-                    method: 'DELETE',
-                    body: JSON.stringify({
-                        fileKey: fileKey, // Send fileKey NOT fileUrl
-                        r2AccessKey: options.r2AccessKey,
-                        r2SecretKey: options.r2SecretKey,
-                        r2AccountId: options.r2AccountId,
-                        r2Bucket: options.r2Bucket
-                    }),
-                }
-            );
+        const response = await this.makeRequest<{ success: boolean }>(
+            '/api/v1/upload/r2/delete',
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    fileKey,
+                    r2AccessKey: options.r2AccessKey,
+                    r2SecretKey: options.r2SecretKey,
+                    r2AccountId: options.r2AccountId,
+                    r2Bucket: options.r2Bucket
+                })
+            }
+        );
 
-            console.log(`✅ Deleted R2 file: ${fileKey}`);
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            throw new Error(`R2 Delete Failed: ${errorMessage}`);
+        if (!response.success) {
+            throw new Error('Failed to delete R2 file');
         }
     }
 
-
     // ============================================================================
-    // BATCH DELETE: Remove up to 1000 files
+    // CORS CONFIGURATION (Developer Experience)
     // ============================================================================
 
     /**
-     * Batch delete multiple files from R2
+     * Configure CORS for R2 bucket
      * 
-     * Deletes up to 1000 files in a single API call.
+     * Sets up CORS rules to allow cross-origin uploads from web applications.
+     * Essential for browser-based uploads to R2.
      * 
-     * @param options - R2 batch delete options
-     * @returns Promise resolving to arrays of deleted and failed file keys
-     * @throws Error if batch delete fails or exceeds limits
+     * @param options - CORS configuration options
+     * @returns Promise resolving to CORS configuration response
+     * @throws Error if configuration fails
      * 
      * @example
      * ```typescript
-     * const result = await provider.batchDelete({
-     *   fileKeys: ['photo1.jpg', 'photo2.jpg', 'photo3.jpg'],
+     * const result = await provider.configureCors({
+     *   r2AccessKey: 'xxx...',
+     *   r2SecretKey: 'yyy...',
+     *   r2AccountId: 'abc123...',
+     *   r2Bucket: 'my-uploads',
+     *   allowedOrigins: ['https://myapp.com', 'http://localhost:3000'],
+     *   allowedMethods: ['PUT', 'GET', 'DELETE'],
+     *   allowedHeaders: ['*'],
+     *   exposeHeaders: ['ETag'],
+     *   maxAgeSeconds: 3600
+     * });
+     * 
+     * if (result.success) {
+     *   console.log('CORS configured successfully!');
+     * }
+     * ```
+     */
+    async configureCors(
+        options: Omit<R2CorsConfigOptions, 'provider'>
+    ): Promise<R2CorsConfigResponse> {
+        // Merge stored config with passed options (provider instance pattern)
+        const mergedOptions = {
+            ...options,
+            r2AccessKey: (options as any).r2AccessKey || this.config.accessKey,
+            r2SecretKey: (options as any).r2SecretKey || this.config.secretKey,
+            r2AccountId: (options as any).r2AccountId || this.config.accountId,
+            r2Bucket: (options as any).r2Bucket || this.config.bucket,
+            provider: 'R2'
+        };
+
+        const response = await this.makeRequest<R2CorsConfigResponse>('/api/v1/upload/r2/cors/setup', {
+            method: 'POST',
+            body: JSON.stringify(mergedOptions)
+        });
+
+        return response;
+    }
+
+    /**
+     * Verify CORS configuration for R2 bucket
+     * 
+     * Checks if CORS is properly configured for the bucket.
+     * Useful for debugging and validation.
+     * 
+     * @param options - CORS verification options
+     * @returns Promise resolving to CORS verification response
+     * @throws Error if verification fails
+     * 
+     * @example
+     * ```typescript
+     * const result = await provider.verifyCors({
      *   r2AccessKey: 'xxx...',
      *   r2SecretKey: 'yyy...',
      *   r2AccountId: 'abc123...',
      *   r2Bucket: 'my-uploads'
      * });
      * 
-     * console.log(`Deleted: ${result.deleted.length}, Failed: ${result.errors.length}`);
+     * if (result.configured && result.isValid) {
+     *   console.log('CORS is properly configured!');
+     * } else {
+     *   console.log('Issues found:', result.issues);
+     *   console.log('Recommendation:', result.recommendation);
+     * }
      * ```
      */
-    async batchDelete(options: R2BatchDeleteOptions): Promise<R2BatchDeleteResponse> {
-        // Validate batch size
-        const sizeValidation = validateBatchSize(options.fileKeys.length, 'delete');
-        if (!sizeValidation.valid) {
-            throw new Error(sizeValidation.error);
-        }
+    async verifyCors(
+        options: Partial<Omit<R2CorsVerifyOptions, 'provider'>> = {}
+    ): Promise<R2CorsVerifyResponse> {
+        // Merge stored config with passed options (provider instance pattern)
+        const mergedOptions = {
+            ...options,
+            r2AccessKey: (options as any).r2AccessKey || this.config.accessKey,
+            r2SecretKey: (options as any).r2SecretKey || this.config.secretKey,
+            r2AccountId: (options as any).r2AccountId || this.config.accountId,
+            r2Bucket: (options as any).r2Bucket || this.config.bucket,
+            provider: 'R2'
+        };
 
-        // Validate required fields
-        this.validateRequiredFields(options, [
-            'fileKeys',
-            'r2AccessKey',
-            'r2SecretKey',
-            'r2AccountId',
-            'r2Bucket'
-        ]);
+        const response = await this.makeRequest<R2CorsVerifyResponse>('/api/v1/upload/r2/cors/verify', {
+            method: 'POST',
+            body: JSON.stringify(mergedOptions)
+        });
 
-        try {
-            const response = await this.makeRequest<R2BatchDeleteResponse>(
-                '/api/v1/upload/r2/batch/delete',
-                {
-                    method: 'DELETE',
-                    body: JSON.stringify({
-                        filenames: options.fileKeys, // Backend expects 'filenames' not 'fileKeys'
-                        r2AccessKey: options.r2AccessKey,
-                        r2SecretKey: options.r2SecretKey,
-                        r2AccountId: options.r2AccountId,
-                        r2Bucket: options.r2Bucket
-                    }),
-                }
-            );
-
-            console.log(`✅ R2 batch delete: ${response.deleted.length} deleted, ${response.errors.length} errors`);
-
-            return response;
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            throw new Error(`R2 Batch Delete Failed: ${errorMessage}`);
-        }
+        return response;
     }
 
     // ============================================================================
-    // SECURITY: Generate JWT Access Token (<20ms)
+    // Convenience Methods (for Provider Instance Pattern)
     // ============================================================================
 
     /**
-     * Generate JWT access token for R2 file/bucket
+     * List files in R2 bucket (convenience method using stored config)
      * 
-     * Creates a time-limited token with specific permissions for secure file access.
-     * 
-     * @param options - R2 access token options
-     * @returns Promise resolving to the token and metadata
-     * @throws Error if token generation fails
-     * 
-     * @example
-     * ```typescript
-     * const token = await provider.generateAccessToken({
-     *   r2Bucket: 'private-docs',
-     *   fileKey: 'confidential-report.pdf',
-     *   permissions: ['read'],
-     *   expiresIn: 3600
-     * });
-     * 
-     * console.log('Token:', token.token);
-     * console.log('Expires:', token.expiresAt);
-     * ```
+     * @param options - List options (prefix, maxKeys, etc.)
+     * @returns Promise resolving to list response
      */
-    async generateAccessToken(options: R2AccessTokenOptions): Promise<R2AccessTokenResponse> {
-        // Validate required fields
-        this.validateRequiredFields(options, ['r2Bucket', 'permissions']);
+    async listFiles(options: {
+        prefix?: string;
+        maxKeys?: number;
+        continuationToken?: string;
+        r2AccessKey?: string;
+        r2SecretKey?: string;
+        r2AccountId?: string;
+        r2Bucket?: string;
+    } = {}): Promise<R2ListResponse> {
+        const mergedOptions = {
+            prefix: options.prefix,
+            maxKeys: options.maxKeys,
+            continuationToken: options.continuationToken,
+            r2AccessKey: options.r2AccessKey || this.config.accessKey || '',
+            r2SecretKey: options.r2SecretKey || this.config.secretKey || '',
+            r2AccountId: options.r2AccountId || this.config.accountId || '',
+            r2Bucket: options.r2Bucket || this.config.bucket || ''
+        };
 
-        try {
-            const response = await this.makeRequest<R2AccessTokenResponse>(
-                '/api/v1/upload/r2/access-token',
-                {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        r2Bucket: options.r2Bucket,
-                        fileKey: options.fileKey,
-                        permissions: options.permissions,
-                        expiresIn: options.expiresIn || 3600,
-                        metadata: options.metadata
-                    }),
-                }
-            );
+        const response = await this.makeRequest<R2ListResponse>('/api/v1/upload/r2/list', {
+            method: 'POST',
+            body: JSON.stringify(mergedOptions)
+        });
 
-            console.log(`✅ R2 access token generated (expires in ${response.expiresIn}s)`);
-
-            return response;
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            throw new Error(`R2 Token Generation Failed: ${errorMessage}`);
-        }
+        return response;
     }
 
-    // ============================================================================
-    // SECURITY: Revoke Access Token (<10ms)
-    // ============================================================================
-
     /**
-     * Revoke R2 access token
+     * Get download URL for R2 file (convenience method using stored config)
      * 
-     * Immediately invalidates a previously issued token.
-     * 
-     * @param token - JWT token to revoke
-     * @throws Error if revocation fails
+     * @param options - Download URL options
+     * @returns Promise resolving to download URL
      */
-    async revokeAccessToken(token: string): Promise<void> {
-        if (!token || typeof token !== 'string') {
-            throw new Error('Token is required and must be a string');
-        }
+    async getDownloadUrl(options: {
+        fileKey: string;
+        expiresIn?: number;
+        r2PublicUrl?: string;
+        r2AccessKey?: string;
+        r2SecretKey?: string;
+        r2AccountId?: string;
+        r2Bucket?: string;
+    }): Promise<string> {
+        const mergedOptions = {
+            fileKey: options.fileKey,
+            expiresIn: options.expiresIn,
+            r2PublicUrl: options.r2PublicUrl,
+            r2AccessKey: options.r2AccessKey || this.config.accessKey || '',
+            r2SecretKey: options.r2SecretKey || this.config.secretKey || '',
+            r2AccountId: options.r2AccountId || this.config.accountId || '',
+            r2Bucket: options.r2Bucket || this.config.bucket || ''
+        };
 
-        try {
-            await this.makeRequest(
-                '/api/v1/upload/r2/access-token/revoke',
-                {
-                    method: 'DELETE',
-                    body: JSON.stringify({ token }),
-                }
-            );
+        const response = await this.makeRequest<R2DownloadResponse>('/api/v1/upload/r2/download-url', {
+            method: 'POST',
+            body: JSON.stringify(mergedOptions)
+        });
 
-            console.log('✅ R2 access token revoked');
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            throw new Error(`R2 Token Revocation Failed: ${errorMessage}`);
-        }
-    }
-
-    // ============================================================================
-    // LIST: Browse Bucket Contents
-    // ============================================================================
-
-    /**
-     * List files in R2 bucket
-     * 
-     * Retrieves a list of files with pagination support.
-     * 
-     * @param options - R2 list options
-     * @returns Promise resolving to file list and metadata
-     * @throws Error if listing fails
-     * 
-     * @example
-     * ```typescript
-     * const result = await provider.listFiles({
-     *   r2AccessKey: 'xxx...',
-     *   r2SecretKey: 'yyy...',
-     *   r2AccountId: 'abc123...',
-     *   r2Bucket: 'my-uploads',
-     *   prefix: 'documents/',
-     *   maxKeys: 50
-     * });
-     * 
-     * console.log(`Found ${result.count} files`);
-     * result.files.forEach(file => {
-     *   console.log(`- ${file.key} (${file.size} bytes)`);
-     * });
-     * ```
-     */
-    async listFiles(options: R2ListOptions): Promise<R2ListResponse> {
-        // Validate required fields
-        this.validateRequiredFields(options, [
-            'r2AccessKey',
-            'r2SecretKey',
-            'r2AccountId',
-            'r2Bucket'
-        ]);
-
-        try {
-            const apiResponse = await this.makeRequest<any>(
-                '/api/v1/upload/r2/list',
-                {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        r2AccessKey: options.r2AccessKey,
-                        r2SecretKey: options.r2SecretKey,
-                        r2AccountId: options.r2AccountId,
-                        r2Bucket: options.r2Bucket,
-                        prefix: options.prefix,
-                        maxKeys: options.maxKeys || 100,
-                        continuationToken: options.continuationToken
-                    }),
-                }
-            );
-
-            // Transform API response to match documented structure
-            // API may return nested data or different field names
-            const rawFiles = apiResponse.data?.Contents || apiResponse.files || apiResponse.Contents || [];
-            const files = rawFiles.map((f: any) => ({
-                key: f.Key || f.key,
-                size: f.Size || f.size || 0,
-                lastModified: f.LastModified || f.lastModified || '',
-                etag: f.ETag || f.etag || ''
-            }));
-
-            const transformedResponse: R2ListResponse = {
-                success: true,
-                files: files,
-                count: apiResponse.data?.KeyCount || apiResponse.count || files.length,
-                truncated: apiResponse.data?.IsTruncated || apiResponse.truncated || false,
-                continuationToken: apiResponse.data?.NextContinuationToken || apiResponse.continuationToken,
-                provider: 'r2'
-            };
-
-            console.log(`✅ R2 listed ${transformedResponse.count} files`);
-
-            return transformedResponse;
-
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            throw new Error(`R2 List Failed: ${errorMessage}`);
-        }
+        return response.downloadUrl;
     }
 }

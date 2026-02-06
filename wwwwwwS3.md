@@ -41,7 +41,6 @@ Progress tracking ; `const url = await client.uploadFile(file, {
 });`
 
 
-
 Basic upload ; `const url = await client.uploadFile(file, {
   provider: 'S3',
   s3AccessKey: process.env.AWS_ACCESS_KEY_ID,

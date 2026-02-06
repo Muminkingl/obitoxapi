@@ -5,7 +5,7 @@
  * R2 provides S3-compatible object storage with zero egress fees and exceptional performance.
  * 
  * Performance Targets:
- * - Single upload: <50ms (vs Vercel: 220ms)
+ * - Single upload: <50ms
  * - Batch 100 files: <500ms
  * - Download URL: <30ms
  * - Token generation: <20ms
@@ -13,7 +13,63 @@
  * @module types/r2
  */
 
-import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions } from './common.js';
+import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, NetworkInfo, ValidationConfig, WebhookConfig } from './common.js';
+
+// ============================================================================
+// R2 Configuration (Provider Instance Pattern)
+// ============================================================================
+
+/**
+ * R2 Provider Configuration
+ * 
+ * Used to initialize an R2 provider instance with stored credentials.
+ * Once configured, all methods use these credentials automatically.
+ * 
+ * @example
+ * ```typescript
+ * const r2 = client.r2({
+ *   accessKey: 'xxx...',
+ *   secretKey: 'yyy...',
+ *   accountId: 'abc123...',
+ *   bucket: 'my-uploads',
+ *   publicUrl: 'https://cdn.myapp.com'  // optional
+ * });
+ * 
+ * // All methods now use stored credentials
+ * await r2.uploadFile(file);
+ * await r2.configureCors({ origins: ['https://app.com'] });
+ * ```
+ */
+export interface R2Config {
+    /**
+     * R2 Access Key ID
+     * Get from: Cloudflare Dashboard → R2 → Manage R2 API Tokens
+     */
+    accessKey: string;
+
+    /**
+     * R2 Secret Access Key
+     * Get from: Cloudflare Dashboard → R2 → Manage R2 API Tokens
+     */
+    secretKey: string;
+
+    /**
+     * Cloudflare Account ID
+     * Find in: Cloudflare Dashboard → R2 (32-character hex string)
+     */
+    accountId: string;
+
+    /**
+     * R2 Bucket name
+     */
+    bucket: string;
+
+    /**
+     * Custom public URL domain (optional)
+     * Use your own domain instead of pub-{accountId}.r2.dev
+     */
+    publicUrl?: string;
+}
 
 // ============================================================================
 // R2 Upload Options
@@ -31,7 +87,13 @@ import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions } from './com
  *   r2AccessKey: 'xxx...', 
  *   r2SecretKey: 'yyy...',
  *   r2AccountId: 'abc123...',
- *   r2Bucket: 'my-uploads'
+ *   r2Bucket: 'my-uploads',
+ *   // ✅ NEW: Webhook configuration
+ *   webhook: {
+ *     url: 'https://myapp.com/webhooks/upload',
+ *     secret: 'webhook_secret_123',
+ *     trigger: 'manual' // or 'auto'
+ *   }
  * };
  * ```
  */
@@ -91,6 +153,58 @@ export interface R2UploadOptions extends BaseUploadOptions {
      * Defines what operations the token allows
      */
     tokenPermissions?: ('read' | 'write' | 'delete')[];
+
+    // ==================== SMART EXPIRY ====================
+    /**
+     * Network information for smart presigned URL expiry (optional)
+     * Auto-detected from browser if not provided
+     * Used to calculate optimal URL expiration time
+     */
+    networkInfo?: NetworkInfo | null;
+
+    // ==================== FILE VALIDATION ====================
+    /**
+     * File validation configuration (optional)
+     * Validates file before upload - blocks invalid files with clear error messages
+     * 
+     * @example
+     * ```typescript
+     * // Use a preset
+     * validation: 'images'
+     * 
+     * // Custom configuration
+     * validation: {
+     *   maxSize: 10 * 1024 * 1024,
+     *   allowedTypes: ['image/*'],
+     *   blockDangerous: true
+     * }
+     * ```
+     */
+    validation?: ValidationConfig | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'any' | null;
+
+    // ==================== WEBHOOK ====================
+    /**
+     * Webhook configuration (optional)
+     * Configure webhook to be called when upload completes
+     * 
+     * @example
+     * ```typescript
+     * // Manual confirmation (client calls confirm after upload)
+     * webhook: {
+     *   url: 'https://myapp.com/webhooks/upload',
+     *   secret: 'webhook_secret_123',
+     *   trigger: 'manual',
+     *   metadata: { userId: '123' }
+     * }
+     * 
+     * // Auto confirmation (server polls for file)
+     * webhook: {
+     *   url: 'https://myapp.com/webhooks/upload',
+     *   trigger: 'auto'
+     * }
+     * ```
+     */
+    webhook?: WebhookConfig | null;
 }
 
 // ============================================================================
@@ -99,7 +213,7 @@ export interface R2UploadOptions extends BaseUploadOptions {
 
 /**
  * R2 batch upload options
- * Upload up to 100 files in a single API call
+ * Upload up to 100 files with validation + smart expiry
  * 
  * @example
  * ```typescript
@@ -111,11 +225,15 @@ export interface R2UploadOptions extends BaseUploadOptions {
  *   r2AccessKey: 'xxx...',
  *   r2SecretKey: 'yyy...',
  *   r2AccountId: 'abc123...',
- *   r2Bucket: 'my-uploads'
+ *   r2Bucket: 'my-uploads',
+ *   // ✅ NEW: Validation preset
+ *   validation: 'images',
+ *   // ✅ NEW: Smart expiry
+ *   networkInfo: { effectiveType: '4g' }
  * };
  * ```
  */
-export interface R2BatchUploadOptions extends Omit<R2UploadOptions, 'provider' | 'filename' | 'contentType' | 'fileSize'> {
+export interface R2BatchUploadOptions extends Omit<R2UploadOptions, 'provider' | 'filename' | 'contentType' | 'fileSize' | 'validation' | 'networkInfo'> {
     /**
      * Array of files to upload
      * Maximum: 100 files per batch
@@ -130,6 +248,27 @@ export interface R2BatchUploadOptions extends Omit<R2UploadOptions, 'provider' |
         /** File size in bytes (optional) */
         fileSize?: number;
     }>;
+
+    // ==================== VALIDATION ====================
+    /**
+     * Validation configuration (optional)
+     * Applied to ALL files in batch
+     */
+    validation?: ValidationConfig | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'any' | null;
+
+    // ==================== SMART EXPIRY ====================
+    /**
+     * Network information for smart presigned URL expiry (optional)
+     * Applied to ALL files in batch
+     */
+    networkInfo?: NetworkInfo | null;
+
+    /**
+     * Buffer multiplier for smart expiry (optional)
+     * Default: 1.5 (50% buffer)
+     * Higher = longer URL validity
+     */
+    bufferMultiplier?: number;
 }
 
 // ============================================================================
@@ -421,6 +560,18 @@ export interface R2UploadResponse {
         method: 'PUT';
     };
 
+    /** Webhook configuration (if webhook was requested) */
+    webhook?: {
+        /** Webhook ID */
+        webhookId: string;
+
+        /** Webhook secret for signature verification */
+        webhookSecret: string;
+
+        /** Trigger mode: 'manual' or 'auto' */
+        triggerMode: 'manual' | 'auto';
+    } | null;
+
     /** Performance metrics (optional) */
     performance?: {
         /** Total request time */
@@ -441,40 +592,112 @@ export interface R2UploadResponse {
 }
 
 /**
- * R2 batch upload response
+ * R2 batch upload response (Enhanced with validation + smart expiry)
  */
 export interface R2BatchUploadResponse {
     /** Request succeeded */
-    success: true;
+    success: boolean;
 
-    /** Array of upload URLs for each file */
+    /** Array of upload results for each file */
     urls: Array<{
-        /** Filename */
-        filename: string;
+        /** Index in original request */
+        index: number;
+
+        /** Whether this file succeeded */
+        success: boolean;
+
+        /** Original filename */
+        originalFilename?: string;
+
+        /** Upload filename (with timestamp prefix) */
+        uploadFilename?: string;
 
         /** Presigned URL for PUT request */
-        uploadUrl: string;
+        uploadUrl?: string;
 
         /** Final public URL */
-        publicUrl: string;
+        publicUrl?: string;
 
-        /** Unique upload identifier */
-        uploadId: string;
+        /** Content type */
+        contentType?: string;
+
+        /** File size */
+        fileSize?: number;
+
+        /** URL expiration time in seconds */
+        expiresIn?: number;
+
+        /** URL expiration timestamp */
+        expiresAt?: string;
+
+        // ✅ NEW: Smart expiry details
+        smartExpiry?: {
+            calculatedExpiry: number;
+            estimatedUploadTime: number;
+            networkType: string;
+            bufferTime: number;
+            reasoning: {
+                fileSize: string;
+                networkType: string;
+                networkSpeed: string;
+                estimatedUploadTime: string;
+                bufferMultiplier: string;
+                bufferTime: string;
+                finalExpiry: string;
+            };
+        };
+
+        // ✅ NEW: Validation errors
+        error?: string;
+        validationErrors?: string[];
+        checks?: {
+            magicBytes: {
+                provided: boolean;
+                detected: boolean;
+            };
+        };
     }>;
 
     /** Total number of files */
     total: number;
 
+    /** ✅ NEW: Number of successful uploads */
+    successful: number;
+
+    /** ✅ NEW: Number of failed uploads */
+    failed: number;
+
     /** Provider identifier */
     provider: 'r2';
 
+    /** ✅ NEW: Errors for failed files */
+    errors?: Array<{
+        index: number;
+        success: boolean;
+        originalFilename?: string;
+        error: string;
+        validationErrors?: string[];
+    }>;
+
     /** Performance metrics */
     performance: {
+        /** Request ID for debugging */
+        requestId?: string;
+
         /** Total time for all files */
         totalTime: string;
 
-        /** Average time per file */
-        averagePerFile: string;
+        /** Time breakdown */
+        breakdown?: {
+            /** Memory guard check time */
+            memoryGuard: string;
+
+            /** Crypto signing time */
+            cryptoSigning: string;
+
+            /** Average time per file */
+            perFile: string;
+        };
     };
 }
 
@@ -592,6 +815,177 @@ export interface R2BatchDeleteResponse {
 
     /** Provider identifier */
     provider: 'r2';
+}
+
+// ============================================================================
+// R2 CORS Configuration Types (Option A: Backend Auto-Configuration)
+// ============================================================================
+
+/**
+ * R2 CORS Configuration Options
+ * 
+ * Options for configuring CORS on an R2 bucket to enable direct browser uploads.
+ * R2 uses the S3-compatible API for CORS configuration.
+ * 
+ * @example
+ * ```typescript
+ * const options: R2CorsConfigOptions = {
+ *   r2AccessKey: 'xxx...',
+ *   r2SecretKey: 'yyy...',
+ *   r2Bucket: 'my-uploads',
+ *   r2AccountId: 'abc123...',
+ *   allowedOrigins: ['https://myapp.com']
+ * };
+ * ```
+ */
+export interface R2CorsConfigOptions {
+    /**
+     * R2 Access Key ID
+     * Get from: Cloudflare Dashboard → R2 → Manage R2 API Tokens
+     */
+    r2AccessKey: string;
+
+    /**
+     * R2 Secret Access Key
+     * Get from: Cloudflare Dashboard → R2 → Manage R2 API Tokens
+     */
+    r2SecretKey: string;
+
+    /**
+     * R2 Bucket name
+     * The bucket to configure CORS on
+     */
+    r2Bucket: string;
+
+    /**
+     * Cloudflare Account ID
+     * Find in: Cloudflare Dashboard → R2
+     */
+    r2AccountId: string;
+
+    /**
+     * Allowed origins for CORS
+     * These origins will be allowed to make cross-origin requests
+     * 
+     * @example ['https://myapp.com', 'https://www.myapp.com']
+     */
+    allowedOrigins?: string[];
+
+    /**
+     * Allowed HTTP methods (optional)
+     * Default: ['GET', 'PUT', 'POST', 'DELETE', 'HEAD']
+     */
+    allowedMethods?: string[];
+
+    /**
+     * Allowed headers (optional)
+     * Default: ['*']
+     */
+    allowedHeaders?: string[];
+
+    /**
+     * Max age seconds for preflight cache (optional)
+     * Default: 3600
+     */
+    maxAgeSeconds?: number;
+
+    /**
+     * Headers exposed to the client (optional)
+     * Default: ['ETag', 'Content-Length', 'Content-Type']
+     */
+    exposeHeaders?: string[];
+
+    /**
+     * Status code for OPTIONS response (optional)
+     * Default: 204
+     */
+    optionsSuccessStatus?: number;
+}
+
+/**
+ * R2 CORS Configuration Response
+ */
+export interface R2CorsConfigResponse {
+    /** Request succeeded */
+    success: boolean;
+
+    /** Message from API */
+    message: string;
+
+    /** Applied CORS configuration */
+    configuration: {
+        CORSRules: Array<{
+            /** Headers allowed in cross-origin requests */
+            AllowedHeaders: string[];
+
+            /** HTTP methods allowed */
+            AllowedMethods: string[];
+
+            /** Origins allowed to make requests */
+            AllowedOrigins: string[];
+
+            /** Headers exposed to the client */
+            ExposeHeaders: string[];
+
+            /** How long (seconds) the browser can cache the CORS response */
+            MaxAgeSeconds: number;
+        }>;
+    };
+}
+
+/**
+ * R2 CORS Verification Options
+ */
+export interface R2CorsVerifyOptions {
+    /** R2 Access Key ID */
+    r2AccessKey: string;
+
+    /** R2 Secret Access Key */
+    r2SecretKey: string;
+
+    /** R2 Bucket name */
+    r2Bucket: string;
+
+    /** Cloudflare Account ID */
+    r2AccountId: string;
+}
+
+/**
+ * R2 CORS Verification Response
+ */
+export interface R2CorsVerifyResponse {
+    /** Request succeeded */
+    success: boolean;
+
+    /** Message from API */
+    message: string;
+
+    /** Whether CORS is configured */
+    configured: boolean;
+
+    /** Whether CORS is valid */
+    isValid: boolean;
+
+    /** CORS rules (if configured) */
+    corsRules?: Array<{
+        /** HTTP methods allowed */
+        AllowedMethods: string[];
+
+        /** Origins allowed */
+        AllowedOrigins: string[];
+
+        /** Headers allowed */
+        AllowedHeaders: string[];
+
+        /** Headers exposed */
+        ExposeHeaders: string[];
+    }>;
+
+    /** Any issues found */
+    issues: string[];
+
+    /** Recommendation */
+    recommendation: string;
 }
 
 // ============================================================================

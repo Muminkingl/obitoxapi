@@ -27,6 +27,9 @@ import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
 // 🚀 REDIS METRICS: Use Redis-backed metrics for 70% less DB load
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
+// ✅ NEW: Import File Validator for server-side validation
+import { validateFileMetadata } from '../../../utils/file-validator.js';
+
 /**
  * Generate signed upload URL for Supabase Storage
  * NOW WITH <200ms RESPONSE TIME! 🚀
@@ -215,6 +218,43 @@ export const generateSupabaseSignedUrl = async (req, res) => {
                 error: 'VALIDATION_ERROR',
                 message: 'Invalid file parameters'
             });
+        }
+
+        // ✅ NEW: VALIDATION: Server-side file validation (magic bytes from client)
+        // CRITICAL: Client reads first 8 bytes and sends to backend - files NEVER hit backend!
+        const { magicBytes, validation } = req.body;
+        
+        if (validation || magicBytes) {
+            console.log(`[${requestId}] 🔍 Running server-side file validation...`);
+            
+            const validationResult = validateFileMetadata({
+                filename,
+                contentType,
+                fileSize: fileSize || 0,
+                magicBytes,
+                validation: validation || {}
+            });
+
+            if (!validationResult.valid) {
+                console.log(`[${requestId}] ❌ Validation failed: ${validationResult.errors?.length} errors`);
+                updateRequestMetrics(apiKey, userId, 'supabase', false).catch(() => { });
+
+                return res.status(400).json({
+                    success: false,
+                    provider: 'supabase',
+                    error: 'VALIDATION_FAILED',
+                    message: 'File validation failed',
+                    validation: validationResult,
+                    checks: validationResult.checks,
+                    errors: validationResult.errors,
+                    warnings: validationResult.warnings
+                });
+            }
+
+            console.log(`[${requestId}] ✅ Validation passed`);
+            if (validationResult.detectedMimeType) {
+                console.log(`[${requestId}]    detected type: ${validationResult.detectedMimeType}`);
+            }
         }
 
         // Generate unique filename

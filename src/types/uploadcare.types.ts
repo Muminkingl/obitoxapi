@@ -99,6 +99,42 @@ export interface ImageOptimizationOptions {
 }
 
 // ============================================================================
+// Uploadcare Configuration (Provider Instance Pattern)
+// ============================================================================
+
+/**
+ * Uploadcare Provider Configuration
+ * 
+ * Used to initialize an Uploadcare provider instance with stored credentials.
+ * Once configured, all methods use these credentials automatically.
+ * 
+ * @example
+ * ```typescript
+ * const uploadcare = client.uploadcare({
+ *   publicKey: 'demopublickey',
+ *   secretKey: 'demosecretkey'
+ * });
+ * 
+ * // All methods now use stored credentials
+ * await uploadcare.uploadFile(file);
+ * await uploadcare.deleteFile(fileUrl);
+ * ```
+ */
+export interface UploadcareConfig {
+    /**
+     * Uploadcare Public Key
+     * Get from: Uploadcare Dashboard → Project Settings
+     */
+    publicKey: string;
+
+    /**
+     * Uploadcare Secret Key
+     * Get from: Uploadcare Dashboard → Project Settings
+     */
+    secretKey: string;
+}
+
+// ============================================================================
 // Uploadcare Upload Options
 // ============================================================================
 

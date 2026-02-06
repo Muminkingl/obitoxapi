@@ -39,7 +39,14 @@ import type {
     S3BatchDeleteResponse,
     S3ListResponse,
     S3MetadataResponse,
+    S3CorsConfigOptions,
+    S3CorsConfigResponse,
+    S3CorsVerifyOptions,
+    S3CorsVerifyResponse,
+    S3Config,
 } from '../../types/s3.types.js';
+import { normalizeNetworkInfo } from '../../utils/network-detector.js';
+import { validateFile, readMagicBytes } from '../../utils/file-validator.js';
 import {
     validateS3Credentials,
     validateBatchSize,
@@ -78,8 +85,11 @@ export class S3Provider extends BaseProvider<
     S3DeleteOptions,
     S3DownloadOptions
 > {
-    constructor(apiKey: string, baseUrl: string, apiSecret?: string) {
+    private config: S3Config;
+
+    constructor(apiKey: string, baseUrl: string, apiSecret?: string, config?: S3Config) {
         super('S3', apiKey, baseUrl, apiSecret);
+        this.config = config || {} as S3Config;
     }
 
     // ============================================================================
@@ -104,9 +114,26 @@ export class S3Provider extends BaseProvider<
         const filename = file instanceof File ? file.name : 'uploaded-file';
         const contentType = file instanceof File ? file.type : 'application/octet-stream';
 
+        // Merge stored config with options (from provider instance pattern)
+        // Use type assertion to handle the different property names between config and options
+        const mergedOptions: S3UploadOptions = {
+            ...options,
+            // Stored config credentials as fallbacks
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3StorageClass: (options as any).s3StorageClass || this.config.storageClass,
+            s3EncryptionType: (options as any).s3EncryptionType || this.config.encryptionType || 'SSE-S3',
+            s3KmsKeyId: (options as any).s3KmsKeyId || this.config.kmsKeyId,
+            s3CloudFrontDomain: (options as any).s3CloudFrontDomain || this.config.cloudFrontDomain,
+            filename,
+            contentType,
+            provider: 'S3'
+        };
+
         // Validate S3 credentials format (client-side, instant)
-        const fullOptions = { ...options, filename, contentType } as S3UploadOptions;
-        const validation = validateS3Credentials(fullOptions);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
@@ -139,6 +166,40 @@ export class S3Provider extends BaseProvider<
         const controller = new AbortController();
 
         try {
+            // ==================== FILE VALIDATION ====================
+            if (options.validation !== null && options.validation !== undefined) {
+                console.log('   🔍 Validating file...');
+                
+                // Perform client-side validation
+                const validationResult = await validateFile(file, options.validation);
+                
+                if (!validationResult.valid) {
+                    // Call error callback if provided
+                    if (options.validation && typeof options.validation === 'object' && options.validation.onError) {
+                        options.validation.onError(validationResult.errors);
+                    }
+                    
+                    // Throw validation error
+                    throw new Error(`Validation failed: ${validationResult.errors.join('; ')}`);
+                }
+                
+                console.log(`   ✅ File validation passed (${validationResult.file.sizeFormatted})`);
+                
+                // Log warnings if any
+                if (validationResult.warnings.length > 0) {
+                    console.log(`   ⚠️  Validation warnings: ${validationResult.warnings.join('; ')}`);
+                }
+            }
+
+            // Get network info for smart expiry
+            const networkInfo = normalizeNetworkInfo(options.networkInfo);
+
+            // ==================== READ MAGIC BYTES ====================
+            // Read magic bytes for server-side validation (skip for large files >100MB)
+            const magicBytes = file.size <= 100 * 1024 * 1024 
+                ? await readMagicBytes(file) 
+                : null;
+
             // STEP 1: Get presigned URL from ObitoX API (pure crypto, 5-15ms)
             const response = await this.makeRequest<S3UploadResponse>(
                 '/api/v1/upload/s3/signed-url',
@@ -159,7 +220,11 @@ export class S3Provider extends BaseProvider<
                         s3CloudFrontDomain: options.s3CloudFrontDomain,
                         s3EnableVersioning: options.s3EnableVersioning,
                         expiresIn: options.expiresIn || 3600,
-                        metadata: options.metadata
+                        metadata: options.metadata,
+                        // ==================== SMART EXPIRY ====================
+                        networkInfo,
+                        // ==================== FILE VALIDATION ====================
+                        magicBytes
                     }),
                 }
             );
@@ -638,6 +703,149 @@ export class S3Provider extends BaseProvider<
         } catch (error) {
             const totalTime = Date.now() - startTime;
             console.error(`❌ S3 metadata retrieval failed after ${totalTime}ms:`, error);
+            throw error;
+        }
+    }
+
+    // ============================================================================
+    // CORS: Configure CORS on S3 bucket
+    // ============================================================================
+
+    /**
+     * Configure CORS on an S3 bucket to allow cross-origin requests
+     * 
+     * This method sets up CORS rules on your S3 bucket, enabling browser-based
+     * uploads from your configured origins. Uses Option A (Backend Auto-Configuration).
+     *
+     * @param options - S3 CORS configuration options
+     * @returns Promise resolving to CORS configuration response
+     * @throws Error if CORS configuration fails
+     *
+     * @example
+     * ```typescript
+     * await s3Provider.configureCors({
+     *     s3AccessKey: 'AKIA...',
+     *     s3SecretKey: 'xxx...',
+     *     s3Bucket: 'my-uploads',
+     *     s3Region: 'us-east-1',
+     *     allowedOrigins: ['https://myapp.com', 'https://www.myapp.com'],
+     *     allowedMethods: ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
+     *     allowedHeaders: ['*'],
+     *     maxAgeSeconds: 3600,
+     *     exposeHeaders: ['ETag', 'x-amz-meta-*'],
+     *     optionsSuccessStatus: 204
+     * });
+     * ```
+     */
+    async configureCors(options: S3CorsConfigOptions): Promise<S3CorsConfigResponse> {
+        const startTime = Date.now();
+
+        // Validate S3 credentials
+        const validation = validateS3Credentials(options);
+        if (!validation.valid) {
+            throw new Error(`S3 Credentials Invalid: ${validation.error}`);
+        }
+
+        try {
+            const response = await this.makeRequest<S3CorsConfigResponse>(
+                '/api/v1/upload/s3/cors/configure',
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        s3AccessKey: options.s3AccessKey,
+                        s3SecretKey: options.s3SecretKey,
+                        s3Bucket: options.s3Bucket,
+                        s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint,
+                        allowedOrigins: options.allowedOrigins || ['*'],
+                        allowedMethods: options.allowedMethods || ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
+                        allowedHeaders: options.allowedHeaders || ['*'],
+                        maxAgeSeconds: options.maxAgeSeconds || 3600,
+                        exposeHeaders: options.exposeHeaders || [],
+                        optionsSuccessStatus: options.optionsSuccessStatus || 204
+                    }),
+                }
+            );
+
+            const totalTime = Date.now() - startTime;
+            
+            if (response.success) {
+                console.log(`🌐 S3 CORS configured in ${totalTime}ms`);
+            } else {
+                console.warn(`⚠️  S3 CORS configuration warning: ${response.message}`);
+            }
+
+            return response;
+
+        } catch (error) {
+            const totalTime = Date.now() - startTime;
+            console.error(`❌ S3 CORS configuration failed after ${totalTime}ms:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Verify CORS configuration on an S3 bucket
+     *
+     * Checks if CORS is properly configured on the S3 bucket and returns
+     * the current CORS rules along with a validation status.
+     *
+     * @param options - S3 CORS verification options
+     * @returns Promise resolving to CORS verification response
+     * @throws Error if verification fails
+     *
+     * @example
+     * ```typescript
+     * const result = await s3Provider.verifyCors({
+     *     s3AccessKey: 'AKIA...',
+     *     s3SecretKey: 'xxx...',
+     *     s3Bucket: 'my-uploads',
+     *     s3Region: 'us-east-1'
+     * });
+     * 
+     * if (result.isValid) {
+     *     console.log('CORS is properly configured');
+     *     console.log('Rules:', result.corsRules);
+     * }
+     * ```
+     */
+    async verifyCors(options: S3CorsVerifyOptions): Promise<S3CorsVerifyResponse> {
+        const startTime = Date.now();
+
+        // Validate S3 credentials
+        const validation = validateS3Credentials(options);
+        if (!validation.valid) {
+            throw new Error(`S3 Credentials Invalid: ${validation.error}`);
+        }
+
+        try {
+            const response = await this.makeRequest<S3CorsVerifyResponse>(
+                '/api/v1/upload/s3/cors/verify',
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        s3AccessKey: options.s3AccessKey,
+                        s3SecretKey: options.s3SecretKey,
+                        s3Bucket: options.s3Bucket,
+                        s3Region: options.s3Region || 'us-east-1',
+                        s3Endpoint: (options as any).s3Endpoint
+                    }),
+                }
+            );
+
+            const totalTime = Date.now() - startTime;
+            
+            if (response.success) {
+                console.log(`🔍 S3 CORS verified in ${totalTime}ms`);
+            } else {
+                console.warn(`⚠️  S3 CORS verification warning: ${response.message}`);
+            }
+
+            return response;
+
+        } catch (error) {
+            const totalTime = Date.now() - startTime;
+            console.error(`❌ S3 CORS verification failed after ${totalTime}ms:`, error);
             throw error;
         }
     }
