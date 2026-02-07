@@ -44,6 +44,8 @@ import type {
     S3CorsVerifyOptions,
     S3CorsVerifyResponse,
     S3Config,
+    S3BatchUploadOptions,
+    S3BatchUploadResponse,
 } from '../../types/s3.types.js';
 import { normalizeNetworkInfo } from '../../utils/network-detector.js';
 import { validateFile, readMagicBytes } from '../../utils/file-validator.js';
@@ -123,6 +125,7 @@ export class S3Provider extends BaseProvider<
             s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
             s3Bucket: options.s3Bucket || this.config.bucket || '',
             s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,  // Custom endpoint (MinIO/R2/etc.)
             s3StorageClass: (options as any).s3StorageClass || this.config.storageClass,
             s3EncryptionType: (options as any).s3EncryptionType || this.config.encryptionType || 'SSE-S3',
             s3KmsKeyId: (options as any).s3KmsKeyId || this.config.kmsKeyId,
@@ -130,7 +133,7 @@ export class S3Provider extends BaseProvider<
             filename,
             contentType,
             provider: 'S3'
-        };
+        } as S3UploadOptions;
 
         // Validate S3 credentials format (client-side, instant)
         const validation = validateS3Credentials(mergedOptions);
@@ -169,22 +172,22 @@ export class S3Provider extends BaseProvider<
             // ==================== FILE VALIDATION ====================
             if (options.validation !== null && options.validation !== undefined) {
                 console.log('   🔍 Validating file...');
-                
+
                 // Perform client-side validation
                 const validationResult = await validateFile(file, options.validation);
-                
+
                 if (!validationResult.valid) {
                     // Call error callback if provided
                     if (options.validation && typeof options.validation === 'object' && options.validation.onError) {
                         options.validation.onError(validationResult.errors);
                     }
-                    
+
                     // Throw validation error
                     throw new Error(`Validation failed: ${validationResult.errors.join('; ')}`);
                 }
-                
+
                 console.log(`   ✅ File validation passed (${validationResult.file.sizeFormatted})`);
-                
+
                 // Log warnings if any
                 if (validationResult.warnings.length > 0) {
                     console.log(`   ⚠️  Validation warnings: ${validationResult.warnings.join('; ')}`);
@@ -196,8 +199,8 @@ export class S3Provider extends BaseProvider<
 
             // ==================== READ MAGIC BYTES ====================
             // Read magic bytes for server-side validation (skip for large files >100MB)
-            const magicBytes = file.size <= 100 * 1024 * 1024 
-                ? await readMagicBytes(file) 
+            const magicBytes = file.size <= 100 * 1024 * 1024
+                ? await readMagicBytes(file)
                 : null;
 
             // STEP 1: Get presigned URL from ObitoX API (pure crypto, 5-15ms)
@@ -209,22 +212,24 @@ export class S3Provider extends BaseProvider<
                         filename,
                         contentType,
                         fileSize: file.size,
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint,  // Custom endpoint for MinIO/LocalStack
-                        s3StorageClass: options.s3StorageClass,
-                        s3EncryptionType: options.s3EncryptionType,
-                        s3KmsKeyId: options.s3KmsKeyId,
-                        s3CloudFrontDomain: options.s3CloudFrontDomain,
-                        s3EnableVersioning: options.s3EnableVersioning,
-                        expiresIn: options.expiresIn || 3600,
-                        metadata: options.metadata,
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint,
+                        s3StorageClass: mergedOptions.s3StorageClass,
+                        s3EncryptionType: mergedOptions.s3EncryptionType,
+                        s3KmsKeyId: (mergedOptions as any).s3KmsKeyId,
+                        s3CloudFrontDomain: (mergedOptions as any).s3CloudFrontDomain,
+                        s3EnableVersioning: (mergedOptions as any).s3EnableVersioning,
+                        expiresIn: mergedOptions.expiresIn || 3600,
+                        metadata: (mergedOptions as any).metadata,
                         // ==================== SMART EXPIRY ====================
                         networkInfo,
                         // ==================== FILE VALIDATION ====================
-                        magicBytes
+                        magicBytes,
+                        // ✅ Include webhook options if provided
+                        ...(options.webhook && { webhook: options.webhook })
                     }),
                 }
             );
@@ -276,6 +281,144 @@ export class S3Provider extends BaseProvider<
                 error: error instanceof Error ? error.message : String(error),
             }).catch(() => { });
 
+            throw error;
+        }
+    }
+
+    // ============================================================================
+    // BATCH: Multiple Files Upload (R2's Killer Feature!)
+    // ============================================================================
+
+    /**
+     * Batch upload multiple files with a single API call
+     * 
+     * R2's killer feature - generate presigned URLs for up to 100 files in a single API call.
+     * This is significantly faster than calling upload() 100 times.
+     * 
+     * @param options - Batch upload options
+     * @returns Promise resolving to batch upload response with URLs for all files
+     * @throws Error if batch upload fails or exceeds 100 files limit
+     * 
+     * @example
+     * ```typescript
+     * const result = await provider.batchUpload({
+     *   files: [
+     *     { filename: 'photo1.jpg', contentType: 'image/jpeg', fileSize: 1024000 },
+     *     { filename: 'photo2.jpg', contentType: 'image/jpeg', fileSize: 2048000 }
+     *   ],
+     *   s3AccessKey: 'AKIA...',
+     *   s3SecretKey: 'wJalr...',
+     *   s3Bucket: 'my-uploads',
+     *   s3Region: 'us-east-1',
+     *   validation: 'images',
+     *   networkInfo: { effectiveType: '4g' }
+     * });
+     * 
+     * console.log(`Generated ${result.summary.successful} URLs in ${result.performance?.totalTime}`);
+     * 
+     * // Upload all files in parallel
+     * await Promise.all(
+     *   actualFiles.map((file, i) =>
+     *     fetch(result.results[i].uploadUrl, {
+     *       method: 'PUT',
+     *       body: file,
+     *       headers: { 'Content-Type': file.type }
+     *     })
+     *   )
+     * );
+     * ```
+     */
+    async batchUpload(options: S3BatchUploadOptions): Promise<S3BatchUploadResponse> {
+        const startTime = Date.now();
+
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: S3BatchUploadOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+            s3StorageClass: options.s3StorageClass || (this.config.storageClass as any),
+            s3EncryptionType: options.s3EncryptionType || (this.config.encryptionType as any),
+            s3KmsKeyId: options.s3KmsKeyId || this.config.kmsKeyId,
+            s3CloudFrontDomain: options.s3CloudFrontDomain || this.config.cloudFrontDomain,
+        };
+
+        // Validate batch size (max 100 files for batch upload)
+        const batchValidation = validateBatchSize(mergedOptions.files, 'batch upload', 100);
+        if (!batchValidation.valid) {
+            throw new Error(`Batch size validation failed: ${batchValidation.error}`);
+        }
+
+        // Validate S3 credentials
+        const credentialsValidation = validateS3Credentials(mergedOptions);
+        if (!credentialsValidation.valid) {
+            throw new Error(`S3 Credentials Invalid: ${credentialsValidation.error}`);
+        }
+
+        // Validate region (if provided)
+        if (mergedOptions.s3Region) {
+            const regionValidation = validateS3Region(mergedOptions.s3Region);
+            if (!regionValidation.valid) {
+                throw new Error(`S3 Region Invalid: ${regionValidation.error}`);
+            }
+        }
+
+        // Validate storage class (if provided)
+        if (mergedOptions.s3StorageClass) {
+            const storageValidation = validateStorageClass(mergedOptions.s3StorageClass);
+            if (!storageValidation.valid) {
+                throw new Error(`S3 Storage Class Invalid: ${storageValidation.error}`);
+            }
+        }
+
+        // Validate encryption type (if provided)
+        if (mergedOptions.s3EncryptionType) {
+            const encryptionValidation = validateEncryptionType(mergedOptions.s3EncryptionType);
+            if (!encryptionValidation.valid) {
+                throw new Error(`S3 Encryption Type Invalid: ${encryptionValidation.error}`);
+            }
+        }
+
+        // Get network info for smart expiry
+        const networkInfo = normalizeNetworkInfo(mergedOptions.networkInfo);
+
+        try {
+            // Make batch API call
+            const response = await this.makeRequest<S3BatchUploadResponse>(
+                '/api/v1/upload/s3/batch-signed-url',
+                {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        files: mergedOptions.files,
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint,
+                        s3StorageClass: mergedOptions.s3StorageClass,
+                        s3EncryptionType: mergedOptions.s3EncryptionType,
+                        s3KmsKeyId: mergedOptions.s3KmsKeyId,
+                        s3CloudFrontDomain: mergedOptions.s3CloudFrontDomain,
+                        expiresIn: mergedOptions.expiresIn || 3600,
+                        // ==================== VALIDATION ====================
+                        validation: mergedOptions.validation,
+                        // ==================== SMART EXPIRY ====================
+                        networkInfo,
+                        bufferMultiplier: mergedOptions.bufferMultiplier
+                    }),
+                }
+            );
+
+            const totalTime = Date.now() - startTime;
+            console.log(`✅ S3 batch: ${response.summary.successful}/${response.summary.total} URLs in ${totalTime}ms`);
+
+            return response;
+
+        } catch (error) {
+            const totalTime = Date.now() - startTime;
+            console.error(`❌ S3 batch failed after ${totalTime}ms:`, error);
             throw error;
         }
     }
@@ -370,8 +513,18 @@ export class S3Provider extends BaseProvider<
     async delete(options: S3DeleteOptions): Promise<void> {
         const startTime = Date.now();
 
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: S3DeleteOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+        } as S3DeleteOptions;
+
         // Validate S3 credentials
-        const validation = validateS3Credentials(options);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
@@ -382,12 +535,12 @@ export class S3Provider extends BaseProvider<
                 {
                     method: 'DELETE',
                     body: JSON.stringify({
-                        key: options.key,
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint
+                        key: mergedOptions.key,
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint
                     }),
                 }
             );
@@ -400,8 +553,8 @@ export class S3Provider extends BaseProvider<
             console.log(`🗑️  S3 file deleted in ${totalTime}ms`);
 
             // Track analytics (non-blocking)
-            this.trackEvent('deleted', options.key, {
-                bucket: options.s3Bucket,
+            this.trackEvent('deleted', mergedOptions.key, {
+                bucket: mergedOptions.s3Bucket,
             }).catch(() => { });
 
         } catch (error) {
@@ -425,8 +578,19 @@ export class S3Provider extends BaseProvider<
     async download(options: S3DownloadOptions): Promise<string> {
         const startTime = Date.now();
 
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: S3DownloadOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+            s3CloudFrontDomain: options.s3CloudFrontDomain || this.config.cloudFrontDomain,
+        } as S3DownloadOptions;
+
         // Validate S3 credentials
-        const validation = validateS3Credentials(options);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
@@ -437,16 +601,16 @@ export class S3Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        key: options.key,
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint,
-                        s3CloudFrontDomain: options.s3CloudFrontDomain,
-                        expiresIn: options.expiresIn || 3600,
-                        responseContentType: options.responseContentType,
-                        responseContentDisposition: options.responseContentDisposition
+                        key: mergedOptions.key,
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint,
+                        s3CloudFrontDomain: mergedOptions.s3CloudFrontDomain,
+                        expiresIn: mergedOptions.expiresIn || 3600,
+                        responseContentType: mergedOptions.responseContentType,
+                        responseContentDisposition: mergedOptions.responseContentDisposition
                     }),
                 }
             );
@@ -768,7 +932,7 @@ export class S3Provider extends BaseProvider<
             );
 
             const totalTime = Date.now() - startTime;
-            
+
             if (response.success) {
                 console.log(`🌐 S3 CORS configured in ${totalTime}ms`);
             } else {
@@ -834,7 +998,7 @@ export class S3Provider extends BaseProvider<
             );
 
             const totalTime = Date.now() - startTime;
-            
+
             if (response.success) {
                 console.log(`🔍 S3 CORS verified in ${totalTime}ms`);
             } else {

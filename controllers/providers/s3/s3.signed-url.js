@@ -38,6 +38,11 @@ import { validateFileMetadata } from '../../../utils/file-validator.js';
 // ✅ NEW: Import Smart Expiry calculator
 import { calculateSmartExpiry } from '../../../utils/smart-expiry.js';
 
+// ✅ NEW: Import Webhook utilities
+import { generateWebhookId, generateWebhookSecret } from '../../../utils/webhook/signature.js';
+import { supabaseAdmin } from '../../../config/supabase.js';
+import { enqueueWebhook } from '../../../services/webhook/queue-manager.js';
+
 /**
  * Generate presigned URL for S3 upload
  * Target Performance: 7-15ms P95
@@ -172,7 +177,7 @@ export const generateS3SignedUrl = async (req, res) => {
         }
 
         // VALIDATION: Credential Format
-        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
+        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3Endpoint);
         if (!credValidation.valid) {
             return res.status(400).json({
                 success: false,
@@ -313,11 +318,62 @@ export const generateS3SignedUrl = async (req, res) => {
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (signing: ${signingTime}ms)`);
 
+        // ✅ NEW: WEBHOOK CREATION
+        let webhookResult = null;
+        const { webhook } = req.body;
 
+        if (webhook && webhook.url) {
+            console.log(`[${requestId}] 🔗 Creating webhook for ${filename}...`);
 
+            try {
+                const webhookId = generateWebhookId();
+                const webhookSecret = webhook.secret || generateWebhookSecret();
 
+                const { data: insertedWebhook, error: insertError } = await supabaseAdmin.from('upload_webhooks').insert({
+                    id: webhookId,
+                    user_id: userId,
+                    api_key_id: apiKeyId,
+                    webhook_url: webhook.url,
+                    webhook_secret: webhookSecret,
+                    trigger_mode: webhook.trigger || 'manual',
+                    provider: 'S3',
+                    bucket: s3Bucket,
+                    file_key: objectKey,
+                    filename: filename,
+                    content_type: contentType,
+                    file_size: fileSize,
+                    etag: null,
+                    status: 'pending',
+                    metadata: webhook.metadata || {},
+                    // S3 specific credentials for verification
+                    region: s3Region,
+                    access_key_id: s3AccessKey,
+                    secret_access_key: s3SecretKey,
+                    endpoint: s3Endpoint  // Custom endpoint for MinIO/LocalStack
+                }).select().single();
 
+                if (insertError) {
+                    console.error(`[${requestId}] ⚠️ Webhook DB insert failed:`, insertError.message);
+                } else {
+                    webhookResult = {
+                        webhookId,
+                        webhookSecret,
+                        triggerMode: webhook.trigger || 'manual'
+                    };
+                    console.log(`[${requestId}] ✅ Webhook created: ${webhookId}`);
 
+                    // ✅ Queue webhook for auto-trigger mode (worker will process)
+                    if ((webhook.trigger || 'manual') === 'auto') {
+                        console.log(`[${requestId}] 📤 Enqueueing webhook for auto-trigger...`);
+                        await enqueueWebhook(webhookId, insertedWebhook, 0);
+                        console.log(`[${requestId}] ✅ Webhook enqueued to Redis`);
+                    }
+                }
+            } catch (webhookError) {
+                console.error(`[${requestId}] ⚠️ Webhook creation failed:`, webhookError.message);
+                // Continue without webhook - don't fail the entire request
+            }
+        }
         // RESPONSE
         const response = {
             success: true,
@@ -346,6 +402,8 @@ export const generateS3SignedUrl = async (req, res) => {
                 bucket: s3Bucket,
                 method: 'PUT'
             },
+            // ✅ NEW: Webhook Result
+            ...(webhookResult && { webhook: webhookResult }),
             // ✅ NEW: Smart Expiry Info
             smartExpiry: smartExpiryResult ? {
                 calculatedExpiry: smartExpiryResult.expirySeconds,

@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../database/supabase.js';
 
-// Validate API key and return user information and plan
+// Validate API key and return user information
 export const validateApiKey = async (req, res, next) => {
   try {
     // Get API key from header or query parameter
@@ -21,10 +21,10 @@ export const validateApiKey = async (req, res, next) => {
       });
     }
 
-    // Validate API key in database with tracking metrics
+    // Validate API key in database with request metrics
     const { data: apiKeyData, error } = await supabaseAdmin
       .from('api_keys')
-      .select('id, user_id, name, created_at, last_used_at, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded, file_type_counts')
+      .select('id, user_id, name, created_at, last_used_at, total_requests, total_files_uploaded, file_type_counts')
       .eq('key_value', apiKey)
       .single();
 
@@ -52,40 +52,25 @@ export const validateApiKey = async (req, res, next) => {
     }
 
     // Get user's plan/profile information with computed tier
-    // ✅ NEW: Query profiles_with_tier view for computed tier and limits
+    // Query profiles_with_tier view for computed tier and limits
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('profiles_with_tier')
       .select('subscription_tier, subscription_tier_paid, subscription_status, is_subscription_expired, is_in_grace_period, api_requests_limit, plan_name')
       .eq('id', apiKeyData.user_id)
       .single();
 
-    // Get provider usage statistics
+    // Get provider usage statistics (upload counts only)
     const { data: providerUsage, error: providerError } = await supabaseAdmin
       .from('provider_usage')
-      .select('provider, upload_count, total_file_size')
+      .select('provider, upload_count')
       .eq('api_key_id', apiKeyData.id);
-
-    // Calculate success rate
-    const successRate = apiKeyData.total_requests > 0
-      ? Math.round((apiKeyData.successful_requests / apiKeyData.total_requests) * 100 * 100) / 100
-      : 0;
-
-    // Format file size in human-readable format
-    const formatFileSize = (bytes) => {
-      if (bytes === 0) return '0 bytes';
-      const k = 1024;
-      const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    };
 
     // Format provider usage data
     const providerStats = {};
     if (providerUsage && !providerError) {
       providerUsage.forEach(usage => {
         providerStats[usage.provider] = {
-          uploads: usage.upload_count,
-          totalSize: usage.total_file_size
+          uploads: usage.upload_count
         };
       });
     }
@@ -101,11 +86,6 @@ export const validateApiKey = async (req, res, next) => {
           created_at: apiKeyData.created_at,
           last_used_at: apiKeyData.last_used_at,
           total_requests: apiKeyData.total_requests || 0,
-          successful_requests: apiKeyData.successful_requests || 0,
-          failed_requests: apiKeyData.failed_requests || 0,
-          success_rate: `${successRate}%`,
-          total_file_size: apiKeyData.total_file_size || 0,
-          total_file_size_formatted: formatFileSize(apiKeyData.total_file_size || 0),
           total_files_uploaded: apiKeyData.total_files_uploaded || 0,
           file_type_counts: apiKeyData.file_type_counts || {}
         },

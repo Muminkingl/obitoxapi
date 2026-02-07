@@ -1,8 +1,11 @@
 /**
- * Daily Rollup Worker
+ * Daily Rollup Worker (v2 - Simplified)
  * 
  * Syncs daily Redis metrics to PostgreSQL daily tables
  * Runs once per day at 00:05 UTC via PM2 cron
+ * 
+ * NOTE: Only tracks request counts. File size tracking removed
+ * since files never hit our server.
  * 
  * Redis Keys:
  *   - daily:{date}:apikey:{apiKeyId} → api_key_usage_daily
@@ -46,7 +49,7 @@ function getTodayUTC() {
 }
 
 /**
- * Rollup API key daily metrics to database
+ * Rollup API key daily metrics to database (request counts only)
  */
 async function rollupApiKeyDaily(date) {
     console.log(`[Daily Rollup] 📊 Rolling up API key metrics for ${date}...`);
@@ -78,20 +81,17 @@ async function rollupApiKeyDaily(date) {
                 // Check if record exists
                 const { data: existing } = await supabaseAdmin
                     .from('api_key_usage_daily')
-                    .select('id, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
+                    .select('id, total_requests, total_files_uploaded')
                     .eq('api_key_id', apiKeyId)
                     .eq('usage_date', date)
                     .single();
 
                 if (existing) {
-                    // Update existing record
+                    // Update existing record (request counts only)
                     const { error } = await supabaseAdmin
                         .from('api_key_usage_daily')
                         .update({
                             total_requests: (existing.total_requests || 0) + (metrics.total_requests || 0),
-                            successful_requests: (existing.successful_requests || 0) + (metrics.successful_requests || 0),
-                            failed_requests: (existing.failed_requests || 0) + (metrics.failed_requests || 0),
-                            total_file_size: (existing.total_file_size || 0) + (metrics.total_file_size || 0),
                             total_files_uploaded: (existing.total_files_uploaded || 0) + (metrics.total_files_uploaded || 0),
                             updated_at: new Date().toISOString()
                         })
@@ -102,7 +102,7 @@ async function rollupApiKeyDaily(date) {
                         continue;
                     }
                 } else {
-                    // Insert new record
+                    // Insert new record (request counts only)
                     const { error } = await supabaseAdmin
                         .from('api_key_usage_daily')
                         .insert({
@@ -110,9 +110,6 @@ async function rollupApiKeyDaily(date) {
                             user_id: userId,
                             usage_date: date,
                             total_requests: metrics.total_requests || 0,
-                            successful_requests: metrics.successful_requests || 0,
-                            failed_requests: metrics.failed_requests || 0,
-                            total_file_size: metrics.total_file_size || 0,
                             total_files_uploaded: metrics.total_files_uploaded || 0,
                             created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString()
@@ -146,7 +143,7 @@ async function rollupApiKeyDaily(date) {
 }
 
 /**
- * Rollup provider daily metrics to database
+ * Rollup provider daily metrics to database (upload counts only)
  */
 async function rollupProviderDaily(date) {
     console.log(`[Daily Rollup] 📊 Rolling up provider metrics for ${date}...`);
@@ -179,19 +176,18 @@ async function rollupProviderDaily(date) {
                 // Check if record exists
                 const { data: existing } = await supabaseAdmin
                     .from('provider_usage_daily')
-                    .select('id, upload_count, total_file_size')
+                    .select('id, upload_count')
                     .eq('api_key_id', apiKeyId)
                     .eq('provider', provider)
                     .eq('usage_date', date)
                     .single();
 
                 if (existing) {
-                    // Update existing record
+                    // Update existing record (upload count only)
                     const { error } = await supabaseAdmin
                         .from('provider_usage_daily')
                         .update({
                             upload_count: (existing.upload_count || 0) + (metrics.upload_count || 0),
-                            total_file_size: (existing.total_file_size || 0) + (metrics.total_file_size || 0),
                             updated_at: new Date().toISOString()
                         })
                         .eq('id', existing.id);
@@ -201,7 +197,7 @@ async function rollupProviderDaily(date) {
                         continue;
                     }
                 } else {
-                    // Insert new record
+                    // Insert new record (upload count only)
                     const { error } = await supabaseAdmin
                         .from('provider_usage_daily')
                         .insert({
@@ -210,7 +206,6 @@ async function rollupProviderDaily(date) {
                             provider: provider,
                             usage_date: date,
                             upload_count: metrics.upload_count || 0,
-                            total_file_size: metrics.total_file_size || 0,
                             created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString()
                         });

@@ -61,7 +61,7 @@ export const VALID_ENCRYPTION_TYPES = Object.keys(ENCRYPTION_TYPES);
  * @param {string} region - AWS region code
  * @returns {Object} { valid: boolean, error?: string, message?: string }
  */
-export const validateS3Credentials = (accessKey, secretKey, bucket, region) => {
+export const validateS3Credentials = (accessKey, secretKey, bucket, region, endpoint = null) => {
     // Check all required fields
     if (!accessKey || !secretKey || !bucket || !region) {
         return {
@@ -82,9 +82,9 @@ export const validateS3Credentials = (accessKey, secretKey, bucket, region) => {
         };
     }
 
-    // Access Key format (typically 20 characters, starts with AKIA)
+    // Access Key format (typically 20 characters, starts with AKIA for AWS)
     // Skip strict validation for S3-compatible storage (when endpoint is provided)
-    if (accessKey.length < 16 || accessKey.length > 128) {
+    if (!endpoint && (accessKey.length < 16 || accessKey.length > 128)) {
         return {
             valid: false,
             error: 'INVALID_ACCESS_KEY_FORMAT',
@@ -95,7 +95,7 @@ export const validateS3Credentials = (accessKey, secretKey, bucket, region) => {
 
     // Secret Key format (typically 40 characters, base64-encoded)
     // Skip strict validation for S3-compatible storage (when endpoint is provided)
-    if (secretKey.length < 32 || secretKey.length > 128) {
+    if (!endpoint && (secretKey.length < 32 || secretKey.length > 128)) {
         return {
             valid: false,
             error: 'INVALID_SECRET_KEY_FORMAT',

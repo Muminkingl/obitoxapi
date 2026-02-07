@@ -7,7 +7,7 @@
  * @module types/uploadcare
  */
 
-import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions } from './common';
+import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, WebhookConfig } from './common';
 
 // ============================================================================
 // Image Optimization
@@ -188,6 +188,12 @@ export interface UploadcareUploadOptions extends BaseUploadOptions {
      * Non-images will ignore this option
      */
     imageOptimization?: ImageOptimizationOptions;
+
+    /**
+     * Webhook configuration for upload completion notifications
+     * @see WebhookConfig for all available options
+     */
+    webhook?: WebhookConfig;
 }
 
 // ============================================================================

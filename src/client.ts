@@ -626,6 +626,46 @@ export class ObitoX {
     return (provider as any).batchUpload(options);
   }
 
+  // ============================================================================
+  // S3 Batch Upload
+  // ============================================================================
+
+  /**
+   * Batch upload multiple files to S3 with a single API call
+   * 
+   * Generate presigned URLs for up to 100 files in a single API call.
+   * This is significantly faster than calling upload() 100 times.
+   * 
+   * @param options - S3 batch upload options
+   * @returns Promise resolving to batch upload response with URLs for all files
+   * @throws Error if batch upload fails or exceeds 100 files limit
+   * 
+   * @example
+   * ```typescript
+   * const result = await client.batchUploadS3({
+   *   files: [
+   *     { filename: 'photo1.jpg', contentType: 'image/jpeg', fileSize: 1024000 },
+   *     { filename: 'photo2.jpg', contentType: 'image/jpeg', fileSize: 2048000 }
+   *   ],
+   *   s3AccessKey: 'AKIA...',
+   *   s3SecretKey: 'wJalr...',
+   *   s3Bucket: 'my-uploads',
+   *   s3Region: 'us-east-1',
+   *   validation: 'images',
+   *   networkInfo: { effectiveType: '4g' }
+   * });
+   * 
+   * console.log(`Generated ${result.summary.successful} URLs in ${result.performance?.totalTime}`);
+   * ```
+   */
+  async batchUploadS3(options: any): Promise<any> {
+    const provider = this.providers.get('S3');
+    if (!provider) {
+      throw new Error('S3 provider is not available');
+    }
+    return (provider as any).batchUpload(options);
+  }
+
   /**
    * Generate R2 access token for direct uploads
    * 

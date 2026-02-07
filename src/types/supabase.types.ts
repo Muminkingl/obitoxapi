@@ -7,7 +7,7 @@
  * @module types/supabase
  */
 
-import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, BucketInfo } from './common';
+import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, BucketInfo, WebhookConfig } from './common';
 
 // ============================================================================
 // Supabase Configuration (Provider Instance Pattern)
@@ -101,6 +101,12 @@ export interface SupabaseUploadOptions extends BaseUploadOptions {
      * Default: 3600 (1 hour)
      */
     expiresIn?: number;
+
+    /**
+     * Webhook configuration for upload completion notifications
+     * @see WebhookConfig for all available options
+     */
+    webhook?: WebhookConfig;
 }
 
 // ============================================================================

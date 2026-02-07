@@ -30,6 +30,11 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 // ✅ NEW: Import File Validator for server-side validation
 import { validateFileMetadata } from '../../../utils/file-validator.js';
 
+// ✅ NEW: Import Webhook utilities (optional webhook support)
+import { generateWebhookId, generateWebhookSecret } from '../../../utils/webhook/signature.js';
+import { enqueueWebhook } from '../../../services/webhook/queue-manager.js';
+import { supabaseAdmin } from '../../../config/supabase.js';
+
 /**
  * Generate signed upload URL for Supabase Storage
  * NOW WITH <200ms RESPONSE TIME! 🚀
@@ -223,10 +228,10 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         // ✅ NEW: VALIDATION: Server-side file validation (magic bytes from client)
         // CRITICAL: Client reads first 8 bytes and sends to backend - files NEVER hit backend!
         const { magicBytes, validation } = req.body;
-        
+
         if (validation || magicBytes) {
             console.log(`[${requestId}] 🔍 Running server-side file validation...`);
-            
+
             const validationResult = validateFileMetadata({
                 filename,
                 contentType,
@@ -330,6 +335,58 @@ export const generateSupabaseSignedUrl = async (req, res) => {
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, redis:${redisTime}ms, quota:${quotaTime}ms, bucket:${bucketTime}ms, operation:${operationTime}ms)`);
 
+        // ✅ NEW: WEBHOOK CREATION (Optional - same pattern as R2)
+        let webhookResult = null;
+        const { webhook } = req.body;
+
+        if (webhook && webhook.url) {
+            console.log(`[${requestId}] 🔗 Creating webhook for ${filename}...`);
+
+            try {
+                const webhookId = generateWebhookId();
+                const webhookSecret = webhook.secret || generateWebhookSecret();
+
+                const { data: insertedWebhook, error: insertError } = await supabaseAdmin.from('upload_webhooks').insert({
+                    id: webhookId,
+                    user_id: userId,
+                    api_key_id: apiKey,
+                    webhook_url: webhook.url,
+                    webhook_secret: webhookSecret,
+                    trigger_mode: webhook.trigger || 'manual',
+                    provider: 'SUPABASE',
+                    bucket: targetBucket,
+                    file_key: uniqueFilename,
+                    filename: filename,
+                    content_type: contentType,
+                    file_size: fileSize,
+                    etag: null,
+                    status: 'pending',
+                    metadata: webhook.metadata || {}
+                }).select().single();
+
+                if (insertError) {
+                    console.error(`[${requestId}] ⚠️ Webhook DB insert failed:`, insertError.message);
+                } else {
+                    webhookResult = {
+                        webhookId,
+                        webhookSecret,
+                        triggerMode: webhook.trigger || 'manual'
+                    };
+                    console.log(`[${requestId}] ✅ Webhook created: ${webhookId}`);
+
+                    // ✅ Queue webhook for auto-trigger mode (worker will process)
+                    if ((webhook.trigger || 'manual') === 'auto') {
+                        console.log(`[${requestId}] 📤 Enqueueing webhook for auto-trigger...`);
+                        await enqueueWebhook(webhookId, insertedWebhook, 0);
+                        console.log(`[${requestId}] ✅ Webhook enqueued to Redis`);
+                    }
+                }
+            } catch (webhookError) {
+                console.error(`[${requestId}] ⚠️ Webhook creation failed:`, webhookError.message);
+                // Continue without webhook - don't fail the entire request
+            }
+        }
+
         // SUCCESS RESPONSE
         res.status(200).json({
             success: true,
@@ -368,7 +425,9 @@ export const generateSupabaseSignedUrl = async (req, res) => {
                     quota: quotaCheck.layer === 'redis' || quotaCheck.layer === 'memory',
                     bucket: bucketCheck.layer === 'redis' || bucketCheck.layer === 'memory'
                 }
-            }
+            },
+            // ✅ NEW: Webhook Result (only if webhook was requested)
+            ...(webhookResult && { webhook: webhookResult })
         });
 
     } catch (error) {

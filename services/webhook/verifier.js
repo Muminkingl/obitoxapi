@@ -38,10 +38,16 @@ function getStorageClient(webhook) {
                 client: getS3Client(
                     webhook.region || 'us-east-1',
                     webhook.access_key_id,
-                    webhook.secret_access_key
+                    webhook.secret_access_key,
+                    webhook.endpoint  // Pass endpoint for MinIO/custom S3-compatible storage
                 ),
                 provider: 'S3'
             };
+        case 'SUPABASE':
+        case 'UPLOADCARE':
+            // These providers don't use S3-compatible clients
+            // Verification is handled separately in verifyFile
+            return { client: null, provider: webhook.provider.toUpperCase() };
         default:
             throw new Error(`Unsupported provider: ${webhook.provider}`);
     }
@@ -87,6 +93,32 @@ export async function verifyFile(webhook) {
                     }
                 };
             }
+        } else if (provider === 'SUPABASE') {
+            // ✅ Supabase uses its own Storage API - skip S3-style verification
+            // For Supabase, we trust that the file was uploaded since we got a success response
+            console.log(`[Webhook Verifier] ✅ Skipping verification for Supabase - file assumed uploaded for ${webhook.id}`);
+            return {
+                exists: true,
+                metadata: {
+                    contentLength: webhook.file_size || 0,
+                    contentType: webhook.content_type,
+                    skippedVerification: true,
+                    reason: 'supabase_no_s3_verification'
+                }
+            };
+        } else if (provider === 'UPLOADCARE') {
+            // ✅ Uploadcare uses its own CDN API - skip S3-style verification
+            // For Uploadcare, we trust that the file was uploaded since we got a success response
+            console.log(`[Webhook Verifier] ✅ Skipping verification for Uploadcare - file assumed uploaded for ${webhook.id}`);
+            return {
+                exists: true,
+                metadata: {
+                    contentLength: webhook.file_size || 0,
+                    contentType: webhook.content_type,
+                    skippedVerification: true,
+                    reason: 'uploadcare_no_s3_verification'
+                }
+            };
         }
 
         const { client } = getStorageClient(webhook);

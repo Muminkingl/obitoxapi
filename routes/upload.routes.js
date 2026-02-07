@@ -89,6 +89,9 @@ import { getS3Metadata } from '../controllers/providers/s3/s3.metadata.js';
 // ✅ NEW: Import S3 CORS controllers (Tier 1 Feature #2 - Developer Pain Point!)
 import { setupS3BucketCors, verifyS3BucketCors } from '../middlewares/cors.middleware.js';
 
+// ✅ NEW: Import S3 Batch controller
+import { generateS3BatchSignedUrls } from '../controllers/providers/s3/s3.batch-signed-url.js';
+
 // ✅ NEW: Import R2 CORS controllers (S3-compatible API)
 import { setupR2BucketCors, verifyR2BucketCors } from '../middlewares/cors.middleware.js';
 
@@ -232,6 +235,11 @@ router.post('/s3/cors/verify', validateApiKey, unifiedRateLimitMiddleware, verif
 
 // Generate signed URL for S3 upload (multi-region + storage classes + SSE-S3)
 router.post('/s3/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateS3SignedUrl);
+
+// ===== AWS S3 BATCH OPERATIONS =====
+
+// Generate batch signed URLs (up to 100 files)
+router.post('/s3/batch-signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateS3BatchSignedUrls);
 
 // ===== AWS S3 MULTIPART ROUTES (Phase 2C: Large Files >100MB) =====
 

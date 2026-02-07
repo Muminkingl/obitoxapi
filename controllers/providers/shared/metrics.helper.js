@@ -1,18 +1,17 @@
 /**
- * Request Metrics Helper (PRODUCTION-GRADE v4)
+ * Request Metrics Helper (v5 - SIMPLIFIED)
  * 
  * 🚀 OPTIMIZATIONS:
  * - Single pipeline per request (1 round-trip to Redis)
- * - Comprehensive error handling (no user-facing failures)
- * - Atomic operations (all-or-nothing)
+ * - Tracks ONLY request counts (no file sizes - files never hit server)
  * - Graceful degradation (continues even if Redis fails)
- * - Performance monitoring built-in
  * 
  * PERFORMANCE:
- * - ~20 Redis ops per request in single pipeline
- * - ~2-5ms latency (local Redis)
- * - ~10-20ms latency (Redis Cloud)
- * - Zero user-facing impact if Redis fails
+ * - ~8 Redis ops per request in single pipeline
+ * - ~2-5ms latency
+ * 
+ * NOTE: We only track request counts since files never hit our server.
+ * File size tracking is meaningless for presigned URL architecture.
  */
 
 import { getRedis } from '../../../config/redis.js';
@@ -28,17 +27,21 @@ let lastFailureTime = null;
 /**
  * Update all request metrics in a single atomic operation
  * 
+ * NOTE: We only track total_requests and upload_count.
+ * Success/failed tracking removed as every API request generates a signed URL successfully.
+ * File size tracking removed as files never hit our server.
+ * 
  * @param {string} apiKeyId - API key UUID
  * @param {string} userId - User UUID
- * @param {string} provider - Provider name (vercel, aws, cloudinary, etc)
- * @param {boolean} success - Whether request succeeded
- * @param {Object} additionalData - { fileSize, fileType, etc }
+ * @param {string} provider - Provider name (r2, s3, uploadcare, etc)
+ * @param {boolean} success - Ignored (kept for interface compatibility)
+ * @param {Object} additionalData - Ignored (fileSize not tracked)
  */
 export const updateRequestMetrics = async (
   apiKeyId, 
   userId, 
   provider, 
-  success, 
+  success = true, 
   additionalData = {}
 ) => {
   const startTime = Date.now();
@@ -69,97 +72,62 @@ export const updateRequestMetrics = async (
 
     // ═══════════════════════════════════════════════════════
     // SINGLE PIPELINE - All operations in one round-trip
+    // We ONLY track request counts (no file sizes)
     // ═══════════════════════════════════════════════════════
     
     const pipeline = redis.pipeline();
     const now = Date.now();
     const today = new Date().toISOString().split('T')[0];
-    const fileSize = success ? (additionalData.fileSize || 0) : 0;
 
     // ───────────────────────────────────────────────────────
-    // 1. API Key Real-time Metrics
+    // 1. API Key Real-time Metrics (request count only)
     // ───────────────────────────────────────────────────────
     const apiKeyKey = `metrics:apikey:${apiKeyId}`;
     
     pipeline.hincrby(apiKeyKey, 'total_requests', 1);
-    
-    if (success) {
-      pipeline.hincrby(apiKeyKey, 'successful_requests', 1);
-      pipeline.hincrby(apiKeyKey, 'total_files_uploaded', 1);
-      if (fileSize > 0) {
-        pipeline.hincrby(apiKeyKey, 'total_file_size', fileSize);
-      }
-    } else {
-      pipeline.hincrby(apiKeyKey, 'failed_requests', 1);
-    }
-    
+    pipeline.hincrby(apiKeyKey, 'total_files_uploaded', 1);
     pipeline.hset(apiKeyKey, 'last_used_at', now);
     pipeline.expire(apiKeyKey, METRICS_TTL);
 
     // ───────────────────────────────────────────────────────
-    // 2. Provider Real-time Metrics
+    // 2. Provider Real-time Metrics (upload count only)
     // ───────────────────────────────────────────────────────
     if (provider) {
       const providerKey = `metrics:provider:${apiKeyId}:${provider}`;
       
-      // Store minimal metadata (not redundant with key)
       if (userId) {
         pipeline.hset(providerKey, 'user_id', userId);
       }
       
-      if (success) {
-        pipeline.hincrby(providerKey, 'upload_count', 1);
-        if (fileSize > 0) {
-          pipeline.hincrby(providerKey, 'total_file_size', fileSize);
-        }
-      }
-      
+      pipeline.hincrby(providerKey, 'upload_count', 1);
       pipeline.hset(providerKey, 'last_used_at', now);
       pipeline.expire(providerKey, METRICS_TTL);
     }
 
     // ───────────────────────────────────────────────────────
-    // 3. Daily API Key Metrics (for historical analytics)
+    // 3. Daily API Key Metrics (request count only)
     // ───────────────────────────────────────────────────────
     const dailyApiKeyKey = `daily:${today}:apikey:${apiKeyId}`;
     
-    // Store user_id only (api_key_id is in the key)
     if (userId) {
       pipeline.hset(dailyApiKeyKey, 'user_id', userId);
     }
     
     pipeline.hincrby(dailyApiKeyKey, 'total_requests', 1);
-    
-    if (success) {
-      pipeline.hincrby(dailyApiKeyKey, 'successful_requests', 1);
-      pipeline.hincrby(dailyApiKeyKey, 'total_files_uploaded', 1);
-      if (fileSize > 0) {
-        pipeline.hincrby(dailyApiKeyKey, 'total_file_size', fileSize);
-      }
-    } else {
-      pipeline.hincrby(dailyApiKeyKey, 'failed_requests', 1);
-    }
-    
+    pipeline.hincrby(dailyApiKeyKey, 'total_files_uploaded', 1);
     pipeline.expire(dailyApiKeyKey, DAILY_TTL);
 
     // ───────────────────────────────────────────────────────
-    // 4. Daily Provider Metrics
+    // 4. Daily Provider Metrics (upload count only)
     // ───────────────────────────────────────────────────────
     if (provider) {
       const dailyProviderKey = `daily:${today}:provider:${apiKeyId}:${provider}`;
       
-      // Store user_id only (rest is in key)
       if (userId) {
         pipeline.hset(dailyProviderKey, 'user_id', userId);
       }
       
-      if (success) {
-        pipeline.hincrby(dailyProviderKey, 'upload_count', 1);
-        if (fileSize > 0) {
-          pipeline.hincrby(dailyProviderKey, 'total_file_size', fileSize);
-        }
-      }
-      
+      pipeline.hincrby(dailyProviderKey, 'upload_count', 1);
       pipeline.expire(dailyProviderKey, DAILY_TTL);
     }
 

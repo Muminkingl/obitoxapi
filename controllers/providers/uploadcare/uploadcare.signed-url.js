@@ -14,6 +14,9 @@ import {
     generateUploadcareFilename
 } from './uploadcare.helpers.js';
 
+// ✅ NEW: Import File Validator for server-side validation
+import { validateFileMetadata } from '../../../utils/file-validator.js';
+
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkRedisRateLimit } from './cache/redis-cache.js';
@@ -23,6 +26,11 @@ import { checkUserQuota } from '../shared/analytics.new.js';
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+
+// ✅ NEW: Import Webhook utilities (optional webhook support)
+import { generateWebhookId, generateWebhookSecret } from '../../../utils/webhook/signature.js';
+import { enqueueWebhook } from '../../../services/webhook/queue-manager.js';
+import { supabaseAdmin } from '../../../config/supabase.js';
 
 /**
  * Generate signed upload URL for Uploadcare
@@ -105,6 +113,43 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
         }
 
+        // ✅ NEW: VALIDATION: Server-side file validation (magic bytes from client)
+        // CRITICAL: Client reads first 8 bytes and sends to backend - files NEVER hit backend!
+        const { magicBytes, validation } = req.body;
+
+        if (validation || magicBytes) {
+            console.log(`[${requestId}] 🔍 Running server-side file validation...`);
+
+            const validationResult = validateFileMetadata({
+                filename,
+                contentType,
+                fileSize: fileSize || 0,
+                magicBytes,
+                validation: validation || {}
+            });
+
+            if (!validationResult.valid) {
+                console.log(`[${requestId}] ❌ Validation failed: ${validationResult.errors?.length} errors`);
+                updateRequestMetrics(apiKeyId, userId, 'uploadcare', false).catch(() => { });
+
+                return res.status(400).json({
+                    success: false,
+                    provider: 'uploadcare',
+                    error: 'VALIDATION_FAILED',
+                    message: 'File validation failed',
+                    validation: validationResult,
+                    checks: validationResult.checks,
+                    errors: validationResult.errors,
+                    warnings: validationResult.warnings
+                });
+            }
+
+            console.log(`[${requestId}] ✅ Validation passed`);
+            if (validationResult.detectedMimeType) {
+                console.log(`[${requestId}]    detected type: ${validationResult.detectedMimeType}`);
+            }
+        }
+
         // FAST VALIDATION
         const validationStart = Date.now();
         const fileValidation = validateFileForUploadcare(filename, contentType, fileSize);
@@ -133,6 +178,58 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             .catch(() => { });
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
+
+        // ✅ NEW: WEBHOOK CREATION (Optional - same pattern as R2/Supabase)
+        let webhookResult = null;
+        const { webhook } = req.body;
+
+        if (webhook && webhook.url) {
+            console.log(`[${requestId}] 🔗 Creating webhook for ${filename}...`);
+
+            try {
+                const webhookId = generateWebhookId();
+                const webhookSecret = webhook.secret || generateWebhookSecret();
+
+                const { data: insertedWebhook, error: insertError } = await supabaseAdmin.from('upload_webhooks').insert({
+                    id: webhookId,
+                    user_id: userId,
+                    api_key_id: apiKeyId,
+                    webhook_url: webhook.url,
+                    webhook_secret: webhookSecret,
+                    trigger_mode: webhook.trigger || 'manual',
+                    provider: 'UPLOADCARE',
+                    bucket: 'uploadcare-cdn',  // Uploadcare doesn't use buckets, but we need a value
+                    file_key: uniqueFilename,
+                    filename: filename,
+                    content_type: contentType,
+                    file_size: fileSize || 0,
+                    etag: null,
+                    status: 'pending',
+                    metadata: webhook.metadata || {}
+                }).select().single();
+
+                if (insertError) {
+                    console.error(`[${requestId}] ⚠️ Webhook DB insert failed:`, insertError.message);
+                } else {
+                    webhookResult = {
+                        webhookId,
+                        webhookSecret,
+                        triggerMode: webhook.trigger || 'manual'
+                    };
+                    console.log(`[${requestId}] ✅ Webhook created: ${webhookId}`);
+
+                    // ✅ Queue webhook for auto-trigger mode (worker will process)
+                    if ((webhook.trigger || 'manual') === 'auto') {
+                        console.log(`[${requestId}] 📤 Enqueueing webhook for auto-trigger...`);
+                        await enqueueWebhook(webhookId, insertedWebhook, 0);
+                        console.log(`[${requestId}] ✅ Webhook enqueued to Redis`);
+                    }
+                }
+            } catch (webhookError) {
+                console.error(`[${requestId}] ⚠️ Webhook creation failed:`, webhookError.message);
+                // Continue without webhook - don't fail the entire request
+            }
+        }
 
         // Success response
         res.status(200).json({
@@ -168,7 +265,9 @@ export const generateUploadcareSignedUrl = async (req, res) => {
                     validation: `${validationTime}ms`,
                     operation: `${operationTime}ms`
                 }
-            }
+            },
+            // ✅ NEW: Webhook Result (only if webhook was requested)
+            ...(webhookResult && { webhook: webhookResult })
         });
 
     } catch (error) {

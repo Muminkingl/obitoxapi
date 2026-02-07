@@ -183,23 +183,31 @@ export class SupabaseProvider extends BaseProvider<
      * @throws Error if deletion fails
      */
     async delete(options: SupabaseDeleteOptions): Promise<void> {
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: SupabaseDeleteOptions = {
+            ...options,
+            supabaseUrl: options.supabaseUrl || this.config.url || '',
+            supabaseToken: options.supabaseToken || this.config.token || '',
+            bucket: options.bucket || this.config.bucket || '',
+        };
+
         // Validate required fields
-        this.validateRequiredFields(options, ['fileUrl', 'supabaseUrl', 'supabaseToken', 'bucket']);
+        this.validateRequiredFields(mergedOptions, ['fileUrl', 'supabaseUrl', 'supabaseToken', 'bucket']);
 
         try {
             // Call ObitoX API to delete the file
             await this.makeRequest('/api/v1/upload/supabase/delete', {
                 method: 'POST',  // Server uses POST for Supabase delete
                 body: JSON.stringify({
-                    fileUrl: options.fileUrl,
+                    fileUrl: mergedOptions.fileUrl,
                     provider: 'SUPABASE',
-                    supabaseUrl: options.supabaseUrl,
-                    supabaseToken: options.supabaseToken,
-                    bucket: options.bucket,
+                    supabaseUrl: mergedOptions.supabaseUrl,
+                    supabaseToken: mergedOptions.supabaseToken,
+                    bucket: mergedOptions.bucket,
                 }),
             });
 
-            console.log(`✅ Deleted Supabase file: ${options.fileUrl}`);
+            console.log(`✅ Deleted Supabase file: ${mergedOptions.fileUrl}`);
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -217,35 +225,43 @@ export class SupabaseProvider extends BaseProvider<
      * @returns Promise resolving to the download URL
      */
     async download(options: SupabaseDownloadOptions): Promise<string> {
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: SupabaseDownloadOptions = {
+            ...options,
+            supabaseUrl: options.supabaseUrl || this.config.url || '',
+            supabaseToken: options.supabaseToken || this.config.token || '',
+            bucket: options.bucket || this.config.bucket || '',
+        };
+
         // For public buckets, we can construct the URL with just supabaseUrl
-        if (options.supabaseUrl && options.bucket && options.filename && !options.supabaseToken) {
+        if (mergedOptions.supabaseUrl && mergedOptions.bucket && mergedOptions.filename && !mergedOptions.supabaseToken) {
             // Construct public URL directly (no API call needed)
-            return `${options.supabaseUrl}/storage/v1/object/public/${options.bucket}/${options.filename}`;
+            return `${mergedOptions.supabaseUrl}/storage/v1/object/public/${mergedOptions.bucket}/${mergedOptions.filename}`;
         }
 
         // If we have a fileUrl, return it directly
-        if (!options.supabaseUrl || !options.supabaseToken) {
-            if (options.fileUrl) {
-                return options.fileUrl;
+        if (!mergedOptions.supabaseUrl || !mergedOptions.supabaseToken) {
+            if (mergedOptions.fileUrl) {
+                return mergedOptions.fileUrl;
             }
             throw new Error('Cannot generate download URL: missing supabaseUrl and supabaseToken (or provide fileUrl)');
         }
 
         // Validate required fields for signed URL generation
-        this.validateRequiredFields(options, ['supabaseUrl', 'supabaseToken', 'bucket']);
+        this.validateRequiredFields(mergedOptions, ['supabaseUrl', 'supabaseToken', 'bucket']);
 
         try {
             // Call ObitoX API to get download URL (for private buckets)
             const response = await this.makeRequest<{ success: boolean; data: { downloadUrl: string } }>('/api/v1/upload/supabase/download', {
                 method: 'POST',
                 body: JSON.stringify({
-                    filename: options.filename,
-                    fileUrl: options.fileUrl,
+                    filename: mergedOptions.filename,
+                    fileUrl: mergedOptions.fileUrl,
                     provider: 'SUPABASE',
-                    supabaseUrl: options.supabaseUrl,
-                    supabaseToken: options.supabaseToken,
-                    bucket: options.bucket,
-                    expiresIn: options.expiresIn || 3600,
+                    supabaseUrl: mergedOptions.supabaseUrl,
+                    supabaseToken: mergedOptions.supabaseToken,
+                    bucket: mergedOptions.bucket,
+                    expiresIn: mergedOptions.expiresIn || 3600,
                 }),
             });
 
@@ -263,9 +279,16 @@ export class SupabaseProvider extends BaseProvider<
      * @param options - List buckets options
      * @returns Promise resolving to array of bucket information
      */
-    async listBuckets(options: SupabaseListBucketsOptions): Promise<SupabaseBucketInfo[]> {
+    async listBuckets(options: SupabaseListBucketsOptions = {} as SupabaseListBucketsOptions): Promise<SupabaseBucketInfo[]> {
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: SupabaseListBucketsOptions = {
+            ...options,
+            supabaseUrl: options.supabaseUrl || this.config.url || '',
+            supabaseToken: options.supabaseToken || this.config.token || '',
+        };
+
         // Validate required fields
-        this.validateRequiredFields(options, ['supabaseUrl', 'supabaseToken']);
+        this.validateRequiredFields(mergedOptions, ['supabaseUrl', 'supabaseToken']);
 
         try {
             const response = await this.makeRequest<{ data: SupabaseBucketInfo[] }>(
@@ -274,8 +297,8 @@ export class SupabaseProvider extends BaseProvider<
                     method: 'POST',
                     body: JSON.stringify({
                         provider: 'SUPABASE',
-                        supabaseUrl: options.supabaseUrl,
-                        supabaseToken: options.supabaseToken,
+                        supabaseUrl: mergedOptions.supabaseUrl,
+                        supabaseToken: mergedOptions.supabaseToken,
                     }),
                 }
             );
@@ -313,6 +336,8 @@ export class SupabaseProvider extends BaseProvider<
                 bucket: options.bucket,
                 expiresIn: options.expiresIn || 3600,
                 fileSize: options.fileSize,
+                // ✅ Include webhook options if provided
+                ...(options.webhook && { webhook: options.webhook })
             }),
         });
     }

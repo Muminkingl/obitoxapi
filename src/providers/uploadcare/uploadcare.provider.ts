@@ -26,6 +26,7 @@ import type {
     UploadcareConfig,
 } from '../../types/uploadcare.types.js';
 import type { UploadResponse, ApiResponse } from '../../types/common.js';
+import { validateFile, readMagicBytes } from '../../utils/file-validator.js';
 
 /**
  * Uploadcare CDN Provider
@@ -102,8 +103,14 @@ export class UploadcareProvider extends BaseProvider<
         this.validateRequiredFields(mergedOptions, ['uploadcarePublicKey']);
 
         try {
+            // ==================== READ MAGIC BYTES ====================
+            // Read magic bytes for server-side validation (skip for large files >100MB)
+            const magicBytes = file.size <= 100 * 1024 * 1024
+                ? await readMagicBytes(file)
+                : null;
+
             // Step 1: Get signed URL from ObitoX API
-            const signedUrlResult = await this.getSignedUrl(filename, contentType, mergedOptions);
+            const signedUrlResult = await this.getSignedUrl(filename, contentType, magicBytes, mergedOptions);
 
             // Step 2: Upload directly to Uploadcare
             const uploadResult = await this.uploadToUploadcare(
@@ -189,8 +196,15 @@ export class UploadcareProvider extends BaseProvider<
      * @throws Error if deletion fails
      */
     async delete(options: UploadcareDeleteOptions): Promise<void> {
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: UploadcareDeleteOptions = {
+            ...options,
+            uploadcarePublicKey: options.uploadcarePublicKey || this.config.publicKey || '',
+            uploadcareSecretKey: options.uploadcareSecretKey || this.config.secretKey || '',
+        };
+
         // Validate required fields
-        this.validateRequiredFields(options, [
+        this.validateRequiredFields(mergedOptions, [
             'fileUrl',
             'uploadcarePublicKey',
             'uploadcareSecretKey',
@@ -201,14 +215,14 @@ export class UploadcareProvider extends BaseProvider<
             await this.makeRequest('/api/v1/upload/uploadcare/delete', {
                 method: 'DELETE',
                 body: JSON.stringify({
-                    fileUrl: options.fileUrl,
+                    fileUrl: mergedOptions.fileUrl,
                     provider: 'UPLOADCARE',
-                    uploadcarePublicKey: options.uploadcarePublicKey,
-                    uploadcareSecretKey: options.uploadcareSecretKey,
+                    uploadcarePublicKey: mergedOptions.uploadcarePublicKey,
+                    uploadcareSecretKey: mergedOptions.uploadcareSecretKey,
                 }),
             });
 
-            console.log(`✅ Deleted Uploadcare file: ${options.fileUrl}`);
+            console.log(`✅ Deleted Uploadcare file: ${mergedOptions.fileUrl}`);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
             throw new Error(`Failed to delete Uploadcare file: ${errorMessage}`);
@@ -224,13 +238,20 @@ export class UploadcareProvider extends BaseProvider<
      * @returns Promise resolving to the CDN URL
      */
     async download(options: UploadcareDownloadOptions): Promise<string> {
+        // Merge stored config with options (Provider Instance Pattern)
+        const mergedOptions: UploadcareDownloadOptions = {
+            ...options,
+            uploadcarePublicKey: options.uploadcarePublicKey || this.config.publicKey || '',
+            uploadcareSecretKey: options.uploadcareSecretKey || this.config.secretKey || '',
+        };
+
         // Validate required field
-        this.validateRequiredFields(options, ['fileUrl']);
+        this.validateRequiredFields(mergedOptions, ['fileUrl']);
 
         // Uploadcare CDN files are publicly accessible by default
         // Just return the fileUrl directly - no API call needed!
-        if (options.fileUrl && options.fileUrl.includes('ucarecdn.com')) {
-            return options.fileUrl;
+        if (mergedOptions.fileUrl && mergedOptions.fileUrl.includes('ucarecdn.com')) {
+            return mergedOptions.fileUrl;
         }
 
         // Fallback: If fileUrl doesn't look like Uploadcare URL, try API call
@@ -240,10 +261,10 @@ export class UploadcareProvider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        fileUrl: options.fileUrl,
+                        fileUrl: mergedOptions.fileUrl,
                         provider: 'UPLOADCARE',
-                        uploadcarePublicKey: options.uploadcarePublicKey,
-                        uploadcareSecretKey: options.uploadcareSecretKey,
+                        uploadcarePublicKey: mergedOptions.uploadcarePublicKey,
+                        uploadcareSecretKey: mergedOptions.uploadcareSecretKey,
                     }),
                 }
             );
@@ -422,6 +443,7 @@ export class UploadcareProvider extends BaseProvider<
     private async getSignedUrl(
         filename: string,
         contentType: string,
+        magicBytes: number[] | null,
         options: Omit<UploadcareUploadOptions, 'filename' | 'contentType'>
     ): Promise<UploadResponse> {
         return this.makeRequest<UploadResponse>('/api/v1/upload/uploadcare/signed-url', {
@@ -433,6 +455,10 @@ export class UploadcareProvider extends BaseProvider<
                 uploadcarePublicKey: options.uploadcarePublicKey,
                 uploadcareSecretKey: options.uploadcareSecretKey,
                 fileSize: options.fileSize,
+                // ==================== FILE VALIDATION ====================
+                magicBytes,
+                // ✅ Include webhook options if provided
+                ...(options.webhook && { webhook: options.webhook })
             }),
         });
     }

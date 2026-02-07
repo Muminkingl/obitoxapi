@@ -1,8 +1,11 @@
 /**
- * Analytics Controller (v2 - with Redis caching)
+ * Analytics Controller (v3 - Simplified for Presigned URL Architecture)
+ * 
+ * Since files never hit our server (direct upload to providers via presigned URLs),
+ * we track REQUEST COUNTS for quota management, not file transfer metrics.
  * 
  * Uses these tables:
- * - api_keys (running totals)
+ * - api_keys (running totals for request counts)
  * - provider_usage (per-provider running totals)
  * - api_key_usage_daily (daily snapshots)
  * - provider_usage_daily (per-provider daily snapshots)
@@ -49,11 +52,14 @@ const withCache = async (cacheKey, fetchFn) => {
 };
 
 /**
- * Get comprehensive analytics from running totals
+ * Get upload analytics - QUOTA TRACKING ONLY
+ * 
+ * Tracks request counts for quota management.
+ * Note: We cannot track actual file transfer since files upload directly to providers.
  */
 export const getUploadAnalytics = async (req, res) => {
   try {
-    const { provider, startDate, endDate, limit = 100, offset = 0 } = req.query;
+    const { provider, limit = 100, offset = 0 } = req.query;
     const apiKeyId = req.apiKeyId;
 
     if (!apiKeyId) {
@@ -68,10 +74,10 @@ export const getUploadAnalytics = async (req, res) => {
     const cacheKey = `analytics:upload:${apiKeyId}:${provider || 'all'}`;
 
     const { data, fromCache } = await withCache(cacheKey, async () => {
-      // Get API key summary
+      // Get API key summary - QUOTA TRACKING ONLY (request counts)
       const { data: apiKeyData, error: apiKeyError } = await supabaseAdmin
         .from('api_keys')
-        .select('total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded, file_type_counts')
+        .select('total_requests, total_files_uploaded, file_type_counts')
         .eq('id', apiKeyId)
         .single();
 
@@ -80,7 +86,7 @@ export const getUploadAnalytics = async (req, res) => {
       // Get provider usage breakdown
       let providerQuery = supabaseAdmin
         .from('provider_usage')
-        .select('provider, upload_count, total_file_size, last_used_at')
+        .select('provider, upload_count, last_used_at')
         .eq('api_key_id', apiKeyId);
 
       if (provider) {
@@ -91,26 +97,16 @@ export const getUploadAnalytics = async (req, res) => {
       const { data: providerData, error: providerError } = await providerQuery;
       if (providerError) throw providerError;
 
-      // Calculate summary
+      // Calculate summary - QUOTA TRACKING ONLY
       const summary = {
-        totalUploads: apiKeyData?.total_files_uploaded || 0,
         totalRequests: apiKeyData?.total_requests || 0,
-        successfulRequests: apiKeyData?.successful_requests || 0,
-        failedRequests: apiKeyData?.failed_requests || 0,
-        totalBytes: apiKeyData?.total_file_size || 0,
-        averageFileSize: apiKeyData?.total_files_uploaded > 0
-          ? Math.round((apiKeyData?.total_file_size || 0) / apiKeyData.total_files_uploaded)
-          : 0,
-        successRate: apiKeyData?.total_requests > 0
-          ? Math.round((apiKeyData?.successful_requests || 0) / apiKeyData.total_requests * 100)
-          : 0
+        totalFilesUploaded: apiKeyData?.total_files_uploaded || 0
       };
 
-      // Provider breakdown
+      // Provider breakdown - request counts only
       const providerBreakdown = (providerData || []).reduce((acc, p) => {
         acc[p.provider] = {
           uploads: p.upload_count || 0,
-          totalBytes: p.total_file_size || 0,
           lastUsed: p.last_used_at
         };
         return acc;
@@ -148,6 +144,8 @@ export const getUploadAnalytics = async (req, res) => {
 
 /**
  * Get daily usage analytics from daily tables
+ * 
+ * Historical request counts per day for quota trends.
  */
 export const getDailyUsageAnalytics = async (req, res) => {
   try {
@@ -166,10 +164,10 @@ export const getDailyUsageAnalytics = async (req, res) => {
     const cacheKey = `analytics:daily:${apiKeyId}:${startDate || 'none'}:${endDate || 'none'}:${safeLimit}`;
 
     const { data, fromCache } = await withCache(cacheKey, async () => {
-      // Query daily usage table
+      // Query daily usage table - QUOTA TRACKING ONLY (request counts)
       let query = supabaseAdmin
         .from('api_key_usage_daily')
-        .select('usage_date, total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
+        .select('usage_date, total_requests, total_files_uploaded')
         .eq('api_key_id', apiKeyId)
         .order('usage_date', { ascending: false })
         .limit(safeLimit);
@@ -184,15 +182,12 @@ export const getDailyUsageAnalytics = async (req, res) => {
       const { data: dailyData, error } = await query;
       if (error) throw error;
 
-      // Calculate totals for period
+      // Calculate totals for period - QUOTA TRACKING ONLY
       const totals = (dailyData || []).reduce((acc, day) => {
         acc.totalRequests += day.total_requests || 0;
-        acc.successfulRequests += day.successful_requests || 0;
-        acc.failedRequests += day.failed_requests || 0;
-        acc.totalBytes += day.total_file_size || 0;
-        acc.totalUploads += day.total_files_uploaded || 0;
+        acc.totalFilesUploaded += day.total_files_uploaded || 0;
         return acc;
-      }, { totalRequests: 0, successfulRequests: 0, failedRequests: 0, totalBytes: 0, totalUploads: 0 });
+      }, { totalRequests: 0, totalFilesUploaded: 0 });
 
       return {
         daily: dailyData || [],
@@ -224,7 +219,9 @@ export const getDailyUsageAnalytics = async (req, res) => {
 };
 
 /**
- * Get provider usage detailed analytics
+ * Get provider usage detailed analytics - WITH CACHING
+ * 
+ * Tracks request counts per provider by date for quota management.
  */
 export const getProviderUsageAnalytics = async (req, res) => {
   try {
@@ -239,65 +236,80 @@ export const getProviderUsageAnalytics = async (req, res) => {
       });
     }
 
-    // Get running totals by provider
-    let runningQuery = supabaseAdmin
-      .from('provider_usage')
-      .select('provider, upload_count, total_file_size, last_used_at, average_file_size')
-      .eq('api_key_id', apiKeyId);
+    // Build cache key
+    const cacheKey = `analytics:provider:${apiKeyId}:${provider || 'all'}:${startDate || 'none'}:${endDate || 'none'}`;
 
-    if (provider) {
-      runningQuery = runningQuery.eq('provider', provider);
-    }
+    const { data, fromCache } = await withCache(cacheKey, async () => {
+      // Get running totals by provider - request counts only
+      let runningQuery = supabaseAdmin
+        .from('provider_usage')
+        .select('provider, upload_count, last_used_at')
+        .eq('api_key_id', apiKeyId);
 
-    const { data: runningData, error: runningError } = await runningQuery;
-    if (runningError) throw runningError;
-
-    // Get daily breakdown by provider
-    let dailyQuery = supabaseAdmin
-      .from('provider_usage_daily')
-      .select('usage_date, provider, upload_count, total_file_size')
-      .eq('api_key_id', apiKeyId)
-      .order('usage_date', { ascending: false })
-      .limit(90); // Last 90 days
-
-    if (provider) {
-      dailyQuery = dailyQuery.eq('provider', provider);
-    }
-    if (startDate) {
-      dailyQuery = dailyQuery.gte('usage_date', startDate);
-    }
-    if (endDate) {
-      dailyQuery = dailyQuery.lte('usage_date', endDate);
-    }
-
-    const { data: dailyData, error: dailyError } = await dailyQuery;
-    if (dailyError) throw dailyError;
-
-    // Group daily data by provider
-    const dailyByProvider = (dailyData || []).reduce((acc, row) => {
-      if (!acc[row.provider]) {
-        acc[row.provider] = [];
+      if (provider) {
+        runningQuery = runningQuery.eq('provider', provider);
       }
-      acc[row.provider].push({
-        date: row.usage_date,
-        uploads: row.upload_count,
-        bytes: row.total_file_size
-      });
-      return acc;
-    }, {});
+
+      const { data: runningData, error: runningError } = await runningQuery;
+      if (runningError) throw runningError;
+
+      // Get daily breakdown by provider - request counts only
+      let dailyQuery = supabaseAdmin
+        .from('provider_usage_daily')
+        .select('usage_date, provider, upload_count')
+        .eq('api_key_id', apiKeyId)
+        .order('usage_date', { ascending: false })
+        .limit(90); // Last 90 days
+
+      if (provider) {
+        dailyQuery = dailyQuery.eq('provider', provider);
+      }
+      if (startDate) {
+        dailyQuery = dailyQuery.gte('usage_date', startDate);
+      }
+      if (endDate) {
+        dailyQuery = dailyQuery.lte('usage_date', endDate);
+      }
+
+      const { data: dailyData, error: dailyError } = await dailyQuery;
+      if (dailyError) throw dailyError;
+
+      // Group daily data by provider - request counts only
+      const dailyByProvider = (dailyData || []).reduce((acc, row) => {
+        if (!acc[row.provider]) {
+          acc[row.provider] = [];
+        }
+        acc[row.provider].push({
+          date: row.usage_date,
+          requests: row.upload_count
+        });
+        return acc;
+      }, {});
+
+      // Calculate totals
+      const allProviders = (runningData || []).reduce((acc, p) => acc + (p.upload_count || 0), 0);
+      const last30Days = (dailyData || []).reduce((acc, row) => acc + (row.upload_count || 0), 0);
+
+      return {
+        providers: (runningData || []).map(p => ({
+          name: p.provider,
+          totalRequests: p.upload_count || 0,
+          lastUsed: p.last_used_at,
+          dailyTrend: dailyByProvider[p.provider] || []
+        })),
+        totals: {
+          allProviders: allProviders,
+          last30Days: last30Days
+        }
+      };
+    });
+
+    res.set('Cache-Control', 'private, max-age=60');
 
     res.json({
       success: true,
-      data: {
-        providers: (runningData || []).map(p => ({
-          name: p.provider,
-          totalUploads: p.upload_count || 0,
-          totalBytes: p.total_file_size || 0,
-          averageFileSize: p.average_file_size || 0,
-          lastUsed: p.last_used_at,
-          dailyTrend: dailyByProvider[p.provider] || []
-        }))
-      }
+      data,
+      meta: { cached: fromCache }
     });
 
   } catch (error) {
@@ -311,7 +323,9 @@ export const getProviderUsageAnalytics = async (req, res) => {
 };
 
 /**
- * Get file type distribution analytics from api_keys
+ * Get file type distribution analytics - WITH CACHING
+ * 
+ * Tracks MIME types for segmentation/validation purposes.
  */
 export const getFileTypeAnalytics = async (req, res) => {
   try {
@@ -325,43 +339,52 @@ export const getFileTypeAnalytics = async (req, res) => {
       });
     }
 
-    // Get file type counts from api_keys
-    const { data: apiKeyData, error } = await supabaseAdmin
-      .from('api_keys')
-      .select('file_type_counts, total_files_uploaded')
-      .eq('id', apiKeyId)
-      .single();
+    const cacheKey = `analytics:filetypes:${apiKeyId}`;
 
-    if (error) throw error;
+    const { data, fromCache } = await withCache(cacheKey, async () => {
+      // Get file type counts from api_keys
+      const { data: apiKeyData, error } = await supabaseAdmin
+        .from('api_keys')
+        .select('file_type_counts, total_files_uploaded')
+        .eq('id', apiKeyId)
+        .single();
 
-    const fileTypeCounts = apiKeyData?.file_type_counts || {};
-    const totalFiles = apiKeyData?.total_files_uploaded || 0;
+      if (error) throw error;
 
-    // Convert to array with percentages
-    const fileTypes = Object.entries(fileTypeCounts).map(([type, count]) => ({
-      type,
-      count,
-      percentage: totalFiles > 0 ? Math.round((count / totalFiles) * 100) : 0
-    })).sort((a, b) => b.count - a.count);
+      const fileTypeCounts = apiKeyData?.file_type_counts || {};
+      const totalFiles = apiKeyData?.total_files_uploaded || 0;
 
-    // Group by category (image, video, document, etc.)
-    const categories = fileTypes.reduce((acc, ft) => {
-      const category = ft.type.split('/')[0] || 'other';
-      if (!acc[category]) {
-        acc[category] = { count: 0, types: [] };
-      }
-      acc[category].count += ft.count;
-      acc[category].types.push(ft);
-      return acc;
-    }, {});
+      // Convert to array with percentages
+      const fileTypes = Object.entries(fileTypeCounts).map(([type, count]) => ({
+        type,
+        count,
+        percentage: totalFiles > 0 ? Math.round((count / totalFiles) * 100) : 0
+      })).sort((a, b) => b.count - a.count);
 
-    res.json({
-      success: true,
-      data: {
+      // Group by category (image, video, document, etc.)
+      const categories = fileTypes.reduce((acc, ft) => {
+        const category = ft.type.split('/')[0] || 'other';
+        if (!acc[category]) {
+          acc[category] = { count: 0, types: [] };
+        }
+        acc[category].count += ft.count;
+        acc[category].types.push(ft);
+        return acc;
+      }, {});
+
+      return {
         totalFiles,
         fileTypes,
         categories
-      }
+      };
+    });
+
+    res.set('Cache-Control', 'private, max-age=60');
+
+    res.json({
+      success: true,
+      data,
+      meta: { cached: fromCache }
     });
 
   } catch (error) {

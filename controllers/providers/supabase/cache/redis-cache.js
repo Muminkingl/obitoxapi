@@ -284,7 +284,7 @@ async function fetchQuotaFromDatabase(userId) {
     try {
         const { data, error } = await supabaseAdmin
             .from('provider_usage')
-            .select('upload_count, total_file_size')
+            .select('upload_count')
             .eq('api_key_id', userId)
             .eq('provider', 'supabase')
             .single();

@@ -15,7 +15,7 @@
  * @module types/s3
  */
 
-import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, NetworkInfo, ValidationConfig } from './common.js';
+import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, NetworkInfo, ValidationConfig, WebhookConfig } from './common.js';
 
 // ============================================================================
 // S3 Configuration (Provider Instance Pattern)
@@ -64,6 +64,22 @@ export interface S3Config {
      * @default 'us-east-1'
      */
     region?: string;
+
+    /**
+     * Custom S3-compatible endpoint (optional)
+     * Use this for S3-compatible services like MinIO, Cloudflare R2, DigitalOcean Spaces, Backblaze B2, Wasabi, etc.
+     * 
+     * Examples:
+     * - MinIO: 'http://localhost:9000'
+     * - R2: 'https://{accountId}.r2.cloudflarestorage.com'
+     * - DigitalOcean Spaces: 'https://{region}.digitaloceanspaces.com'
+     * - Backblaze B2: 'https://s3.{region}.backblazeb2.com'
+     * - Wasabi: 'https://s3.{region}.wasabisys.com'
+     * - Supabase Storage: 'https://{projectId}.supabase.co/storage/v1/s3'
+     * 
+     * @default undefined (uses standard AWS S3 endpoint)
+     */
+    endpoint?: string;
 
     /**
      * Storage Class
@@ -153,6 +169,17 @@ export interface S3UploadOptions extends BaseUploadOptions {
      * Examples: 'us-west-2', 'eu-west-1', 'ap-southeast-1'
      */
     s3Region?: string;
+
+    /**
+     * Custom S3-compatible endpoint (optional)
+     * Use for S3-compatible services: MinIO, R2, DigitalOcean Spaces, Backblaze B2, Wasabi, etc.
+     * 
+     * Examples:
+     * - MinIO: 'http://localhost:9000'
+     * - R2: 'https://{accountId}.r2.cloudflarestorage.com'
+     * - DigitalOcean Spaces: 'https://{region}.digitaloceanspaces.com'
+     */
+    s3Endpoint?: string;
 
     /**
      * S3 Storage Class (optional)
@@ -245,6 +272,12 @@ export interface S3UploadOptions extends BaseUploadOptions {
      * ```
      */
     validation?: ValidationConfig | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'any' | null;
+
+    /**
+     * Webhook configuration for upload completion notifications
+     * @see WebhookConfig for all available options
+     */
+    webhook?: WebhookConfig;
 }
 
 // ============================================================================
@@ -1008,4 +1041,224 @@ export interface S3CorsVerifyOptions {
     s3SecretKey: string;
     s3Bucket: string;
     s3Region?: string;
+}
+
+// ============================================================================
+// S3 Batch Upload Types
+// ============================================================================
+
+/**
+ * S3 batch upload file descriptor
+ */
+export interface S3BatchFile {
+    /** Filename for each file */
+    filename: string;
+
+    /** MIME type for each file */
+    contentType: string;
+
+    /** File size in bytes (optional) */
+    fileSize?: number;
+}
+
+/**
+ * S3 batch upload options
+ * Upload up to 100 files with validation + smart expiry
+ * 
+ * @example
+ * ```typescript
+ * const options: S3BatchUploadOptions = {
+ *   files: [
+ *     { filename: 'photo1.jpg', contentType: 'image/jpeg', fileSize: 1024000 },
+ *     { filename: 'photo2.jpg', contentType: 'image/jpeg', fileSize: 2048000 }
+ *   ],
+ *   s3AccessKey: 'AKIA...',
+ *   s3SecretKey: 'wJalr...',
+ *   s3Bucket: 'my-uploads',
+ *   s3Region: 'us-east-1',
+ *   // Validation preset
+ *   validation: 'images',
+ *   // Smart expiry
+ *   networkInfo: { effectiveType: '4g' }
+ * };
+ * ```
+ */
+export interface S3BatchUploadOptions {
+    /**
+     * Array of files to upload
+     * Maximum: 100 files per batch
+     */
+    files: S3BatchFile[];
+
+    /** AWS Access Key ID */
+    s3AccessKey: string;
+
+    /** AWS Secret Access Key */
+    s3SecretKey: string;
+
+    /** S3 Bucket name */
+    s3Bucket: string;
+
+    /** AWS Region (optional, default: 'us-east-1') */
+    s3Region?: string;
+
+    /**
+     * Custom S3-compatible endpoint (optional)
+     * For MinIO, R2, DigitalOcean Spaces, Backblaze B2, etc.
+     */
+    s3Endpoint?: string;
+
+    /**
+     * S3 Storage Class (optional)
+     * Default: 'STANDARD'
+     */
+    s3StorageClass?: 'STANDARD' | 'STANDARD_IA' | 'ONEZONE_IA' |
+    'GLACIER_INSTANT_RETRIEVAL' | 'GLACIER_FLEXIBLE_RETRIEVAL' |
+    'GLACIER_DEEP_ARCHIVE' | 'INTELLIGENT_TIERING';
+
+    /**
+     * Server-side encryption type (optional)
+     * Default: 'SSE-S3'
+     */
+    s3EncryptionType?: 'SSE-S3' | 'SSE-KMS';
+
+    /** KMS Key ID for SSE-KMS (optional) */
+    s3KmsKeyId?: string;
+
+    /** CloudFront CDN domain (optional) */
+    s3CloudFrontDomain?: string;
+
+    /** URL expiration time in seconds (optional) */
+    expiresIn?: number;
+
+    // ==================== VALIDATION ====================
+    /**
+     * Validation configuration (optional)
+     * Applied to ALL files in batch
+     */
+    validation?: ValidationConfig | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'any' | null;
+
+    // ==================== SMART EXPIRY ====================
+    /**
+     * Network information for smart presigned URL expiry (optional)
+     * Applied to ALL files in batch
+     */
+    networkInfo?: NetworkInfo | null;
+
+    /**
+     * Buffer multiplier for smart expiry (optional)
+     * Default: 1.5 (50% buffer)
+     * Higher = longer URL validity
+     */
+    bufferMultiplier?: number;
+}
+
+/**
+ * S3 batch upload result for a single file
+ */
+export interface S3BatchUploadResult {
+    /** Request succeeded for this file */
+    success: boolean;
+
+    /** File index in the batch */
+    index: number;
+
+    /** Original filename */
+    originalFilename: string;
+
+    /** Generated S3 object key */
+    uploadFilename?: string;
+
+    /** Presigned PUT URL for upload */
+    uploadUrl?: string;
+
+    /** Public URL after upload */
+    publicUrl?: string;
+
+    /** CloudFront CDN URL (if configured) */
+    cdnUrl?: string;
+
+    /** Content type */
+    contentType?: string;
+
+    /** File size in bytes */
+    fileSize?: number;
+
+    /** URL expiration time in seconds */
+    expiresIn?: number;
+
+    /** URL expiration timestamp */
+    expiresAt?: string;
+
+    /** Smart expiry details (if enabled) */
+    smartExpiry?: {
+        calculatedExpiry: number;
+        estimatedUploadTime: number;
+        networkType: string;
+        bufferTime: number;
+        reasoning: Record<string, any>;
+    };
+
+    /** Storage class */
+    storageClass?: string;
+
+    /** Encryption details */
+    encryption?: {
+        type: string;
+        algorithm: string;
+    };
+
+    /** Error details (if success = false) */
+    error?: string;
+    message?: string;
+}
+
+/**
+ * S3 batch upload response
+ */
+export interface S3BatchUploadResponse {
+    /** Request succeeded */
+    success: boolean;
+
+    /** Provider identifier */
+    provider: 's3';
+
+    /** AWS region */
+    region: string;
+
+    /** Array of results for each file */
+    results: S3BatchUploadResult[];
+
+    /** Summary statistics */
+    summary: {
+        /** Total files in batch */
+        total: number;
+
+        /** Successfully generated URLs */
+        successful: number;
+
+        /** Failed files */
+        failed: number;
+    };
+
+    /** Performance metrics */
+    performance?: {
+        /** Unique request ID */
+        requestId: string;
+
+        /** Total request time */
+        totalTime: string;
+
+        /** Time breakdown */
+        breakdown?: {
+            /** Memory guard check time */
+            memoryGuard: string;
+
+            /** Crypto signing time */
+            cryptoSigning: string;
+
+            /** Average time per file */
+            perFile: string;
+        };
+    };
 }

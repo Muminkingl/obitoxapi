@@ -1,6 +1,7 @@
 /**
- * Supabase Storage Helper Functions
- * Provider-specific utilities for bucket access, rate limiting, quotas, validation
+ * Supabase Storage Helper Functions (v2 - Simplified)
+ * Provider-specific utilities for bucket access, rate limiting, quotas
+ * NOTE: Only tracks request counts. File size tracking removed (files never hit server).
  */
 
 import { supabaseAdmin } from '../../../config/supabase.js';
@@ -9,7 +10,6 @@ import {
     SUPABASE_BUCKET,
     PRIVATE_BUCKET,
     MAX_FILES_PER_USER,
-    MAX_TOTAL_SIZE_PER_USER,
     RATE_LIMIT_PER_MINUTE,
     RATE_LIMIT_PER_HOUR,
     ALLOWED_FILE_TYPES,
@@ -91,7 +91,7 @@ export const checkBucketAccess = async (bucketName, apiKey, operation = 'read', 
 };
 
 /**
- * Check rate limiting
+ * Check rate limiting (request count only)
  */
 export const checkRateLimit = async (apiKey) => {
     try {
@@ -168,55 +168,41 @@ export const checkRateLimit = async (apiKey) => {
 };
 
 /**
- * Check user quota
+ * Check user quota (request count only, no file size)
  */
-export const checkUserQuota = async (apiKey, fileSize = 0) => {
+export const checkUserQuota = async (apiKey) => {
     try {
         const { data: usage, error } = await supabaseAdmin
             .from('provider_usage')
-            .select('upload_count, total_file_size')
+            .select('upload_count')
             .eq('api_key_id', apiKey)
             .eq('provider', 'supabase')
             .single();
 
         if (error && error.code !== 'PGRST116') {
             console.error('Quota check error:', error);
-            return { allowed: true, remaining: { files: MAX_FILES_PER_USER, size: MAX_TOTAL_SIZE_PER_USER } };
+            return { allowed: true, remaining: { files: MAX_FILES_PER_USER } };
         }
 
         const currentFiles = usage?.upload_count || 0;
-        const currentSize = usage?.total_file_size || 0;
-        const newTotalSize = currentSize + fileSize;
 
         if (currentFiles >= MAX_FILES_PER_USER) {
             return {
                 allowed: false,
                 error: 'FILE_LIMIT_EXCEEDED',
                 details: `Maximum ${MAX_FILES_PER_USER} files allowed`,
-                current: { files: currentFiles, size: currentSize }
-            };
-        }
-
-        if (newTotalSize > MAX_TOTAL_SIZE_PER_USER) {
-            return {
-                allowed: false,
-                error: 'SIZE_QUOTA_EXCEEDED',
-                details: `Total size would exceed ${MAX_TOTAL_SIZE_PER_USER / (1024 * 1024)}MB limit`,
-                current: { files: currentFiles, size: currentSize }
+                current: { files: currentFiles }
             };
         }
 
         return {
             allowed: true,
-            remaining: {
-                files: MAX_FILES_PER_USER - currentFiles,
-                size: MAX_TOTAL_SIZE_PER_USER - newTotalSize
-            },
-            current: { files: currentFiles, size: currentSize }
+            remaining: { files: MAX_FILES_PER_USER - currentFiles },
+            current: { files: currentFiles }
         };
     } catch (error) {
         console.error('Quota check error:', error);
-        return { allowed: true, remaining: { files: MAX_FILES_PER_USER, size: MAX_TOTAL_SIZE_PER_USER } };
+        return { allowed: true, remaining: { files: MAX_FILES_PER_USER } };
     }
 };
 
@@ -297,7 +283,7 @@ export const validateSupabaseFile = async (file, apiKey, bucketName = SUPABASE_B
     }
 
     // Quota check
-    const quotaCheck = await checkUserQuota(apiKey, file.size);
+    const quotaCheck = await checkUserQuota(apiKey);
     if (!quotaCheck.allowed) {
         errors.push(`Quota exceeded: ${quotaCheck.details}`);
     }
@@ -353,7 +339,7 @@ export const generateSupabaseFilename = (originalName, apiKey = null) => {
 };
 
 /**
- * Update Supabase metrics
+ * Update Supabase metrics (request count only)
  */
 export const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null, additionalData = {}) => {
     try {
@@ -365,7 +351,7 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
         // Get current values
         const { data: currentData, error: fetchError } = await supabaseAdmin
             .from('api_keys')
-            .select('total_requests, successful_requests, failed_requests, total_file_size, total_files_uploaded')
+            .select('total_requests, total_files_uploaded')
             .eq('id', apiKey)
             .single();
 
@@ -375,20 +361,14 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
         }
 
         const currentTotal = currentData?.total_requests || 0;
-        const currentSuccess = currentData?.successful_requests || 0;
-        const currentFailed = currentData?.failed_requests || 0;
-        const currentFileSize = currentData?.total_file_size || 0;
         const currentFileCount = currentData?.total_files_uploaded || 0;
 
-        // Update api_keys table
+        // Update api_keys table (request count only)
         await supabaseAdmin
             .from('api_keys')
             .update({
                 total_requests: currentTotal + 1,
-                successful_requests: success ? currentSuccess + 1 : currentSuccess,
-                failed_requests: success ? currentFailed : currentFailed + 1,
-                total_file_size: success ? currentFileSize + (additionalData.fileSize || 0) : currentFileSize,
-                total_files_uploaded: success ? currentFileCount + 1 : currentFileCount,
+                total_files_uploaded: currentFileCount + 1,
                 last_used_at: new Date().toISOString(),
                 updated_at: new Date().toISOString()
             })
@@ -396,10 +376,10 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
             .then(() => { })
             .catch(err => console.error('Metrics update error:', err));
 
-        // Update provider usage
+        // Update provider usage (upload count only)
         const { data: providerData, error: providerError } = await supabaseAdmin
             .from('provider_usage')
-            .select('upload_count, total_file_size')
+            .select('upload_count')
             .eq('api_key_id', apiKey)
             .eq('provider', provider)
             .single();
@@ -413,9 +393,8 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
                 .insert({
                     api_key_id: apiKey,
                     provider,
-                    upload_count: success ? 1 : 0,
-                    total_file_size: success ? additionalData.fileSize || 0 : 0,
-                    last_used_at: success ? new Date().toISOString() : null,
+                    upload_count: 1,
+                    last_used_at: new Date().toISOString(),
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString()
                 })
@@ -424,14 +403,12 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
         } else {
             // Update existing
             const currentCount = providerData?.upload_count || 0;
-            const currentSize = providerData?.total_file_size || 0;
 
             await supabaseAdmin
                 .from('provider_usage')
                 .update({
-                    upload_count: success ? currentCount + 1 : currentCount,
-                    total_file_size: success ? currentSize + (additionalData.fileSize || 0) : currentSize,
-                    last_used_at: success ? new Date().toISOString() : providerData.last_used_at,
+                    upload_count: currentCount + 1,
+                    last_used_at: new Date().toISOString(),
                     updated_at: new Date().toISOString()
                 })
                 .eq('api_key_id', apiKey)
