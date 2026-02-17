@@ -10,7 +10,6 @@ import { supabaseAdmin } from '../../../../config/supabase.js';
 
 // Redis key prefixes
 const REDIS_KEYS = {
-    RATE_LIMIT: 'redis_rl',      // Rate limit counters
     QUOTA: 'quota',               // User quotas
     BUCKET: 'bucket',             // Bucket access
     API_KEY: 'api_key'            // API key data
@@ -18,62 +17,11 @@ const REDIS_KEYS = {
 
 // TTL values (seconds)
 const TTL = {
-    RATE_LIMIT: 60,               // 1 minute
     QUOTA: 300,                   // 5 minutes
     BUCKET: 900,                  // 15 minutes
     API_KEY: 3600                 // 1 hour
 };
 
-// Higher limits than memory (allows burst traffic)
-const REDIS_LIMITS = {
-    'signed-url': 200,
-    'upload': 50,
-    'delete': 100,
-    'download': 200,
-    'list': 60,
-    'info': 100
-};
-
-/**
- * Check rate limit in Redis (fallback from memory)
- * @param {string} userId - User ID
- * @param {string} operation - Operation type
- * @returns {Promise<Object>} { allowed, current, limit, resetIn, fallback }
- */
-export async function checkRedisRateLimit(userId, operation) {
-    const key = `${REDIS_KEYS.RATE_LIMIT}:${userId}:${operation}`;
-    const limit = REDIS_LIMITS[operation] || 100;
-
-    try {
-        // Increment counter atomically
-        const current = await redis.incr(key);
-
-        // Set expiry on first increment
-        if (current === 1) {
-            await redis.expire(key, TTL.RATE_LIMIT);
-        }
-
-        // Get TTL
-        const ttl = await redis.ttl(key);
-        const resetIn = ttl > 0 ? ttl * 1000 : TTL.RATE_LIMIT * 1000;
-
-        return {
-            allowed: current <= limit,
-            current,
-            limit,
-            remaining: Math.max(0, limit - current),
-            resetIn,
-            layer: 'redis',
-            fallback: false
-        };
-
-    } catch (error) {
-        console.error('❌ Redis rate limit check failed:', error.message);
-
-        // Fallback to database
-        return await checkDatabaseRateLimit(userId, operation);
-    }
-}
 
 /**
  * Get quota from Redis cache
@@ -227,53 +175,6 @@ export async function warmupRedisCache(userId, userData) {
 // ============================================================================
 // DATABASE FALLBACK FUNCTIONS
 // ============================================================================
-
-/**
- * Check rate limit in database (fallback when Redis fails)
- * @param {string} userId - User ID
- * @param {string} operation - Operation type
- * @returns {Promise<Object>}
- */
-async function checkDatabaseRateLimit(userId, operation) {
-    try {
-        const now = new Date();
-        const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
-
-        const { data, error } = await supabaseAdmin
-            .from('request_logs')
-            .select('id')
-            .eq('api_key_id', userId)
-            .gte('created_at', oneMinuteAgo.toISOString())
-            .limit(REDIS_LIMITS[operation] + 1);
-
-        if (error) throw error;
-
-        const current = data?.length || 0;
-        const limit = REDIS_LIMITS[operation] || 100;
-
-        return {
-            allowed: current < limit,
-            current,
-            limit,
-            remaining: Math.max(0, limit - current),
-            resetIn: 60000,
-            layer: 'database',
-            fallback: true
-        };
-
-    } catch (error) {
-        console.error('❌ Database rate limit check failed:', error.message);
-
-        // Fail open (allow request but log warning)
-        console.warn('⚠️ Both Redis and DB failed - failing open');
-        return {
-            allowed: true,
-            layer: 'fail-open',
-            fallback: true,
-            warning: 'Both Redis and DB unavailable'
-        };
-    }
-}
 
 /**
  * Fetch quota from database

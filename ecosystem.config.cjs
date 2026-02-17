@@ -32,10 +32,10 @@ module.exports = {
             env: {
                 NODE_ENV: 'production'
             },
-            error_file: './logs/audit-worker-error.log',
-            out_file: './logs/audit-worker-out.log',
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             merge_logs: true,
+            out_file: 'NUL',
+            error_file: 'NUL',
             min_uptime: '10s',
             max_restarts: 10,
             restart_delay: 4000
@@ -56,9 +56,33 @@ module.exports = {
             env: {
                 NODE_ENV: 'production'
             },
-            error_file: './logs/metrics-worker-error.log',
-            out_file: './logs/metrics-worker-out.log',
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
+            out_file: 'NUL',
+            error_file: 'NUL',
+            min_uptime: '10s',
+            max_restarts: 10,
+            restart_delay: 4000
+        },
+        // ========================
+        // 🎣 WEBHOOK WORKER (Continuous)
+        // ========================
+        // Processes outgoing webhooks from Redis queue
+        // Scale based on webhook volume
+        {
+            name: 'webhook-worker',
+            script: 'jobs/webhook-worker.js',
+            instances: 2,  // Start with 2 workers
+            exec_mode: 'cluster',
+            autorestart: true,
+            watch: false,
+            max_memory_restart: '300M',
+            env: {
+                NODE_ENV: 'production',
+                WEBHOOK_HEALTH_SERVER: 'false' // Let PM2 handle health checks via process status
+            },
+            log_date_format: 'YYYY-MM-DD HH:mm:ss',
+            out_file: 'NUL',
+            error_file: 'NUL',
             min_uptime: '10s',
             max_restarts: 10,
             restart_delay: 4000
@@ -80,9 +104,9 @@ module.exports = {
             env: {
                 NODE_ENV: 'production'
             },
-            error_file: './logs/daily-rollup-error.log',
-            out_file: './logs/daily-rollup-out.log',
-            log_date_format: 'YYYY-MM-DD HH:mm:ss'
+            log_date_format: 'YYYY-MM-DD HH:mm:ss',
+            out_file: 'NUL',
+            error_file: 'NUL'
         }
     ]
 };

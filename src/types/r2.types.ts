@@ -598,6 +598,16 @@ export interface R2BatchUploadResponse {
     /** Request succeeded */
     success: boolean;
 
+    /** ✅ NEW: Summary object for compatibility */
+    summary?: {
+        /** Total number of files */
+        total: number;
+        /** Number of successful uploads */
+        successful: number;
+        /** Number of failed uploads */
+        failed: number;
+    };
+
     /** Array of upload results for each file */
     urls: Array<{
         /** Index in original request */
@@ -669,6 +679,43 @@ export interface R2BatchUploadResponse {
 
     /** Provider identifier */
     provider: 'r2';
+
+    /** ✅ NEW: Results array (alias for urls) */
+    results?: Array<{
+        index: number;
+        success: boolean;
+        originalFilename?: string;
+        uploadFilename?: string;
+        uploadUrl?: string;
+        publicUrl?: string;
+        contentType?: string;
+        fileSize?: number;
+        expiresIn?: number;
+        expiresAt?: string;
+        smartExpiry?: {
+            calculatedExpiry: number;
+            estimatedUploadTime: number;
+            networkType: string;
+            bufferTime: number;
+            reasoning: {
+                fileSize: string;
+                networkType: string;
+                networkSpeed: string;
+                estimatedUploadTime: string;
+                bufferMultiplier: string;
+                bufferTime: string;
+                finalExpiry: string;
+            };
+        };
+        error?: string;
+        validationErrors?: string[];
+        checks?: {
+            magicBytes: {
+                provided: boolean;
+                detected: boolean;
+            };
+        };
+    }>;
 
     /** ✅ NEW: Errors for failed files */
     errors?: Array<{
@@ -770,10 +817,46 @@ export interface R2AccessTokenResponse {
  */
 export interface R2ListResponse {
     /** Request succeeded */
-    success: true;
+    success: boolean;
 
-    /** Array of files */
-    files: Array<{
+    /** Provider identifier */
+    provider: 'r2';
+
+    /** Response data (nested structure from API) */
+    data?: {
+        /** Bucket name */
+        bucket?: string;
+
+        /** Prefix filter */
+        prefix?: string;
+
+        /** Array of files */
+        files?: Array<{
+            /** Object key (filename) */
+            key: string;
+
+            /** File size in bytes */
+            size: number;
+
+            /** Last modification timestamp */
+            lastModified: string;
+
+            /** ETag (entity tag) */
+            etag: string;
+        }>;
+
+        /** Number of files returned */
+        count?: number;
+
+        /** Whether there are more results */
+        isTruncated?: boolean;
+
+        /** Continuation token for next page (if truncated) */
+        nextContinuationToken?: string;
+    };
+
+    /** Array of files (flat structure for SDK compatibility) */
+    files?: Array<{
         /** Object key (filename) */
         key: string;
 
@@ -788,16 +871,24 @@ export interface R2ListResponse {
     }>;
 
     /** Number of files returned */
-    count: number;
+    count?: number;
 
     /** Whether there are more results */
-    truncated: boolean;
+    truncated?: boolean;
 
     /** Continuation token for next page (if truncated) */
     continuationToken?: string;
 
-    /** Provider identifier */
-    provider: 'r2';
+    /** Bucket name */
+    bucket?: string;
+
+    /** Prefix filter */
+    prefix?: string;
+
+    /** Performance metrics */
+    performance?: {
+        totalTime: string;
+    };
 }
 
 /**
@@ -870,6 +961,14 @@ export interface R2CorsConfigOptions {
      * @example ['https://myapp.com', 'https://www.myapp.com']
      */
     allowedOrigins?: string[];
+
+    /**
+     * Alias for 'allowedOrigins' - shorter property name
+     * These origins will be allowed to make cross-origin requests
+     * 
+     * @example ['https://myapp.com', 'https://www.myapp.com']
+     */
+    origins?: string[];
 
     /**
      * Allowed HTTP methods (optional)

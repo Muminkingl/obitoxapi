@@ -925,6 +925,14 @@ export interface S3CorsConfigOptions {
     allowedOrigins?: string[];
 
     /**
+     * Alias for 'allowedOrigins' - shorter property name
+     * These origins will be allowed to make cross-origin requests
+     * 
+     * @example ['https://myapp.com', 'https://www.myapp.com']
+     */
+    origins?: string[];
+
+    /**
      * Allowed HTTP methods (optional)
      * Default: ['GET', 'PUT', 'POST', 'DELETE', 'HEAD']
      */

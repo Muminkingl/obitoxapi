@@ -19,9 +19,8 @@ import { validateFileMetadata } from '../../../utils/file-validator.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
-import { checkRedisRateLimit } from './cache/redis-cache.js';
 
-// Quota check
+// Quota check (OPT-2: prefer req.quotaChecked from MW2, fallback to Redis)
 import { checkUserQuota } from '../shared/analytics.new.js';
 
 // 🚀 REDIS METRICS: Single source of truth
@@ -78,29 +77,15 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
         }
 
-        // LAYER 2: REDIS RATE LIMIT (5-50ms)
-        const redisStart = Date.now();
-        const redisLimit = await checkRedisRateLimit(userId, 'signed-url');
-        const redisTime = Date.now() - redisStart;
-
-        if (!redisLimit.allowed) {
-            return res.status(429).json({
-                success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                message: 'Rate limit exceeded',
-                layer: redisLimit.layer
-            });
-        }
-
-        // LAYER 3: QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
                 message: 'Monthly quota exceeded',
                 limit: quotaCheck.limit,
-                used: quotaCheck.used
+                used: quotaCheck.current
             });
         }
 
@@ -174,7 +159,7 @@ export const generateUploadcareSignedUrl = async (req, res) => {
         const totalTime = Date.now() - startTime;
 
         // 🚀 SINGLE METRICS CALL (Redis-backed)
-        updateRequestMetrics(apiKeyId, userId, 'uploadcare', true, { fileSize: fileSize || 0 })
+        updateRequestMetrics(apiKeyId, userId, 'uploadcare', true, { fileSize: fileSize || 0, contentType })
             .catch(() => { });
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
@@ -261,7 +246,6 @@ export const generateUploadcareSignedUrl = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    redisCheck: `${redisTime}ms`,
                     validation: `${validationTime}ms`,
                     operation: `${operationTime}ms`
                 }

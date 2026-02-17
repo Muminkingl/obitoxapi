@@ -16,10 +16,11 @@ import {
 } from './uploadcare.config.js';
 import { updateUploadcareMetrics } from './uploadcare.helpers.js';
 
-// Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
-import { checkRedisRateLimit } from './cache/redis-cache.js';
 import redis from '../../../config/redis.js';
+
+// Quota check
+import { checkUserQuota } from '../shared/analytics.new.js';
 
 /**
  * Validate file before upload (fast, synchronous validation)
@@ -59,6 +60,18 @@ export const validateUploadcareFile = async (req, res) => {
                 success: false,
                 error: credValidation.error,
                 message: credValidation.message
+            });
+        }
+
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.current
             });
         }
 
@@ -210,22 +223,7 @@ export const getUploadcareProjectSettings = async (req, res) => {
             });
         }
 
-        // LAYER 2: Redis rate limit
-        const redisStart = Date.now();
-        const redisLimit = await checkRedisRateLimit(userId, 'project-settings');
-        const redisTime = Date.now() - redisStart;
-
-        if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis in ${redisTime}ms`);
-            return res.status(429).json({
-                success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                message: 'Rate limit exceeded',
-                layer: redisLimit.layer
-            });
-        }
-
-        // LAYER 3: Check Redis cache (1-hour TTL)
+        // LAYER 2: Check Redis cache (1-hour TTL)
         const cacheKey = `uc_project:${uploadcarePublicKey}:settings`;
         const cachedSettings = await redis.get(cacheKey);
 
@@ -266,7 +264,7 @@ export const getUploadcareProjectSettings = async (req, res) => {
                 success: false,
                 error: 'SETTINGS_RETRIEVAL_FAILED',
                 message: 'Failed to retrieve project settings',
-                details: errorText
+                details: process.env.NODE_ENV === 'development' ? errorText : null
             });
         }
 
@@ -298,7 +296,7 @@ export const getUploadcareProjectSettings = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    redisCheck: `${redisTime}ms`,
+                    redisCheck: 'skipped (MW2)',
                     settingsRetrieval: `${operationTime}ms`
                 },
                 cached: false
@@ -353,6 +351,18 @@ export const validateUploadcareSvg = async (req, res) => {
             });
         }
 
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.current
+            });
+        }
+
         if (!fileUrl && !uuid) {
             return res.status(400).json({
                 success: false,
@@ -399,7 +409,7 @@ export const validateUploadcareSvg = async (req, res) => {
                 success: false,
                 error: 'FILE_INFO_ERROR',
                 message: 'Failed to get file information',
-                details: errorText
+                details: process.env.NODE_ENV === 'development' ? errorText : null
             });
         }
 

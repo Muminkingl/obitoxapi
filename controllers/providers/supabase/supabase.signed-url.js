@@ -17,12 +17,10 @@ import {
     setMemoryBucketAccess
 } from './cache/memory-guard.js';
 import {
-    checkRedisRateLimit,
     checkBucketAccessRedis
 } from './cache/redis-cache.js';
-
 // NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 
 // 🚀 REDIS METRICS: Use Redis-backed metrics for 70% less DB load
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -111,61 +109,21 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         }
 
         // ========================================================================
-        // LAYER 2: REDIS RATE LIMIT (5-50ms) ⚡
-        // ========================================================================
-        const redisStart = Date.now();
-        const redisLimit = await checkRedisRateLimit(userId, 'signed-url');
-        const redisTime = Date.now() - redisStart;
-
-        if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis limit in ${redisTime}ms`);
-            return res.status(429).json({
-                success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                code: 'REDIS_LIMIT',
-                message: 'Rate limit exceeded',
-                current: redisLimit.current,
-                limit: redisLimit.limit,
-                resetIn: redisLimit.resetIn,
-                layer: redisLimit.layer,
-                timing: {
-                    total: Date.now() - startTime,
-                    memoryGuard: memoryTime,
-                    redisCheck: redisTime
-                }
-            });
-        }
-
-        // ========================================================================
-        // LAYER 3: QUOTA CHECK WITH CACHE (50-100ms) 💰
-        // ========================================================================
-        // ========================================================================
-        // LAYER 3: QUOTA CHECK (Database RPC) 💰
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback) 💰
         // ========================================================================
         const quotaStart = Date.now();
-        const quotaCheck = await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         const quotaTime = Date.now() - quotaStart;
 
         if (!quotaCheck.allowed) {
             console.log(`[${requestId}] ❌ Quota exceeded in ${quotaTime}ms`);
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/supabase/signed-url',
-                method: 'POST',
-                provider: 'supabase',
-                operation: 'signed-url',
-                statusCode: 403,
-                success: false,
-                apiKeyId: apiKey,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+
             return res.status(403).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
                 message: 'Monthly quota exceeded',
                 limit: quotaCheck.limit,
-                used: quotaCheck.used
+                used: quotaCheck.current
             });
         }
 
@@ -197,7 +155,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
                 timing: {
                     total: Date.now() - startTime,
                     memoryGuard: memoryTime,
-                    redisCheck: redisTime,
+                    redisCheck: 0,
                     quotaCheck: quotaTime,
                     bucketCheck: bucketTime
                 }
@@ -313,27 +271,14 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         }).catch(err => console.error('Background metrics error:', err));
 
         // 🚀 REDIS METRICS: Provider usage tracking
-        updateRequestMetrics(apiKey, userId, 'supabase', true, { fileSize: fileSize || 0 })
+        updateRequestMetrics(apiKey, userId, 'supabase', true, { fileSize: fileSize || 0, contentType })
             .catch(() => { });
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/supabase/signed-url',
-            method: 'POST',
-            provider: 'supabase',
-            operation: 'signed-url',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId: apiKey,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+
 
         const totalTime = Date.now() - startTime;
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, redis:${redisTime}ms, quota:${quotaTime}ms, bucket:${bucketTime}ms, operation:${operationTime}ms)`);
+        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, quota:${quotaTime}ms, bucket:${bucketTime}ms, operation:${operationTime}ms)`);
 
         // ✅ NEW: WEBHOOK CREATION (Optional - same pattern as R2)
         let webhookResult = null;
@@ -414,14 +359,14 @@ export const generateSupabaseSignedUrl = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    redisCheck: `${redisTime}ms`,
+                    redisCheck: 'skipped (MW2)',
                     quotaCheck: `${quotaTime}ms`,
                     bucketCheck: `${bucketTime}ms`,
                     supabaseOperation: `${operationTime}ms`
                 },
                 cacheHits: {
                     memory: memCheck.layer === 'memory',
-                    redis: redisLimit.layer === 'redis',
+                    redis: false,
                     quota: quotaCheck.layer === 'redis' || quotaCheck.layer === 'memory',
                     bucket: bucketCheck.layer === 'redis' || bucketCheck.layer === 'memory'
                 }
@@ -444,18 +389,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
             updateRequestMetrics(apiKey, req.userId || apiKey, 'supabase', false)
                 .catch(() => { });
 
-            trackApiUsage({
-                userId: req.userId || apiKey,
-                endpoint: '/api/v1/upload/supabase/signed-url',
-                method: 'POST',
-                provider: 'supabase',
-                operation: 'signed-url',
-                statusCode: 500,
-                success: false,
-                apiKeyId: apiKey,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+
         }
 
         res.status(500).json({

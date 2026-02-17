@@ -43,6 +43,9 @@ import { generateWebhookId, generateWebhookSecret } from '../../../utils/webhook
 import { supabaseAdmin } from '../../../config/supabase.js';
 import { enqueueWebhook } from '../../../services/webhook/queue-manager.js';
 
+// ✅ SECURITY: Encrypt credentials before storing in DB
+import { encryptCredential } from '../../../utils/credential-encryption.js';
+
 /**
  * Generate presigned URL for S3 upload
  * Target Performance: 7-15ms P95
@@ -96,8 +99,8 @@ export const generateS3SignedUrl = async (req, res) => {
             ));
         }
 
-        // LAYER 2: Quota Check
-        const quotaCheck = await checkUserQuota(userId);
+        // LAYER 2: Quota Check (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -124,8 +127,8 @@ export const generateS3SignedUrl = async (req, res) => {
             ));
         }
 
-        // VALIDATION: AWS Region
-        if (!isValidRegion(s3Region)) {
+        // VALIDATION: AWS Region (skip for S3-compatible services with custom endpoint)
+        if (!s3Endpoint && !isValidRegion(s3Region)) {
             const regionError = getInvalidRegionError(s3Region);
             return res.status(400).json({
                 success: false,
@@ -312,8 +315,11 @@ export const generateS3SignedUrl = async (req, res) => {
 
         const totalTime = Date.now() - startTime;
 
-        // 🚀 SINGLE METRICS CALL (Redis-backed)
-        updateRequestMetrics(apiKeyId, userId, 's3', true, { fileSize: fileSize || 0 })
+        // 🚀 SINGLE METRICS CALL (Redis-backed) - includes file type tracking
+        updateRequestMetrics(apiKeyId, userId, 's3', true, { 
+            fileSize: fileSize || 0,
+            contentType: contentType 
+        })
             .catch(() => { });
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (signing: ${signingTime}ms)`);
@@ -345,10 +351,10 @@ export const generateS3SignedUrl = async (req, res) => {
                     etag: null,
                     status: 'pending',
                     metadata: webhook.metadata || {},
-                    // S3 specific credentials for verification
+                    // S3 specific credentials for verification (encrypted at rest)
                     region: s3Region,
-                    access_key_id: s3AccessKey,
-                    secret_access_key: s3SecretKey,
+                    access_key_id: encryptCredential(s3AccessKey),
+                    secret_access_key: encryptCredential(s3SecretKey),
                     endpoint: s3Endpoint  // Custom endpoint for MinIO/LocalStack
                 }).select().single();
 

@@ -69,8 +69,8 @@ export const generateS3DownloadUrl = async (req, res) => {
             ));
         }
 
-        // LAYER 2: Quota Check
-        const quotaCheck = await checkUserQuota(userId);
+        // LAYER 2: Quota Check (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -94,7 +94,7 @@ export const generateS3DownloadUrl = async (req, res) => {
             ));
         }
 
-        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
+        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3Endpoint);
         if (!credValidation.valid) {
             return res.status(400).json({
                 success: false,
@@ -103,7 +103,7 @@ export const generateS3DownloadUrl = async (req, res) => {
             });
         }
 
-        if (!isValidRegion(s3Region)) {
+        if (!s3Endpoint && !isValidRegion(s3Region)) {
             const regionError = getInvalidRegionError(s3Region);
             return res.status(400).json({
                 success: false,

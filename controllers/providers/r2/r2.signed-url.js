@@ -87,8 +87,8 @@ export const generateR2SignedUrl = async (req, res) => {
             ));
         }
 
-        // LAYER 2: User Quota Check
-        const quotaCheck = await checkUserQuota(userId);
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatR2Error(
                 'QUOTA_EXCEEDED',
@@ -249,8 +249,11 @@ export const generateR2SignedUrl = async (req, res) => {
 
         const totalTime = Date.now() - startTime;
 
-        // 🚀 SINGLE METRICS CALL (Redis-backed, non-blocking)
-        updateRequestMetrics(apiKeyId, userId, 'r2', true, { fileSize: fileSize || 0 })
+        // 🚀 SINGLE METRICS CALL (Redis-backed, non-blocking) - includes file type tracking
+        updateRequestMetrics(apiKeyId, userId, 'r2', true, { 
+            fileSize: fileSize || 0,
+            contentType: contentType 
+        })
             .catch(() => { });
 
         // ✅ INCREMENT QUOTA (fire-and-forget, non-blocking)

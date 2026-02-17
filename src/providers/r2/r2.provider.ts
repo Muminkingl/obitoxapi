@@ -436,10 +436,18 @@ export class R2Provider extends BaseProvider<
             // Transform API response to match documented structure
             const transformedResponse: R2BatchUploadResponse = {
                 success: apiResponse.success,
-                urls: apiResponse.results || [],
+                // Include both formats for compatibility
+                summary: {
+                    total: apiResponse.summary?.total || files.length,
+                    successful: successfulUrls.length,
+                    failed: failedUrls.length
+                },
+                // Flat format for easier access
                 total: apiResponse.summary?.total || files.length,
                 successful: successfulUrls.length,
                 failed: failedUrls.length,
+                results: apiResponse.results || [],
+                urls: apiResponse.results || [],
                 provider: 'r2',
                 performance: apiResponse.performance || {
                     totalTime: `${totalTime}ms`,
@@ -465,21 +473,27 @@ export class R2Provider extends BaseProvider<
      * Get download URL for R2 file
      * 
      * Generates a presigned GET URL with configurable expiration.
+     * Uses stored config credentials if not provided in options.
      * 
      * @param options - R2 download options
      * @returns Promise resolving to the download URL
      */
     async getSignedDownloadUrl(options: R2DownloadOptions): Promise<string> {
+        // Use credentials from options or fall back to stored config
+        const credentials = {
+            r2AccessKey: (options as any).r2AccessKey || this.config.accessKey || '',
+            r2SecretKey: (options as any).r2SecretKey || this.config.secretKey || '',
+            r2AccountId: (options as any).r2AccountId || this.config.accountId || '',
+            r2Bucket: (options as any).r2Bucket || this.config.bucket || ''
+        };
+
         const response = await this.makeRequest<R2DownloadResponse>(
             '/api/v1/upload/r2/download-url',
             {
                 method: 'POST',
                 body: JSON.stringify({
                     fileKey: options.fileKey,
-                    r2AccessKey: options.r2AccessKey,
-                    r2SecretKey: options.r2SecretKey,
-                    r2AccountId: options.r2AccountId,
-                    r2Bucket: options.r2Bucket,
+                    ...credentials,
                     expiresIn: options.expiresIn || 3600
                 })
             }
@@ -502,7 +516,7 @@ export class R2Provider extends BaseProvider<
      * @param options - R2 delete options
      * @throws Error if deletion fails
      */
-    async delete(options: { fileUrl: string; r2AccessKey: string; r2SecretKey: string; r2AccountId: string; r2Bucket: string }): Promise<void> {
+    async delete(options: { fileUrl: string; r2AccessKey?: string; r2SecretKey?: string; r2AccountId?: string; r2Bucket?: string }): Promise<void> {
         // Extract file key from URL
         const fileKey = options.fileUrl.split('/').pop()?.split('?')[0];
 
@@ -510,16 +524,21 @@ export class R2Provider extends BaseProvider<
             throw new Error('Invalid R2 file URL');
         }
 
+        // Use credentials from options or fall back to stored config
+        const credentials = {
+            r2AccessKey: options.r2AccessKey || this.config.accessKey || '',
+            r2SecretKey: options.r2SecretKey || this.config.secretKey || '',
+            r2AccountId: options.r2AccountId || this.config.accountId || '',
+            r2Bucket: options.r2Bucket || this.config.bucket || ''
+        };
+
         const response = await this.makeRequest<{ success: boolean }>(
             '/api/v1/upload/r2/delete',
             {
                 method: 'POST',
                 body: JSON.stringify({
                     fileKey,
-                    r2AccessKey: options.r2AccessKey,
-                    r2SecretKey: options.r2SecretKey,
-                    r2AccountId: options.r2AccountId,
-                    r2Bucket: options.r2Bucket
+                    ...credentials
                 })
             }
         );
@@ -566,13 +585,17 @@ export class R2Provider extends BaseProvider<
         options: Omit<R2CorsConfigOptions, 'provider'>
     ): Promise<R2CorsConfigResponse> {
         // Merge stored config with passed options (provider instance pattern)
+        // Ensure both 'origins' and 'allowedOrigins' are passed to API for compatibility
         const mergedOptions = {
             ...options,
             r2AccessKey: (options as any).r2AccessKey || this.config.accessKey,
             r2SecretKey: (options as any).r2SecretKey || this.config.secretKey,
             r2AccountId: (options as any).r2AccountId || this.config.accountId,
             r2Bucket: (options as any).r2Bucket || this.config.bucket,
-            provider: 'R2'
+            provider: 'R2',
+            // Pass both origins and allowedOrigins for API compatibility
+            origins: options.origins || options.allowedOrigins,
+            allowedOrigins: options.allowedOrigins || options.origins
         };
 
         const response = await this.makeRequest<R2CorsConfigResponse>('/api/v1/upload/r2/cors/setup', {
@@ -665,7 +688,27 @@ export class R2Provider extends BaseProvider<
             body: JSON.stringify(mergedOptions)
         });
 
-        return response;
+        // Extract data structure for easier access
+        return {
+            success: response.success,
+            provider: response.provider,
+            files: response.data?.files || [],
+            count: response.data?.count || 0,
+            truncated: response.data?.isTruncated || false,
+            continuationToken: response.data?.nextContinuationToken || undefined,
+            bucket: response.data?.bucket,
+            prefix: response.data?.prefix,
+            performance: response.performance
+        };
+    }
+
+    /**
+     * Alias for listFiles() - shorter method name
+     * @param options - List options
+     * @returns Promise resolving to list response
+     */
+    async list(options: Partial<R2ListOptions> = {}): Promise<R2ListResponse> {
+        return this.listFiles(options as R2ListOptions);
     }
 
     /**
@@ -699,5 +742,84 @@ export class R2Provider extends BaseProvider<
         });
 
         return response.downloadUrl;
+    }
+
+    // ============================================================================
+    // ACCESS TOKENS: JWT Token Generation
+    // ============================================================================
+
+    /**
+     * Generate JWT access token for R2
+     * 
+     * Creates a time-limited JWT token for direct R2 API access.
+     * Useful for client-side uploads without exposing secret key.
+     * 
+     * @param options - Access token options
+     * @returns Promise resolving to access token response
+     */
+    async generateAccessToken(options: R2AccessTokenOptions): Promise<R2AccessTokenResponse> {
+        // Use credentials from options or fall back to stored config
+        const credentials = {
+            r2AccessKeyId: (options as any).r2AccessKeyId || this.config.accessKey || '',
+            r2SecretAccessKey: (options as any).r2SecretAccessKey || this.config.secretKey || '',
+            r2AccountId: (options as any).r2AccountId || this.config.accountId || '',
+            r2Bucket: options.r2Bucket || this.config.bucket || ''
+        };
+
+        const response = await this.makeRequest<R2AccessTokenResponse>(
+            '/api/v1/upload/r2/access-token',
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    ...credentials,
+                    fileKey: options.fileKey,
+                    permissions: options.permissions,
+                    expiresIn: options.expiresIn || 3600
+                })
+            }
+        );
+
+        return response;
+    }
+
+    // ============================================================================
+    // BATCH DELETE: Delete Multiple Files
+    // ============================================================================
+
+    /**
+     * Delete multiple files from R2
+     * 
+     * Deletes up to 1000 files in a single batch operation.
+     * 
+     * @param options - Batch delete options
+     * @returns Promise resolving to batch delete response
+     */
+    async batchDelete(options: R2BatchDeleteOptions): Promise<R2BatchDeleteResponse> {
+        // Support both 'keys' and 'fileKeys' for compatibility
+        const fileKeys = (options as any).keys || options.fileKeys;
+
+        // Use credentials from options or fall back to stored config
+        const credentials = {
+            r2AccessKey: options.r2AccessKey || this.config.accessKey || '',
+            r2SecretKey: options.r2SecretKey || this.config.secretKey || '',
+            r2AccountId: options.r2AccountId || this.config.accountId || '',
+            r2Bucket: options.r2Bucket || this.config.bucket || ''
+        };
+
+        const response = await this.makeRequest<R2BatchDeleteResponse>(
+            '/api/v1/upload/r2/batch/delete',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    keys: fileKeys,
+                    ...credentials
+                })
+            }
+        );
+
+        return response;
     }
 }

@@ -9,10 +9,9 @@ import { updateSupabaseMetrics } from './supabase.helpers.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
-import { checkRedisRateLimit } from './cache/redis-cache.js';
 
 // NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 
 
 /**
@@ -82,18 +81,15 @@ export const downloadSupabaseFile = async (req, res) => {
             });
         }
 
-        // LAYER 2: Redis rate limit
-        const redisStart = Date.now();
-        const redisLimit = await checkRedisRateLimit(userId, 'download');
-        const redisTime = Date.now() - redisStart;
-
-        if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis in ${redisTime}ms`);
-            return res.status(429).json({
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
                 success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                message: 'Rate limit exceeded',
-                layer: redisLimit.layer
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.current
             });
         }
 
@@ -184,35 +180,8 @@ export const downloadSupabaseFile = async (req, res) => {
         // Background metrics update
         updateSupabaseMetrics(apiKey, 'supabase', true, 'DOWNLOAD_SUCCESS').catch(() => { });
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/supabase/download',
-            method: 'POST',
-            provider: 'supabase',
-            operation: 'download',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId: apiKey,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/supabase/download',
-            method: 'POST',
-            provider: 'supabase',
-            operation: 'download',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId: apiKey,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
+
 
         console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
 
@@ -220,55 +189,44 @@ export const downloadSupabaseFile = async (req, res) => {
         res.status(200).json({
             success: true,
             message: 'Download URL generated successfully',
-                data: {
-                    downloadUrl,
-                    filename: targetFilename,
-                    bucket: targetBucket,
-                    provider: 'supabase',
-                    downloadMethod,
-                    isPrivate: isPrivateBucket,
-                    expiresAt,
-                    expiresIn: isPrivateBucket ? expiresIn : null
-                },
-                performance: {
-                    requestId,
-                    totalTime: `${totalTime}ms`,
-                    breakdown: {
-                        memoryGuard: `${memoryTime}ms`,
-                        redisCheck: `${redisTime}ms`,
-                        supabaseOperation: `${operationTime}ms`
-                    }
+            data: {
+                downloadUrl,
+                filename: targetFilename,
+                bucket: targetBucket,
+                provider: 'supabase',
+                downloadMethod,
+                isPrivate: isPrivateBucket,
+                expiresAt,
+                expiresIn: isPrivateBucket ? expiresIn : null
+            },
+            performance: {
+                requestId,
+                totalTime: `${totalTime}ms`,
+                breakdown: {
+                    memoryGuard: `${memoryTime}ms`,
+                    redisCheck: 'skipped (MW2)',
+                    supabaseOperation: `${operationTime}ms`
                 }
-            });
-
-        } catch (error) {
-            const totalTime = Date.now() - startTime;
-            console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
-
-            if (apiKey) {
-                updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {
-                    errorDetails: error.message
-                }).catch(() => { });
-
-                trackApiUsage({
-                    userId: req.userId || apiKey,
-                    endpoint: '/api/v1/upload/supabase/download',
-                    method: 'POST',
-                    provider: 'supabase',
-                    operation: 'download',
-                    statusCode: 500,
-                    success: false,
-                    apiKeyId: apiKey,
-                    ipAddress: req.ip,
-                    userAgent: req.headers['user-agent']
-                });
             }
+        });
 
-            res.status(500).json({
-                success: false,
-                error: 'SERVER_ERROR',
-                message: 'Internal server error during Supabase Storage download',
-                details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-            });
+    } catch (error) {
+        const totalTime = Date.now() - startTime;
+        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+
+        if (apiKey) {
+            updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {
+                errorDetails: error.message
+            }).catch(() => { });
+
+
         }
-    };
+
+        res.status(500).json({
+            success: false,
+            error: 'SERVER_ERROR',
+            message: 'Internal server error during Supabase Storage download',
+            details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+        });
+    }
+};

@@ -11,7 +11,9 @@ import { getR2Client, formatR2Error } from './r2.config.js';
 // Quota check
 import { checkUserQuota } from '../shared/analytics.new.js';
 
-// 🚀 REDIS METRICS: Single source of truth
+// Import memory guard
+import { checkMemoryRateLimit } from './cache/memory-guard.js';
+
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
@@ -37,13 +39,30 @@ export const listR2Files = async (req, res) => {
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        if (!apiKeyId) {
+            return res.status(401).json(formatR2Error(
+                'UNAUTHORIZED',
+                'API key is required'
+            ));
+        }
+
+        // LAYER 1: Memory Guard (fastest possible)
+        const memCheck = checkMemoryRateLimit(userId, 'r2-list');
+        if (!memCheck.allowed) {
+            return res.status(429).json(formatR2Error(
+                'RATE_LIMIT_EXCEEDED',
+                'Rate limit exceeded - too many list requests',
+                'Wait a moment before trying again'
+            ));
+        }
+
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(403).json(formatR2Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded',
-                `Used: ${quotaCheck.used}, Limit: ${quotaCheck.limit}`
+                `Used: ${quotaCheck.current || quotaCheck.used}, Limit: ${quotaCheck.limit}`
             ));
         }
 
@@ -106,7 +125,7 @@ export const listR2Files = async (req, res) => {
         return res.status(500).json(formatR2Error(
             'LIST_FAILED',
             'Failed to list files from R2',
-            error.message
+            process.env.NODE_ENV === 'development' ? error.message : null
         ));
     }
 };

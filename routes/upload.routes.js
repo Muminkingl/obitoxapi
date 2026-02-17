@@ -188,7 +188,7 @@ router.post('/uploadcare/track', validateApiKey, unifiedRateLimitMiddleware, sig
 router.post('/r2/signed-url', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateR2SignedUrl);
 
 // Delete files from R2
-router.delete('/r2/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, deleteR2File);
+router.post('/r2/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, deleteR2File);
 
 // Get file info and download URL from R2
 router.post('/r2/download', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, downloadR2File);
@@ -212,8 +212,8 @@ router.delete('/r2/access-token/revoke', validateApiKey, unifiedRateLimitMiddlew
 // Generate batch signed URLs (up to 100 files)
 router.post('/r2/batch/signed-urls', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, generateR2BatchSignedUrls);
 
-// Batch delete files (up to 1000 files)
-router.delete('/r2/batch/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, batchDeleteR2Files);
+// Batch delete files (up to 1000 files) - uses POST with JSON body
+router.post('/r2/batch/delete', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, batchDeleteR2Files);
 
 // ===== R2 CORS CONFIGURATION (S3-Compatible API) =====
 

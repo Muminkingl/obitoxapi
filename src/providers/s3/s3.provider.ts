@@ -715,17 +715,27 @@ export class S3Provider extends BaseProvider<
      * @returns Promise resolving when all files are deleted
      * @throws Error if batch delete fails
      */
-    async batchDelete(options: S3BatchDeleteOptions): Promise<void> {
+    async batchDelete(options: S3BatchDeleteOptions): Promise<S3BatchDeleteResponse> {
         const startTime = Date.now();
 
+        // Merge config credentials
+        const mergedOptions: S3BatchDeleteOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+        } as S3BatchDeleteOptions;
+
         // Validate batch size
-        const sizeValidation = validateBatchSize(options.keys, 'S3 batch delete', 1000);
+        const sizeValidation = validateBatchSize(mergedOptions.keys, 'S3 batch delete', 1000);
         if (!sizeValidation.valid) {
             throw new Error(sizeValidation.error);
         }
 
         // Validate S3 credentials
-        const validation = validateS3Credentials(options);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
@@ -736,12 +746,12 @@ export class S3Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        keys: options.keys,
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint
+                        keys: mergedOptions.keys,
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint
                     }),
                 }
             );
@@ -756,6 +766,8 @@ export class S3Provider extends BaseProvider<
             if (response.errorCount > 0) {
                 console.warn(`⚠️  ${response.errorCount} files failed to delete`);
             }
+
+            return response;
 
         } catch (error) {
             const totalTime = Date.now() - startTime;
@@ -778,8 +790,18 @@ export class S3Provider extends BaseProvider<
     async list(options: S3ListOptions): Promise<S3ListResponse> {
         const startTime = Date.now();
 
+        // Merge config credentials
+        const mergedOptions: S3ListOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+        } as S3ListOptions;
+
         // Validate S3 credentials
-        const validation = validateS3Credentials(options);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
@@ -790,14 +812,14 @@ export class S3Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint,
-                        prefix: options.prefix,
-                        maxKeys: options.maxKeys || 1000,
-                        continuationToken: options.continuationToken
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint,
+                        prefix: mergedOptions.prefix,
+                        maxKeys: mergedOptions.maxKeys || 1000,
+                        continuationToken: mergedOptions.continuationToken
                     }),
                 }
             );
@@ -910,6 +932,9 @@ export class S3Provider extends BaseProvider<
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
 
+        // Support both 'origins' and 'allowedOrigins' for flexibility
+        const finalOrigins = options.origins || options.allowedOrigins;
+
         try {
             const response = await this.makeRequest<S3CorsConfigResponse>(
                 '/api/v1/upload/s3/cors/configure',
@@ -921,7 +946,9 @@ export class S3Provider extends BaseProvider<
                         s3Bucket: options.s3Bucket,
                         s3Region: options.s3Region || 'us-east-1',
                         s3Endpoint: (options as any).s3Endpoint,
-                        allowedOrigins: options.allowedOrigins || ['*'],
+                        // Pass both for API compatibility
+                        origins: finalOrigins,
+                        allowedOrigins: finalOrigins || ['*'],
                         allowedMethods: options.allowedMethods || ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
                         allowedHeaders: options.allowedHeaders || ['*'],
                         maxAgeSeconds: options.maxAgeSeconds || 3600,

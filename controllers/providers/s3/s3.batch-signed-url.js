@@ -90,8 +90,8 @@ export const generateS3BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -128,8 +128,8 @@ export const generateS3BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // VALIDATION: AWS Region
-        if (!isValidRegion(s3Region)) {
+        // VALIDATION: AWS Region (skip for S3-compatible services with custom endpoint)
+        if (!s3Endpoint && !isValidRegion(s3Region)) {
             return res.status(400).json({
                 success: false,
                 provider: 's3',

@@ -6,6 +6,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { SUPABASE_BUCKET } from './supabase.config.js';
 import { updateSupabaseMetrics } from './supabase.helpers.js';
+import { checkMemoryRateLimit } from './cache/memory-guard.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 
 /**
  * Complete Supabase upload (record metrics after client-side upload)
@@ -26,6 +28,7 @@ export const completeSupabaseUpload = async (req, res) => {
         } = req.body;
 
         apiKey = req.apiKeyId;
+        const userId = req.userId || apiKey;
 
         // Validate developer's Supabase credentials
         if (!supabaseToken) {
@@ -52,6 +55,29 @@ export const completeSupabaseUpload = async (req, res) => {
                 success: false,
                 error: 'UNAUTHORIZED',
                 message: 'API key is required'
+            });
+        }
+
+        // LAYER 1: Memory guard
+        const memCheck = checkMemoryRateLimit(userId, 'complete');
+        if (!memCheck.allowed) {
+            return res.status(429).json({
+                success: false,
+                error: 'RATE_LIMIT_EXCEEDED',
+                message: 'Rate limit exceeded',
+                layer: 'memory'
+            });
+        }
+
+        // Quota check (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.current || quotaCheck.used
             });
         }
 

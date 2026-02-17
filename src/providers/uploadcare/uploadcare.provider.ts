@@ -103,6 +103,31 @@ export class UploadcareProvider extends BaseProvider<
         this.validateRequiredFields(mergedOptions, ['uploadcarePublicKey']);
 
         try {
+            // ==================== FILE VALIDATION ====================
+            if (options.validation !== null && options.validation !== undefined) {
+                console.log('   🔍 Validating file...');
+
+                // Perform client-side validation (same as R2/Supabase providers)
+                const validationResult = await validateFile(file, options.validation);
+
+                if (!validationResult.valid) {
+                    // Call error callback if provided
+                    if (options.validation && typeof options.validation === 'object' && options.validation.onError) {
+                        options.validation.onError(validationResult.errors);
+                    }
+
+                    // Throw validation error
+                    throw new Error(`Validation failed: ${validationResult.errors.join('; ')}`);
+                }
+
+                console.log(`   ✅ File validation passed (${validationResult.file.sizeFormatted})`);
+
+                // Log warnings if any
+                if (validationResult.warnings.length > 0) {
+                    console.log(`   ⚠️  Validation warnings: ${validationResult.warnings.join('; ')}`);
+                }
+            }
+
             // ==================== READ MAGIC BYTES ====================
             // Read magic bytes for server-side validation (skip for large files >100MB)
             const magicBytes = file.size <= 100 * 1024 * 1024

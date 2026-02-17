@@ -88,9 +88,17 @@ export const generateR2AccessToken = async (req, res) => {
             iat: Math.floor(Date.now() / 1000)
         };
 
+        if (!process.env.JWT_SECRET) {
+            console.error(`[${requestId}] ❌ JWT_SECRET is not set — cannot generate tokens`);
+            return res.status(500).json(formatR2Error(
+                'CONFIGURATION_ERROR',
+                'Server is not configured for token generation'
+            ));
+        }
+
         const token = jwt.sign(
             tokenPayload,
-            process.env.JWT_SECRET || 'your-secret-key-change-this',
+            process.env.JWT_SECRET,
             { expiresIn: expiryInt }
         );
 
@@ -158,7 +166,7 @@ export const generateR2AccessToken = async (req, res) => {
         return res.status(500).json(formatR2Error(
             'TOKEN_GENERATION_FAILED',
             'Failed to generate access token',
-            error.message
+            process.env.NODE_ENV === 'development' ? error.message : null
         ));
     }
 };
@@ -230,7 +238,7 @@ export const revokeR2AccessToken = async (req, res) => {
         return res.status(500).json(formatR2Error(
             'TOKEN_REVOCATION_FAILED',
             'Failed to revoke token',
-            error.message
+            process.env.NODE_ENV === 'development' ? error.message : null
         ));
     }
 };

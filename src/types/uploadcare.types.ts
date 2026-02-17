@@ -7,7 +7,7 @@
  * @module types/uploadcare
  */
 
-import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, WebhookConfig } from './common';
+import { BaseUploadOptions, BaseDeleteOptions, BaseDownloadOptions, WebhookConfig, ValidationConfig } from './common';
 
 // ============================================================================
 // Image Optimization
@@ -194,6 +194,26 @@ export interface UploadcareUploadOptions extends BaseUploadOptions {
      * @see WebhookConfig for all available options
      */
     webhook?: WebhookConfig;
+
+    /**
+     * File validation configuration (optional)
+     * 
+     * Pass a preset string like 'images' or a custom ValidationConfig object.
+     * When set, files are validated client-side before upload (extension, type, magic bytes).
+     * 
+     * @example
+     * ```typescript
+     * // Use preset
+     * validation: 'images'
+     * 
+     * // Custom config
+     * validation: {
+     *   maxSize: 5 * 1024 * 1024,
+     *   allowedExtensions: ['.jpg', '.png']
+     * }
+     * ```
+     */
+    validation?: ValidationConfig | 'images' | 'documents' | 'videos' | 'audio' | 'archives' | 'any' | null;
 }
 
 // ============================================================================

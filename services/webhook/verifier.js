@@ -14,6 +14,9 @@ import { getR2Client } from '../../controllers/providers/r2/r2.config.js';
 import { getS3Client } from '../../controllers/providers/s3/s3.config.js';
 import { HeadObjectCommand } from '@aws-sdk/client-s3';
 
+// ✅ SECURITY: Decrypt credentials stored encrypted in DB
+import { decryptCredential } from '../../utils/credential-encryption.js';
+
 /**
  * Get appropriate S3 client based on provider
  * 
@@ -21,14 +24,18 @@ import { HeadObjectCommand } from '@aws-sdk/client-s3';
  * @returns {Object} { client, provider }
  */
 function getStorageClient(webhook) {
+    // Decrypt credentials that were encrypted at rest
+    const accessKey = decryptCredential(webhook.access_key_id);
+    const secretKey = decryptCredential(webhook.secret_access_key);
+
     switch (webhook.provider.toUpperCase()) {
         case 'R2':
             // ✅ FIX: getR2Client expects positional args: (accountId, accessKey, secretKey)
             return {
                 client: getR2Client(
                     webhook.account_id,
-                    webhook.access_key_id,
-                    webhook.secret_access_key
+                    accessKey,
+                    secretKey
                 ),
                 provider: 'R2'
             };
@@ -37,8 +44,8 @@ function getStorageClient(webhook) {
             return {
                 client: getS3Client(
                     webhook.region || 'us-east-1',
-                    webhook.access_key_id,
-                    webhook.secret_access_key,
+                    accessKey,
+                    secretKey,
                     webhook.endpoint  // Pass endpoint for MinIO/custom S3-compatible storage
                 ),
                 provider: 'S3'

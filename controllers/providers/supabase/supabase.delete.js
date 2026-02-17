@@ -10,11 +10,9 @@ import { updateSupabaseMetrics } from './supabase.helpers.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
-import { checkRedisRateLimit } from './cache/redis-cache.js';
-
 
 // NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 
 /**
  * Delete file from Supabase Storage
@@ -83,18 +81,15 @@ export const deleteSupabaseFile = async (req, res) => {
             });
         }
 
-        // LAYER 2: Redis rate limit
-        const redisStart = Date.now();
-        const redisLimit = await checkRedisRateLimit(userId, 'delete');
-        const redisTime = Date.now() - redisStart;
-
-        if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis in ${redisTime}ms`);
-            return res.status(429).json({
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
                 success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                message: 'Rate limit exceeded',
-                layer: redisLimit.layer
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.current
             });
         }
 
@@ -179,35 +174,7 @@ export const deleteSupabaseFile = async (req, res) => {
         // Background metrics update
         updateSupabaseMetrics(apiKey, 'supabase', true, 'DELETE_SUCCESS').catch(() => { });
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/supabase/delete',
-            method: 'DELETE',
-            provider: 'supabase',
-            operation: 'delete',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId: apiKey,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/supabase/delete',
-            method: 'DELETE',
-            provider: 'supabase',
-            operation: 'delete',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId: apiKey,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
 
         // NOTE: upload_logs table has been deleted - metrics tracked via Redis now
 
@@ -226,7 +193,7 @@ export const deleteSupabaseFile = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    redisCheck: `${redisTime}ms`,
+                    redisCheck: 'skipped (MW2)',
                     supabaseOperation: `${operationTime}ms`
                 }
             }
@@ -241,19 +208,7 @@ export const deleteSupabaseFile = async (req, res) => {
                 errorDetails: error.message
             }).catch(() => { });
 
-            // New Usage Tracking
-            trackApiUsage({
-                userId: req.userId || apiKey,
-                endpoint: '/api/v1/upload/supabase/delete',
-                method: 'DELETE',
-                provider: 'supabase',
-                operation: 'delete',
-                statusCode: 500,
-                success: false,
-                apiKeyId: apiKey,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+
         }
 
         res.status(500).json({

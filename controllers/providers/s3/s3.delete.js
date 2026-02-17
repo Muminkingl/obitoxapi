@@ -15,8 +15,10 @@ import { isValidRegion, getInvalidRegionError } from '../../../utils/aws/s3-regi
 import { checkUserQuota } from '../shared/analytics.new.js';
 import { incrementQuota } from '../../../utils/quota-manager.js';
 
-// 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+
+// Import memory guard
+import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
 
 /**
  * Delete single file from S3
@@ -62,7 +64,7 @@ export const deleteS3File = async (req, res) => {
             ));
         }
 
-        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
+        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3Endpoint);
         if (!credValidation.valid) {
             return res.status(400).json({
                 success: false,
@@ -71,7 +73,7 @@ export const deleteS3File = async (req, res) => {
             });
         }
 
-        if (!isValidRegion(s3Region)) {
+        if (!s3Endpoint && !isValidRegion(s3Region)) {
             const regionError = getInvalidRegionError(s3Region);
             return res.status(400).json({
                 success: false,
@@ -80,8 +82,18 @@ export const deleteS3File = async (req, res) => {
             });
         }
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // LAYER 1: Memory Guard (fastest possible)
+        const memCheck = checkMemoryRateLimit(userId, 's3-delete');
+        if (!memCheck.allowed) {
+            return res.status(429).json(formatS3Error(
+                'RATE_LIMIT_EXCEEDED',
+                'Rate limit exceeded - too many delete requests',
+                'Wait a moment before trying again'
+            ));
+        }
+
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -215,7 +227,7 @@ export const batchDeleteS3Files = async (req, res) => {
             ));
         }
 
-        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
+        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3Endpoint);
         if (!credValidation.valid) {
             return res.status(400).json({
                 success: false,
@@ -224,7 +236,7 @@ export const batchDeleteS3Files = async (req, res) => {
             });
         }
 
-        if (!isValidRegion(s3Region)) {
+        if (!s3Endpoint && !isValidRegion(s3Region)) {
             const regionError = getInvalidRegionError(s3Region);
             return res.status(400).json({
                 success: false,
@@ -233,8 +245,18 @@ export const batchDeleteS3Files = async (req, res) => {
             });
         }
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // LAYER 1: Memory Guard (fastest possible)
+        const memCheck = checkMemoryRateLimit(userId, 's3-batch-delete');
+        if (!memCheck.allowed) {
+            return res.status(429).json(formatS3Error(
+                'RATE_LIMIT_EXCEEDED',
+                'Rate limit exceeded - too many batch delete requests',
+                'Wait a moment before trying again'
+            ));
+        }
+
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',

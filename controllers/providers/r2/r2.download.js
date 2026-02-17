@@ -9,7 +9,12 @@ import { HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getR2Client, buildPublicUrl, formatR2Error, SIGNED_URL_EXPIRY } from './r2.config.js';
 
-// 🚀 REDIS METRICS: Single source of truth
+// Quota check
+import { checkUserQuota } from '../shared/analytics.new.js';
+
+// Import memory guard
+import { checkMemoryRateLimit } from './cache/memory-guard.js';
+
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 /**
@@ -34,6 +39,33 @@ export const downloadR2File = async (req, res) => {
 
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
+
+        if (!apiKeyId) {
+            return res.status(401).json(formatR2Error(
+                'UNAUTHORIZED',
+                'API key is required'
+            ));
+        }
+
+        // LAYER 1: Memory Guard (fastest possible)
+        const memCheck = checkMemoryRateLimit(userId, 'r2-download');
+        if (!memCheck.allowed) {
+            return res.status(429).json(formatR2Error(
+                'RATE_LIMIT_EXCEEDED',
+                'Rate limit exceeded - too many download requests',
+                'Wait a moment before trying again'
+            ));
+        }
+
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json(formatR2Error(
+                'QUOTA_EXCEEDED',
+                'Monthly quota exceeded',
+                `Used: ${quotaCheck.current || quotaCheck.used}, Limit: ${quotaCheck.limit}`
+            ));
+        }
 
         // Validate required fields
         if (!fileKey || !r2AccessKey || !r2SecretKey || !r2AccountId || !r2Bucket) {
@@ -113,7 +145,7 @@ export const downloadR2File = async (req, res) => {
         return res.status(500).json(formatR2Error(
             'DOWNLOAD_FAILED',
             'Failed to get file info from R2',
-            error.message
+            process.env.NODE_ENV === 'development' ? error.message : null
         ));
     }
 };

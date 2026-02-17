@@ -1,23 +1,32 @@
 /**
- * Request Metrics Helper (v5 - SIMPLIFIED)
+ * Request Metrics Helper (v7 - WITH FILE TYPE TRACKING)
  * 
  * 🚀 OPTIMIZATIONS:
- * - Single pipeline per request (1 round-trip to Redis)
- * - Tracks ONLY request counts (no file sizes - files never hit server)
- * - Graceful degradation (continues even if Redis fails)
+ * - Single consolidated key per apiKey per day: m:{apiKeyId}:{date}
+ * - Only 5-7 Redis commands per request (down from ~15)
+ * - Provider breakdown via p:{provider} hash fields
+ * - File type tracking via ft:{mimeType} hash fields
+ * - Static metadata (user_id) set via HSETNX (1 extra cmd on first request only)
+ * 
+ * KEY FORMAT:
+ *   m:{apiKeyId}:{YYYY-MM-DD}
+ * 
+ * HASH FIELDS:
+ *   req            - total request count (HINCRBY)
+ *   p:{provider}   - per-provider request count (HINCRBY)
+ *   ft:{mimeType}  - file type count, e.g., ft:image/jpeg (HINCRBY)
+ *   fc:{category}  - file category count, e.g., fc:image (HINCRBY)
+ *   ts             - last activity timestamp (HSET)
+ *   uid            - user ID (HSETNX, set once)
  * 
  * PERFORMANCE:
- * - ~8 Redis ops per request in single pipeline
- * - ~2-5ms latency
- * 
- * NOTE: We only track request counts since files never hit our server.
- * File size tracking is meaningless for presigned URL architecture.
+ *   Before: ~15 Redis ops across 4 keys per request
+ *   After:  5-7 Redis ops on 1 key per request
  */
 
 import { getRedis } from '../../../config/redis.js';
 
 const METRICS_TTL = 60 * 60 * 24 * 7; // 7 days
-const DAILY_TTL = 60 * 60 * 48; // 48 hours
 
 // Metrics for monitoring the metrics system itself
 let metricsUpdateCount = 0;
@@ -27,34 +36,33 @@ let lastFailureTime = null;
 /**
  * Update all request metrics in a single atomic operation
  * 
- * NOTE: We only track total_requests and upload_count.
- * Success/failed tracking removed as every API request generates a signed URL successfully.
- * File size tracking removed as files never hit our server.
+ * Consolidated into 1 key: m:{apiKeyId}:{date}
  * 
  * @param {string} apiKeyId - API key UUID
  * @param {string} userId - User UUID
- * @param {string} provider - Provider name (r2, s3, uploadcare, etc)
+ * @param {string} provider - Provider name (r2, s3, uploadcare, supabase)
  * @param {boolean} success - Ignored (kept for interface compatibility)
- * @param {Object} additionalData - Ignored (fileSize not tracked)
+ * @param {Object} additionalData - Additional metadata
+ * @param {string} additionalData.contentType - MIME type (e.g., 'image/jpeg')
+ * @param {string} additionalData.filename - Original filename (optional)
  */
 export const updateRequestMetrics = async (
-  apiKeyId, 
-  userId, 
-  provider, 
-  success = true, 
+  apiKeyId,
+  userId,
+  provider,
+  success = true,
   additionalData = {}
 ) => {
   const startTime = Date.now();
 
   try {
-    // Validation
     if (!apiKeyId) {
       console.warn('[Metrics] ⚠️ Missing apiKeyId - skipping metrics');
       return;
     }
 
     const redis = getRedis();
-    
+
     if (!redis) {
       console.warn('[Metrics] ⚠️ Redis not available - skipping metrics');
       metricsFailureCount++;
@@ -62,7 +70,6 @@ export const updateRequestMetrics = async (
       return;
     }
 
-    // Check Redis connection health
     if (redis.status !== 'ready') {
       console.warn(`[Metrics] ⚠️ Redis status: ${redis.status} - skipping metrics`);
       metricsFailureCount++;
@@ -71,85 +78,61 @@ export const updateRequestMetrics = async (
     }
 
     // ═══════════════════════════════════════════════════════
-    // SINGLE PIPELINE - All operations in one round-trip
-    // We ONLY track request counts (no file sizes)
+    // SINGLE KEY, 5-7 OPERATIONS (with file type tracking)
     // ═══════════════════════════════════════════════════════
-    
+
     const pipeline = redis.pipeline();
     const now = Date.now();
     const today = new Date().toISOString().split('T')[0];
+    const key = `m:${apiKeyId}:${today}`;
 
-    // ───────────────────────────────────────────────────────
-    // 1. API Key Real-time Metrics (request count only)
-    // ───────────────────────────────────────────────────────
-    const apiKeyKey = `metrics:apikey:${apiKeyId}`;
-    
-    pipeline.hincrby(apiKeyKey, 'total_requests', 1);
-    pipeline.hincrby(apiKeyKey, 'total_files_uploaded', 1);
-    pipeline.hset(apiKeyKey, 'last_used_at', now);
-    pipeline.expire(apiKeyKey, METRICS_TTL);
+    // 1. Total request count
+    pipeline.hincrby(key, 'req', 1);
 
-    // ───────────────────────────────────────────────────────
-    // 2. Provider Real-time Metrics (upload count only)
-    // ───────────────────────────────────────────────────────
+    // 2. Provider breakdown (e.g., p:uploadcare, p:s3, p:r2, p:supabase)
     if (provider) {
-      const providerKey = `metrics:provider:${apiKeyId}:${provider}`;
-      
-      if (userId) {
-        pipeline.hset(providerKey, 'user_id', userId);
-      }
-      
-      pipeline.hincrby(providerKey, 'upload_count', 1);
-      pipeline.hset(providerKey, 'last_used_at', now);
-      pipeline.expire(providerKey, METRICS_TTL);
+      pipeline.hincrby(key, `p:${provider}`, 1);
     }
 
-    // ───────────────────────────────────────────────────────
-    // 3. Daily API Key Metrics (request count only)
-    // ───────────────────────────────────────────────────────
-    const dailyApiKeyKey = `daily:${today}:apikey:${apiKeyId}`;
-    
+    // 3. File type tracking (e.g., ft:image/jpeg, ft:application/pdf)
+    if (additionalData.contentType) {
+      // Track specific MIME type
+      pipeline.hincrby(key, `ft:${additionalData.contentType}`, 1);
+      
+      // Track category (image, video, document, etc.)
+      const category = additionalData.contentType.split('/')[0] || 'other';
+      pipeline.hincrby(key, `fc:${category}`, 1);
+    }
+
+    // 4. Last activity timestamp
+    pipeline.hset(key, 'ts', now);
+
+    // 5. TTL (7 days)
+    pipeline.expire(key, METRICS_TTL);
+
+    // 6. Static metadata — only set once per key (HSETNX = no-op if exists)
     if (userId) {
-      pipeline.hset(dailyApiKeyKey, 'user_id', userId);
-    }
-    
-    pipeline.hincrby(dailyApiKeyKey, 'total_requests', 1);
-    pipeline.hincrby(dailyApiKeyKey, 'total_files_uploaded', 1);
-    pipeline.expire(dailyApiKeyKey, DAILY_TTL);
-
-    // ───────────────────────────────────────────────────────
-    // 4. Daily Provider Metrics (upload count only)
-    // ───────────────────────────────────────────────────────
-    if (provider) {
-      const dailyProviderKey = `daily:${today}:provider:${apiKeyId}:${provider}`;
-      
-      if (userId) {
-        pipeline.hset(dailyProviderKey, 'user_id', userId);
-      }
-      
-      pipeline.hincrby(dailyProviderKey, 'upload_count', 1);
-      pipeline.expire(dailyProviderKey, DAILY_TTL);
+      pipeline.hsetnx(key, 'uid', userId);
     }
 
     // ═══════════════════════════════════════════════════════
-    // Execute Pipeline with Error Handling
+    // Execute Pipeline
     // ═══════════════════════════════════════════════════════
-    
+
     const results = await pipeline.exec();
-    
-    // Check for errors in pipeline results
+
     if (results) {
       let hasErrors = false;
       const errors = [];
-      
+
       results.forEach((result, index) => {
-        const [err, value] = result;
+        const [err] = result;
         if (err) {
           hasErrors = true;
           errors.push({ index, error: err.message });
         }
       });
-      
+
       if (hasErrors) {
         console.error('[Metrics] ❌ Pipeline had errors:', errors);
         metricsFailureCount++;
@@ -160,40 +143,34 @@ export const updateRequestMetrics = async (
     }
 
     const duration = Date.now() - startTime;
-    
-    // Log slow operations
+
     if (duration > 50) {
-      console.warn(`[Metrics] ⚠️ Slow update: ${duration}ms for ${apiKeyKey}`);
+      console.warn(`[Metrics] ⚠️ Slow update: ${duration}ms for ${key}`);
     }
 
   } catch (error) {
-    // ✅ CRITICAL: Don't throw! Just log and continue
-    // Metrics should NEVER cause user-facing errors
     console.error('[Metrics] ❌ Error updating metrics:', {
       error: error.message,
       apiKeyId,
       provider,
       stack: error.stack
     });
-    
+
     metricsFailureCount++;
     lastFailureTime = Date.now();
-    
-    // Don't throw - let the request continue
   }
 };
 
 /**
  * Get metrics system health
- * Useful for monitoring/alerting
  */
 export const getMetricsHealth = () => {
   const redis = getRedis();
-  
+
   return {
     total_updates: metricsUpdateCount,
     total_failures: metricsFailureCount,
-    failure_rate: metricsUpdateCount > 0 
+    failure_rate: metricsUpdateCount > 0
       ? ((metricsFailureCount / (metricsUpdateCount + metricsFailureCount)) * 100).toFixed(2) + '%'
       : '0%',
     last_failure: lastFailureTime ? new Date(lastFailureTime).toISOString() : null,
@@ -204,7 +181,6 @@ export const getMetricsHealth = () => {
 
 /**
  * Reset metrics health counters
- * Call this periodically (e.g., every hour)
  */
 export const resetMetricsHealth = () => {
   metricsUpdateCount = 0;

@@ -434,26 +434,38 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         // Only fetch userId from Redis if not available from middleware
         const apiKeyCacheKey = apiKey ? `apikey_user:${apiKey}` : null;
         if (!userId && apiKeyCacheKey) {
-            megaPipeline.get(apiKeyCacheKey);  // Index 0: userId
+            megaPipeline.get(apiKeyCacheKey);  // Pipeline[0]: userId
         }
 
-        // Build cache keys (we'll use userId from middleware or pipeline result)
+        // Build cache keys
         const tierCacheKey = userId ? `tier:${userId}` : null;
         const quotaKey = userId ? `quota:${userId}:${month}` : null;
         const banKey = `ban:${identifier}`;
         const permBanKey = `perm_ban:${identifier}`;
 
-        // Add all GET operations to pipeline
+        // OPT-3: Use MGET to fetch multiple keys in ONE command instead of individual GETs
+        // This saves 1-3 Upstash commands (billed per command, not per pipeline)
+        const mgetKeys = [];
+        const mgetKeyMap = {}; // track which index corresponds to which key
+        let mgetIdx = 0;
+
         if (!tier && tierCacheKey) {
-            megaPipeline.get(tierCacheKey);     // Index 1 (or 0 if userId from middleware)
+            mgetKeyMap.tier = mgetIdx++;
+            mgetKeys.push(tierCacheKey);
         }
         if (quotaKey) {
-            megaPipeline.get(quotaKey);         // Quota
+            mgetKeyMap.quota = mgetIdx++;
+            mgetKeys.push(quotaKey);
         }
-        megaPipeline.get(banKey);               // Temp ban
-        megaPipeline.get(permBanKey);           // Perm ban
+        mgetKeyMap.tempBan = mgetIdx++;
+        mgetKeys.push(banKey);
+        mgetKeyMap.permBan = mgetIdx++;
+        mgetKeys.push(permBanKey);
 
-        // Add rate limit operations to SAME pipeline
+        // Single MGET for all lookup keys (1 command instead of 2-4)
+        megaPipeline.mget(...mgetKeys);
+
+        // Rate limit operations (still separate commands — different types)
         megaPipeline.zadd(requestsKey, timestamp, `${timestamp}`);
         megaPipeline.expire(requestsKey, CONFIG.WINDOW_SIZE * 2);
         megaPipeline.zrangebyscore(requestsKey, windowStart, timestamp);
@@ -474,17 +486,17 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
 
             // If we got userId, we need tier from cache or fallback
             if (userId && !tier) {
-                // We didn't have tier cache in pipeline, need to get it differently
-                // For now, use the profile from API key middleware or default
                 tier = 'free';
             }
         }
 
-        // Extract tier if we fetched it
-        let cachedTier = null;
-        if (!tier) {
-            cachedTier = results[resultIndex]?.[1];
-            resultIndex++;
+        // Extract MGET results (single array with all values)
+        const mgetResults = results[resultIndex]?.[1] || [];
+        resultIndex++;
+
+        // Extract tier from MGET if we fetched it
+        if ('tier' in mgetKeyMap) {
+            const cachedTier = mgetResults[mgetKeyMap.tier];
             if (cachedTier) {
                 try {
                     tier = JSON.parse(cachedTier).tier;
@@ -494,15 +506,12 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
             }
         }
 
-        // Extract quota
-        const currentQuota = userId ? results[resultIndex]?.[1] : null;
-        if (userId) resultIndex++;
+        // Extract quota from MGET
+        const currentQuota = ('quota' in mgetKeyMap) ? mgetResults[mgetKeyMap.quota] : null;
 
-        // Extract ban data
-        const tempBan = results[resultIndex]?.[1];
-        resultIndex++;
-        const permBan = results[resultIndex]?.[1];
-        resultIndex++;
+        // Extract ban data from MGET
+        const tempBan = mgetResults[mgetKeyMap.tempBan];
+        const permBan = mgetResults[mgetKeyMap.permBan];
 
         // Extract rate limit data (last 3 results)
         // ZADD result, EXPIRE result, ZRANGEBYSCORE result
@@ -608,6 +617,16 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         if (limits.requestsPerMinute === -1) {
             const totalTime = Date.now() - startTime;
             console.log(`[${requestId}] ✅ OK: Enterprise (unlimited) (${totalTime}ms)`);
+
+            // OPT-2: Pass quota data to controllers (avoid redundant Redis fetch)
+            req.quotaChecked = {
+                allowed: true,
+                current: currentQuota ? parseInt(currentQuota) : 0,
+                limit: tierLimit,
+                tier
+            };
+            req.userTier = tier;
+
             return next();
         }
 
@@ -673,6 +692,15 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
 
         const totalTime = Date.now() - startTime;
         console.log(`[${requestId}] ✅ OK: ${requestCount}/${limits.requestsPerMinute} (${totalTime}ms)`);
+
+        // OPT-2: Pass quota data to controllers (avoid redundant Redis fetch)
+        req.quotaChecked = {
+            allowed: true,
+            current: currentQuota ? parseInt(currentQuota) : 0,
+            limit: tierLimit,
+            tier
+        };
+        req.userTier = tier;
 
         // Cleanup old requests (non-blocking)
         redis.zremrangebyscore(requestsKey, 0, windowStart).catch(() => { });

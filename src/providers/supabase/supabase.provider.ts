@@ -24,6 +24,7 @@ import type {
     SupabaseConfig,
 } from '../../types/supabase.types.js';
 import type { UploadResponse, DownloadResponse } from '../../types/common.js';
+import { validateFile, readMagicBytes } from '../../utils/file-validator.js';
 
 /**
  * Supabase Storage Provider
@@ -105,6 +106,31 @@ export class SupabaseProvider extends BaseProvider<
         this.validateRequiredFields(mergedOptions, ['supabaseUrl', 'supabaseToken', 'bucket']);
 
         try {
+            // ==================== FILE VALIDATION ====================
+            if (options.validation !== null && options.validation !== undefined) {
+                console.log('   🔍 Validating file...');
+
+                // Perform client-side validation (same as R2 provider)
+                const validationResult = await validateFile(file, options.validation);
+
+                if (!validationResult.valid) {
+                    // Call error callback if provided
+                    if (options.validation && typeof options.validation === 'object' && options.validation.onError) {
+                        options.validation.onError(validationResult.errors);
+                    }
+
+                    // Throw validation error
+                    throw new Error(`Validation failed: ${validationResult.errors.join('; ')}`);
+                }
+
+                console.log(`   ✅ File validation passed (${validationResult.file.sizeFormatted})`);
+
+                // Log warnings if any
+                if (validationResult.warnings.length > 0) {
+                    console.log(`   ⚠️  Validation warnings: ${validationResult.warnings.join('; ')}`);
+                }
+            }
+
             // Step 1: Get signed URL from ObitoX API
             const signedUrlResult = await this.getSignedUrl(filename, contentType, {
                 ...mergedOptions,

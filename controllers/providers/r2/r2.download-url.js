@@ -61,13 +61,13 @@ export const generateR2DownloadUrl = async (req, res) => {
             ));
         }
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(403).json(formatR2Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded',
-                `Used: ${quotaCheck.used}, Limit: ${quotaCheck.limit}`
+                `Used: ${quotaCheck.current || quotaCheck.used}, Limit: ${quotaCheck.limit}`
             ));
         }
 
@@ -164,7 +164,7 @@ export const generateR2DownloadUrl = async (req, res) => {
         return res.status(500).json(formatR2Error(
             'DOWNLOAD_URL_FAILED',
             'Failed to generate download URL',
-            error.message
+            process.env.NODE_ENV === 'development' ? error.message : null
         ));
     }
 };

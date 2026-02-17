@@ -40,7 +40,7 @@ export const uploadcareHealthCheck = async (req, res) => {
             message: 'Uploadcare provider health check failed',
             provider: 'uploadcare',
             status: 'degraded',
-            error: error.message,
+            error: process.env.NODE_ENV === 'development' ? error.message : 'Health check failed',
             timestamp: new Date().toISOString()
         });
     }

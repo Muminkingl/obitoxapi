@@ -26,13 +26,8 @@ export const batchDeleteR2Files = async (req, res) => {
     const startTime = Date.now();
 
     try {
-        const {
-            filenames,
-            r2AccessKey,
-            r2SecretKey,
-            r2AccountId,
-            r2Bucket
-        } = req.body;
+        // Get all parameters from body
+        const { keys: fileKeys, r2AccessKey, r2SecretKey, r2AccountId, r2Bucket } = req.body;
 
         const apiKeyId = req.apiKeyId;
         const userId = req.userId || apiKeyId;
@@ -50,21 +45,21 @@ export const batchDeleteR2Files = async (req, res) => {
             ));
         }
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(403).json(formatR2Error(
                 'QUOTA_EXCEEDED',
                 'Monthly quota exceeded',
-                `Used: ${quotaCheck.used}, Limit: ${quotaCheck.limit}`
+                `Used: ${quotaCheck.current || quotaCheck.used}, Limit: ${quotaCheck.limit}`
             ));
         }
 
         // VALIDATION: Filenames Array
-        if (!Array.isArray(filenames) || filenames.length === 0) {
+        if (!Array.isArray(fileKeys) || fileKeys.length === 0) {
             return res.status(400).json(formatR2Error(
                 'INVALID_FILENAMES_ARRAY',
-                'filenames must be a non-empty array',
+                'keys must be a non-empty array',
                 'Provide an array of file keys to delete: ["file1.jpg", "file2.png", ...]'
             ));
         }
@@ -80,11 +75,11 @@ export const batchDeleteR2Files = async (req, res) => {
         // VALIDATION: Batch Size Limit
         const MAX_DELETE_BATCH = 1000;
 
-        if (filenames.length > MAX_DELETE_BATCH) {
+        if (fileKeys.length > MAX_DELETE_BATCH) {
             return res.status(400).json(formatR2Error(
                 'BATCH_TOO_LARGE',
                 `Maximum ${MAX_DELETE_BATCH} files per batch delete request`,
-                `You requested ${filenames.length} files. Split into multiple batches.`
+                `You requested ${fileKeys.length} files. Split into multiple batches.`
             ));
         }
 
@@ -95,7 +90,7 @@ export const batchDeleteR2Files = async (req, res) => {
         const deleteCommand = new DeleteObjectsCommand({
             Bucket: r2Bucket,
             Delete: {
-                Objects: filenames.map(Key => ({ Key })),
+                Objects: fileKeys.map(Key => ({ Key })),
                 Quiet: false
             }
         });
@@ -114,7 +109,7 @@ export const batchDeleteR2Files = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 'r2', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Batch delete: ${deletedCount}/${filenames.length} in ${totalTime}ms`);
+        console.log(`[${requestId}] ✅ Batch delete: ${deletedCount}/${fileKeys.length} in ${totalTime}ms`);
 
         return res.status(200).json({
             success: true,
@@ -130,7 +125,7 @@ export const batchDeleteR2Files = async (req, res) => {
                 message: e.Message
             })),
             summary: {
-                total: filenames.length,
+                total: fileKeys.length,
                 deleted: deletedCount,
                 failed: errorCount
             },
@@ -149,7 +144,7 @@ export const batchDeleteR2Files = async (req, res) => {
         console.error(`[${requestId}] ❌ Batch delete error (${totalTime}ms):`, error.message);
 
         if (req.apiKeyId) {
-            updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 2, false)
+            updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)
                 .catch(() => { });
         }
 
@@ -172,7 +167,7 @@ export const batchDeleteR2Files = async (req, res) => {
         return res.status(500).json(formatR2Error(
             'BATCH_DELETE_FAILED',
             'Failed to process batch delete',
-            error.message
+            process.env.NODE_ENV === 'development' ? error.message : null
         ));
     }
 };

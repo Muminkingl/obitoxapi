@@ -13,7 +13,6 @@ import {
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
-import { checkRedisRateLimit } from './cache/redis-cache.js';
 
 // Quota check
 import { checkUserQuota } from '../shared/analytics.new.js';
@@ -67,29 +66,15 @@ export const listUploadcareFiles = async (req, res) => {
             });
         }
 
-        // LAYER 2: Redis rate limit
-        const redisStart = Date.now();
-        const redisLimit = await checkRedisRateLimit(userId, 'list');
-        const redisTime = Date.now() - redisStart;
-
-        if (!redisLimit.allowed) {
-            return res.status(429).json({
-                success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                message: 'Rate limit exceeded',
-                layer: redisLimit.layer
-            });
-        }
-
-        // LAYER 3: Quota check
-        const quotaCheck = await checkUserQuota(userId);
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(403).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
                 message: 'Monthly quota exceeded',
                 limit: quotaCheck.limit,
-                used: quotaCheck.used
+                used: quotaCheck.current
             });
         }
 
@@ -151,7 +136,7 @@ export const listUploadcareFiles = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    redisCheck: `${redisTime}ms`,
+                    redisCheck: 'skipped (MW2)',
                     uploadcareOperation: `${operationTime}ms`
                 }
             }

@@ -76,8 +76,8 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             ));
         }
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatR2Error(
                 'QUOTA_EXCEEDED',
@@ -242,7 +242,7 @@ export const generateR2BatchSignedUrls = async (req, res) => {
             .reduce((sum, r) => sum + r.fileSize, 0);
 
         // 🚀 SINGLE METRICS CALL (Redis-backed)
-        updateRequestMetrics(apiKeyId, userId, 'r2', successCount > 0, { 
+        updateRequestMetrics(apiKeyId, userId, 'r2', successCount > 0, {
             fileSize: totalBytes,
             batchSize: files.length,
             successCount,

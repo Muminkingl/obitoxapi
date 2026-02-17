@@ -5,17 +5,21 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { updateSupabaseMetrics } from './supabase.helpers.js';
+import { checkMemoryRateLimit } from './cache/memory-guard.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 
 /**
  * List available buckets for Supabase Storage
  */
 export const listSupabaseBuckets = async (req, res) => {
     let apiKey;
+    let userId;
 
     try {
 
         const { supabaseToken, supabaseUrl } = req.body;
         apiKey = req.apiKeyId;
+        userId = req.userId || apiKey;
 
         // Validate developer's Supabase credentials
         if (!supabaseToken) {
@@ -45,6 +49,29 @@ export const listSupabaseBuckets = async (req, res) => {
             });
         }
 
+        // LAYER 1: Memory guard
+        const memCheck = checkMemoryRateLimit(userId, 'buckets');
+        if (!memCheck.allowed) {
+            return res.status(429).json({
+                success: false,
+                error: 'RATE_LIMIT_EXCEEDED',
+                message: 'Rate limit exceeded',
+                layer: 'memory'
+            });
+        }
+
+        // Quota check (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        if (!quotaCheck.allowed) {
+            return res.status(403).json({
+                success: false,
+                error: 'QUOTA_EXCEEDED',
+                message: 'Monthly quota exceeded',
+                limit: quotaCheck.limit,
+                used: quotaCheck.current || quotaCheck.used
+            });
+        }
+
         // List all buckets
         const { data: buckets, error: bucketsError } = await developerSupabase.storage.listBuckets();
 
@@ -54,7 +81,7 @@ export const listSupabaseBuckets = async (req, res) => {
                 success: false,
                 error: 'BUCKETS_LIST_ERROR',
                 message: 'Failed to list buckets',
-                details: bucketsError.message
+                details: process.env.NODE_ENV === 'development' ? bucketsError.message : null
             });
         }
 
@@ -121,7 +148,7 @@ export const listSupabaseBuckets = async (req, res) => {
             success: false,
             error: 'GENERAL_ERROR',
             message: 'Failed to list buckets',
-            details: error.message
+            details: process.env.NODE_ENV === 'development' ? error.message : null
         });
     }
 };

@@ -29,8 +29,10 @@ import { getCloudFrontUrl, isValidCloudFrontDomain } from '../../../utils/aws/s3
 import { checkUserQuota } from '../shared/analytics.new.js';
 import { incrementQuota } from '../../../utils/quota-manager.js';
 
-// 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+
+// Import memory guard
+import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
 
 // Multipart upload constants
 const MIN_MULTIPART_SIZE = 100 * 1024 * 1024; // 100MB
@@ -56,6 +58,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
             s3SecretKey,
             s3Bucket,
             s3Region = 'us-east-1',
+            s3Endpoint,  // Custom endpoint for MinIO/LocalStack
             s3StorageClass = 'STANDARD',
             s3CloudFrontDomain,
             s3EncryptionType = 'SSE-S3',
@@ -120,7 +123,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
             ));
         }
 
-        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
+        const credValidation = validateS3Credentials(s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3Endpoint);
         if (!credValidation.valid) {
             return res.status(400).json({
                 success: false,
@@ -129,7 +132,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
             });
         }
 
-        if (!isValidRegion(s3Region)) {
+        if (!s3Endpoint && !isValidRegion(s3Region)) {
             return res.status(400).json(formatS3Error(
                 'INVALID_S3_REGION',
                 `Invalid AWS region: ${s3Region}`
@@ -170,8 +173,18 @@ export const initiateS3MultipartUpload = async (req, res) => {
             }
         }
 
-        // QUOTA CHECK
-        const quotaCheck = await checkUserQuota(userId);
+        // LAYER 1: Memory Guard (fastest possible)
+        const memCheck = checkMemoryRateLimit(userId, 's3-multipart');
+        if (!memCheck.allowed) {
+            return res.status(429).json(formatS3Error(
+                'RATE_LIMIT_EXCEEDED',
+                'Rate limit exceeded - too many multipart requests',
+                'Wait a moment before trying again'
+            ));
+        }
+
+        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -183,7 +196,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
 
         // AWS API CALL
         const apiCallStart = Date.now();
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
         const encryptionParams = {
             ServerSideEncryption: ENCRYPTION_TYPES[s3EncryptionType]
@@ -304,7 +317,8 @@ export const completeS3MultipartUpload = async (req, res) => {
             s3AccessKey,
             s3SecretKey,
             s3Bucket,
-            s3Region = 'us-east-1'
+            s3Region = 'us-east-1',
+            s3Endpoint  // Custom endpoint for MinIO/LocalStack
         } = req.body;
 
         apiKeyId = req.apiKeyId;
@@ -332,6 +346,16 @@ export const completeS3MultipartUpload = async (req, res) => {
             ));
         }
 
+        // LAYER 1: Memory Guard (fastest possible)
+        const memCheck = checkMemoryRateLimit(userId, 's3-multipart');
+        if (!memCheck.allowed) {
+            return res.status(429).json(formatS3Error(
+                'RATE_LIMIT_EXCEEDED',
+                'Rate limit exceeded - too many multipart requests',
+                'Wait a moment before trying again'
+            ));
+        }
+
         for (const part of parts) {
             if (!part.partNumber || !part.etag) {
                 return res.status(400).json(formatS3Error(
@@ -343,7 +367,7 @@ export const completeS3MultipartUpload = async (req, res) => {
 
         // AWS API CALL
         const apiCallStart = Date.now();
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
         const completeCommand = new CompleteMultipartUploadCommand({
             Bucket: s3Bucket,
@@ -415,7 +439,8 @@ export const abortS3MultipartUpload = async (req, res) => {
             s3AccessKey,
             s3SecretKey,
             s3Bucket,
-            s3Region = 'us-east-1'
+            s3Region = 'us-east-1',
+            s3Endpoint  // Custom endpoint for MinIO/LocalStack
         } = req.body;
 
         apiKeyId = req.apiKeyId;
@@ -443,9 +468,19 @@ export const abortS3MultipartUpload = async (req, res) => {
             ));
         }
 
+        // LAYER 1: Memory Guard (fastest possible)
+        const memCheck = checkMemoryRateLimit(userId, 's3-multipart');
+        if (!memCheck.allowed) {
+            return res.status(429).json(formatS3Error(
+                'RATE_LIMIT_EXCEEDED',
+                'Rate limit exceeded - too many multipart requests',
+                'Wait a moment before trying again'
+            ));
+        }
+
         // AWS API CALL
         const apiCallStart = Date.now();
-        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey);
+        const s3Client = getS3Client(s3Region, s3AccessKey, s3SecretKey, s3Endpoint);
 
         const abortCommand = new AbortMultipartUploadCommand({
             Bucket: s3Bucket,

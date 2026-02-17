@@ -48,11 +48,11 @@ const CORS_CONFIG = {
     },
     production: {
         allowedOrigins: [
-            'https://obitox.io',
-            'https://www.obitox.io',
-            'https://dashboard.obitox.io',
-            'https://docs.obitox.io',
-            'https://app.obitox.io',
+            'https://obitox.dev',
+            'https://www.obitox.dev',
+            'https://dashboard.obitox.dev',
+            'https://docs.obitox.dev',
+            'https://app.obitox.dev',
         ],
         allowWildcard: false,
         credentials: true,
@@ -157,7 +157,7 @@ function isOriginInGlobalList(origin, config) {
     if (config.allowWildcard) {
         const patterns = config.allowedOrigins.filter(o => o.includes('*'));
         for (const pattern of patterns) {
-            const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+            const regex = new RegExp('^' + pattern.replace(/\*/g, '[^.]*') + '$');
             if (regex.test(origin)) {
                 return true;
             }
@@ -169,9 +169,16 @@ function isOriginInGlobalList(origin, config) {
 
 /**
  * Check if origin passes security validation
+ * Only applies strict pattern checking in production to allow ngrok/local IP testing in dev
  */
 function isOriginSecure(origin) {
     if (!origin) return true; // Allow non-origin requests
+
+    // Only check suspicious patterns in PRODUCTION
+    // This allows ngrok, local network testing (192.168.x.x), etc. in dev/staging
+    if (NODE_ENV !== 'production') {
+        return true;
+    }
 
     for (const pattern of SUSPICIOUS_PATTERNS) {
         if (pattern.test(origin)) {
@@ -285,7 +292,7 @@ export function createRouteCorsOptions(routeConfig = {}) {
             if (allowWildcard) {
                 const patterns = allowedOrigins.filter(o => o.includes('*'));
                 for (const pattern of patterns) {
-                    const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
+                    const regex = new RegExp('^' + pattern.replace(/\*/g, '[^.]*') + '$');
                     if (regex.test(origin)) {
                         return callback(null, true);
                     }
@@ -446,8 +453,13 @@ export const setupS3BucketCors = async (req, res) => {
             s3SecretKey,
             s3Bucket,
             s3Region = 'us-east-1',
+            // Accept both 'origins' and 'allowedOrigins' for compatibility
+            origins,
             allowedOrigins
         } = req.body;
+
+        // Use 'origins' if provided, otherwise fall back to 'allowedOrigins'
+        const finalOrigins = origins || allowedOrigins;
 
         if (!s3AccessKey || !s3SecretKey || !s3Bucket) {
             return res.status(400).json({
@@ -462,7 +474,7 @@ export const setupS3BucketCors = async (req, res) => {
             s3SecretKey,
             s3Bucket,
             s3Region,
-            allowedOrigins || ['*']
+            finalOrigins || ['*']
         );
 
         res.json({
@@ -547,7 +559,7 @@ import { S3Client } from '@aws-sdk/client-s3';
  * R2 endpoint format: https://<accountId>.r2.cloudflarestorage.com
  */
 function getR2Client(r2AccessKey, r2SecretKey, r2AccountId) {
-    const endpoint = r2AccountId 
+    const endpoint = r2AccountId
         ? `https://${r2AccountId}.r2.cloudflarestorage.com`
         : null;
 

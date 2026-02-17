@@ -16,13 +16,10 @@ import {
     setMemoryQuota,
     incrementMemoryQuota
 } from './cache/memory-guard.js';
-import {
-    checkRedisRateLimit,
-    getQuotaFromRedis
-} from './cache/redis-cache.js';
+
 
 // NEW: Analytics & Quota
-import { checkUserQuota, trackApiUsage } from '../shared/analytics.new.js';
+import { checkUserQuota } from '../shared/analytics.new.js';
 
 /**
  * Upload file to Supabase Storage
@@ -100,23 +97,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
             });
         }
 
-        // ========================================================================
-        // LAYER 2: REDIS RATE LIMIT (5-50ms) ⚡
-        // ========================================================================
-        const redisStart = Date.now();
-        const redisLimit = await checkRedisRateLimit(userId, 'upload');
-        const redisTime = Date.now() - redisStart;
-
-        if (!redisLimit.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by Redis in ${redisTime}ms`);
-            return res.status(429).json({
-                success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                message: 'Rate limit exceeded',
-                layer: redisLimit.layer
-            });
-        }
-
+        // LAYER 2: TARGET BUCKET (MW2 already handles Redis rate limiting)
         const targetBucket = customBucket || (makePrivate ? PRIVATE_BUCKET : SUPABASE_BUCKET);
         const file = fileData;
 
@@ -132,32 +113,21 @@ export const uploadToSupabaseStorage = async (req, res) => {
         // LAYER 3: QUOTA CHECK WITH CACHE (50-100ms) 💰
         // ========================================================================
         // ========================================================================
-        // LAYER 3: QUOTA CHECK (Database RPC) 💰
+        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback) 💰
         // ========================================================================
         const quotaStart = Date.now();
-        const quotaCheck = await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
         const quotaTime = Date.now() - quotaStart;
 
         if (!quotaCheck.allowed) {
             console.log(`[${requestId}] ❌ Quota exceeded in ${quotaTime}ms`);
-            trackApiUsage({
-                userId,
-                endpoint: '/api/v1/upload/supabase/upload',
-                method: 'POST',
-                provider: 'supabase',
-                operation: 'upload',
-                statusCode: 403,
-                success: false,
-                apiKeyId: apiKey,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+
             return res.status(403).json({
                 success: false,
                 error: 'QUOTA_EXCEEDED',
                 message: 'Monthly quota exceeded',
                 limit: quotaCheck.limit,
-                used: quotaCheck.used
+                used: quotaCheck.current
             });
         }
 
@@ -357,22 +327,9 @@ export const uploadToSupabaseStorage = async (req, res) => {
 
         // NOTE: upload_logs table has been deleted - metrics tracked via Redis now
 
-        // New Usage Tracking
-        trackApiUsage({
-            userId,
-            endpoint: '/api/v1/upload/supabase/upload',
-            method: 'POST',
-            provider: 'supabase',
-            operation: 'upload',
-            statusCode: 200,
-            success: true,
-            requestCount: 1,
-            apiKeyId: apiKey,
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent']
-        });
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, redis:${redisTime}ms, quota:${quotaTime}ms, validation:${validationTime}ms, upload:${uploadTime}ms)`);
+
+        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, quota:${quotaTime}ms, validation:${validationTime}ms, upload:${uploadTime}ms)`);
 
         // Success response
         res.status(200).json({
@@ -395,7 +352,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
                 totalTime: `${totalTime}ms`,
                 breakdown: {
                     memoryGuard: `${memoryTime}ms`,
-                    redisCheck: `${redisTime}ms`,
+                    redisCheck: 'skipped (MW2)',
                     quotaCheck: `${quotaTime}ms`,
                     validation: `${validationTime}ms`,
                     supabaseUpload: `${uploadTime}ms`
@@ -412,18 +369,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
                 errorDetails: error.message
             }).catch(() => { });
 
-            trackApiUsage({
-                userId: req.userId || apiKey,
-                endpoint: '/api/v1/upload/supabase/upload',
-                method: 'POST',
-                provider: 'supabase',
-                operation: 'upload',
-                statusCode: 500,
-                success: false,
-                apiKeyId: apiKey,
-                ipAddress: req.ip,
-                userAgent: req.headers['user-agent']
-            });
+
         }
 
         res.status(500).json({
