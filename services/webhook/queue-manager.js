@@ -74,28 +74,43 @@ export async function dequeueWebhooks(batchSize = 100) {
         const items = [];
         const now = Date.now();
 
-        // First, check priority queue (sorted set)
+        // FIX #2: Drain expired retry items back to main queue.
+        // requeueWebhook now stores retries in a sorted set (score = execute-after ms).
+        // Any item with score ≤ now is ready for re-processing.
+        const retryItems = await redis.zrangebyscore('webhook:retry', 0, now);
+        if (retryItems && retryItems.length > 0) {
+            const pipeline = redis.pipeline();
+            for (const item of retryItems) {
+                pipeline.lpush(WEBHOOK_QUEUE_KEY, item);
+            }
+            // Remove all drained items in one shot
+            pipeline.zrem('webhook:retry', ...retryItems);
+            await pipeline.exec();
+            logger.debug(`[Webhook Queue] Moved ${retryItems.length} retry item(s) back to main queue`);
+        }
+
+        // Check priority queue (sorted set)
         const priorityItems = await redis.zrangebyscore(
             WEBHOOK_PRIORITY_KEY,
             0,
             now,
-            'LIMIT',
-            0,
-            Math.min(batchSize, 10) // Priority queue limited to 10 items max
+            'LIMIT', 0, Math.min(batchSize, 10)
         );
 
-        for (const item of priorityItems) {
-            items.push(JSON.parse(item));
-            await redis.zrem(WEBHOOK_PRIORITY_KEY, item);
+        if (priorityItems.length > 0) {
+            for (const item of priorityItems) {
+                items.push(JSON.parse(item));
+            }
+            // FIX #3: Single zrem with all members at once (was N individual calls in a loop)
+            await redis.zrem(WEBHOOK_PRIORITY_KEY, ...priorityItems);
         }
 
         if (items.length >= batchSize) {
             return items.slice(0, batchSize);
         }
 
-        // Then get from normal queue
+        // Get from normal queue
         const normalItems = await redis.rpop(WEBHOOK_QUEUE_KEY, batchSize - items.length);
-
         if (normalItems && normalItems.length > 0) {
             for (const item of normalItems) {
                 items.push(JSON.parse(item));
@@ -196,9 +211,12 @@ export async function requeueWebhook(webhookId, payload, delayMs = 5000) {
             enqueuedAt: new Date().toISOString()
         });
 
-        // Add to processing queue with TTL
-        // Will be moved back to main queue after delay
-        await redis.setex(`${WEBHOOK_PROCESSING_KEY}:${webhookId}`, Math.ceil(delayMs / 1000), queueItem);
+        // FIX #2: Use sorted set with execute-after timestamp as score.
+        // Previously used setex(webhook:processing:{id}, delay_sec, item) but nothing
+        // ever read those keys back — retried webhooks expired silently and were
+        // permanently lost. Now dequeueWebhooks() drains this set on each tick.
+        const executeAfter = Date.now() + delayMs;
+        await redis.zadd('webhook:retry', executeAfter, queueItem);
 
         logger.debug(`[Webhook Queue] Requeued ${webhookId} for retry in ${delayMs}ms`);
         return true;

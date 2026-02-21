@@ -34,84 +34,118 @@ const CIRCUIT_BREAK_DURATION = parseInt(process.env.WEBHOOK_CIRCUIT_BREAK_DURATI
  * @param {Object} webhookRecord - Webhook record from database
  * @returns {Promise<Object>} { success: boolean, reason?: string }
  */
-export async function processWebhook(webhookRecord) {
-    const { id, webhook_url, webhook_secret, provider, bucket, file_key, filename } = webhookRecord;
+/**
+ * Internal worker — does all HTTP/Redis work and returns pending DB ops.
+ * Does NOT write to the database. This lets processWebhookBatch collect
+ * all pending writes and fire them concurrently at the end (Fix #1).
+ */
+async function _processWebhookWork(webhookRecord) {
+    const { id, webhook_url, webhook_secret } = webhookRecord;
     const startTime = Date.now();
 
     logger.debug(`[Webhook Processor] Processing ${id}...`);
 
     try {
-        // 1. Verify file exists (if not already verified)
-        if (webhookRecord.status === 'pending' || webhookRecord.status === 'verifying') {
-            // For 'auto' trigger mode, poll for file
-            if (webhookRecord.trigger_mode === 'auto') {
-                const verifyResult = await verifyFile(webhookRecord);
-                
-                if (!verifyResult.exists) {
-                    // Re-queue for later processing
-                    await requeueWebhook(id, webhookRecord, 30000); // Retry in 30s
-                    await updateWebhookStatus(id, 'pending', {
-                        error_message: 'File not yet available, requeued'
-                    });
-                    return { success: false, reason: 'file_not_found_yet' };
-                }
+        // 1. Verify file exists (auto-trigger mode)
+        if ((webhookRecord.status === 'pending' || webhookRecord.status === 'verifying')
+            && webhookRecord.trigger_mode === 'auto') {
 
-                // Update with actual file metadata
-                if (verifyResult.metadata) {
-                    await updateWebhookRecord(id, {
-                        etag: verifyResult.metadata.etag,
-                        file_size: verifyResult.metadata.contentLength
-                    });
-                }
+            const verifyResult = await verifyFile(webhookRecord);
+
+            if (!verifyResult.exists) {
+                await requeueWebhook(id, webhookRecord, 30000);
+                return {
+                    success: false,
+                    reason: 'file_not_found_yet',
+                    pendingUpdate: { id, status: 'pending', updates: { error_message: 'File not yet available, requeued' } }
+                };
+            }
+
+            // Intermediate metadata update stays in-place (non-status, happens before delivery)
+            if (verifyResult.metadata) {
+                await updateWebhookRecord(id, {
+                    etag: verifyResult.metadata.etag,
+                    file_size: verifyResult.metadata.contentLength
+                });
             }
         }
 
-        // 2. Prepare payload
+        // 2. Build payload + signature
         const payload = buildWebhookPayload(webhookRecord, {});
-
-        // 3. Generate signature
         const signature = generateWebhookSignature(payload, webhook_secret);
 
-        // 4. Deliver webhook
+        // 3. Deliver (outgoing HTTP — the slow part)
         const response = await deliverWebhook(webhook_url, payload, signature, id);
 
-        // 5. Update status to completed
-        await updateWebhookStatus(id, 'completed', {
-            attempt_count: webhookRecord.attempt_count + 1,
-            response_status: response.status,
-            response_body: response.body.substring(0, 1000),
-            completed_at: new Date().toISOString()
-        });
+        logger.debug(`[Webhook Processor] Delivered ${id} in ${Date.now() - startTime}ms`);
 
-        logger.debug(`[Webhook Processor] Completed ${id} in ${Date.now() - startTime}ms`);
-        return { success: true };
+        return {
+            success: true,
+            pendingUpdate: {
+                id,
+                status: 'completed',
+                updates: {
+                    attempt_count: webhookRecord.attempt_count + 1,
+                    response_status: response.status,
+                    response_body: response.body.substring(0, 1000),
+                    completed_at: new Date().toISOString()
+                }
+            }
+        };
 
     } catch (error) {
         logger.error(`[Webhook Processor] Failed ${id}:`, { message: error.message });
-        
+
         const attemptCount = webhookRecord.attempt_count + 1;
-        
+
         if (attemptCount >= MAX_ATTEMPTS) {
-            // Move to dead letter queue
-            await moveToDeadLetter(webhookRecord, error.message);
-            await updateWebhookStatus(id, 'dead_letter', {
-                attempt_count: attemptCount,
-                error_message: error.message,
-                failed_at: new Date().toISOString()
-            });
-            return { success: false, reason: 'max_retries' };
+            return {
+                success: false,
+                reason: 'max_retries',
+                pendingDeadLetter: { webhook: webhookRecord, reason: error.message },
+                pendingUpdate: {
+                    id,
+                    status: 'dead_letter',
+                    updates: {
+                        attempt_count: attemptCount,
+                        error_message: error.message,
+                        failed_at: new Date().toISOString()
+                    }
+                }
+            };
         } else {
-            // Retry with exponential backoff
-            const delay = RETRY_DELAYS[attemptCount - 1] + Math.random() * 1000; // Add jitter
-            await requeueWebhook(id, webhookRecord, delay);
-            await updateWebhookStatus(id, 'pending', {
-                attempt_count: attemptCount,
-                next_retry_at: new Date(Date.now() + delay).toISOString(),
-                error_message: error.message
-            });
-            return { success: false, reason: 'retry_scheduled' };
+            const delay = RETRY_DELAYS[attemptCount - 1] + Math.random() * 1000;
+            await requeueWebhook(id, webhookRecord, delay); // Redis — fast, stays here
+            return {
+                success: false,
+                reason: 'retry_scheduled',
+                pendingUpdate: {
+                    id,
+                    status: 'pending',
+                    updates: {
+                        attempt_count: attemptCount,
+                        next_retry_at: new Date(Date.now() + delay).toISOString(),
+                        error_message: error.message
+                    }
+                }
+            };
         }
     }
+}
+
+/**
+ * Process a single webhook — public API, backward compatible.
+ * Executes DB writes immediately. For batch processing use processWebhookBatch().
+ */
+export async function processWebhook(webhookRecord) {
+    const result = await _processWebhookWork(webhookRecord);
+    if (result.pendingDeadLetter) {
+        await moveToDeadLetter(result.pendingDeadLetter.webhook, result.pendingDeadLetter.reason);
+    }
+    if (result.pendingUpdate) {
+        await updateWebhookStatus(result.pendingUpdate.id, result.pendingUpdate.status, result.pendingUpdate.updates);
+    }
+    return { success: result.success, reason: result.reason };
 }
 
 /**
@@ -233,56 +267,89 @@ async function deliverWebhook(url, payload, signature, webhookId) {
     } catch (error) {
         clearTimeout(timeoutId);
         recordFailure(url);
-        
+
         if (error.name === 'AbortError') {
             throw new Error('Webhook timeout exceeded');
         }
-        
+
         throw error;
     }
 }
 
 /**
- * Process batch of webhooks
- * 
- * @param {Array<Object>} webhookRecords - Array of webhook records
- * @returns {Promise<Object>} { successful: number, failed: number, results: Array }
+ * Run async tasks with a max concurrency limit.
+ * Processes items in chunks of `limit` — prevents connection pool exhaustion.
+ *
+ * FIX #4: Previously processWebhookBatch fired all 100 HTTP calls simultaneously
+ * via a single Promise.allSettled. At batch=100 this saturates Node's HTTP pool
+ * and causes mass timeouts → retry storm.
+ * Now: process in groups of 20, collect results in order.
+ */
+async function runWithConcurrency(items, limit, fn) {
+    const results = [];
+    for (let i = 0; i < items.length; i += limit) {
+        const chunk = items.slice(i, i + limit);
+        const settled = await Promise.allSettled(chunk.map(item => fn(item)));
+        for (const r of settled) {
+            if (r.status === 'fulfilled') {
+                results.push(r.value);
+            } else {
+                // Treat unexpected throws as failed with no pending ops
+                results.push({ success: false, reason: 'error', pendingUpdate: null, pendingDeadLetter: null });
+            }
+        }
+    }
+    return results;
+}
+
+/**
+ * Process batch of webhooks.
+ *
+ * FIX #1: N+1 DB status updates replaced with a single concurrent batch.
+ *   Before: each processWebhook() wrote to DB immediately → 100 scattered DB calls/tick.
+ *   After:  HTTP work runs first (concurrency-limited to 20), then ALL DB writes
+ *           fire concurrently via Promise.all at the end → minimum round-trips.
+ *
+ * FIX #4: HTTP calls capped at 20 concurrent to prevent connection pool exhaustion.
  */
 export async function processWebhookBatch(webhookRecords) {
-    const results = await Promise.allSettled(
-        webhookRecords.map(webhook => processWebhook(webhook))
-    );
+    // Phase 1: HTTP delivery + Redis ops — max 20 concurrent
+    const workResults = await runWithConcurrency(webhookRecords, 20, _processWebhookWork);
+
+    // Phase 2: Fire all DB writes concurrently (not one-by-one)
+    const dbOps = [];
+    for (const result of workResults) {
+        if (result.pendingDeadLetter) {
+            dbOps.push(moveToDeadLetter(result.pendingDeadLetter.webhook, result.pendingDeadLetter.reason));
+        }
+        if (result.pendingUpdate) {
+            dbOps.push(updateWebhookStatus(
+                result.pendingUpdate.id,
+                result.pendingUpdate.status,
+                result.pendingUpdate.updates
+            ));
+        }
+    }
+    if (dbOps.length > 0) {
+        await Promise.all(dbOps);
+    }
 
     let successful = 0;
     let failed = 0;
     const details = [];
 
-    results.forEach((result, index) => {
-        const webhook = webhookRecords[index];
-        
-        if (result.status === 'fulfilled') {
-            if (result.value.success) {
-                successful++;
-            } else {
-                failed++;
-            }
-            details.push({
-                id: webhook.id,
-                ...result.value
-            });
+    for (let i = 0; i < workResults.length; i++) {
+        const result = workResults[i];
+        const webhook = webhookRecords[i];
+        if (result.success) {
+            successful++;
         } else {
             failed++;
-            details.push({
-                id: webhook.id,
-                success: false,
-                reason: 'error',
-                error: result.reason?.message || 'Unknown error'
-            });
         }
-    });
+        details.push({ id: webhook?.id, success: result.success, reason: result.reason });
+    }
 
     logger.debug(`[Webhook Processor] Batch: ${successful} success, ${failed} failed`);
-    
     return { successful, failed, details };
 }
 

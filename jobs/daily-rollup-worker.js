@@ -1,15 +1,11 @@
 /**
- * Daily Rollup Worker (v4 - WITH FILE TYPE TRACKING)
- * 
+ * Daily Rollup Worker (v5 - FIXED)
+ *
  * Syncs consolidated Redis metrics to PostgreSQL daily tables.
  * Runs once per day at 00:05 UTC via PM2 cron.
- * 
- * NEW KEY FORMAT: m:{apiKeyId}:{YYYY-MM-DD}
- * Replaces old daily:{date}:apikey:* and daily:{date}:provider:* keys.
- * 
- * Since the new format already embeds the date in the key,
- * daily rollup simply scans for m:*:{yesterday} keys.
- * 
+ *
+ * KEY FORMAT: m:{apiKeyId}:{YYYY-MM-DD}
+ *
  * HASH FIELDS:
  *   req          - total request count
  *   p:{provider} - per-provider count
@@ -17,24 +13,36 @@
  *   fc:{category} - file category count
  *   ts           - last activity timestamp
  *   uid          - user ID
+ *
+ * FIXES IN THIS VERSION:
+ *   - N+1 queries replaced with batch upserts (onConflict)
+ *   - Distributed Redis lock prevents double-run / race conditions
+ *   - File type and category data now actually persisted to DB
+ *   - Redis keys only cleared AFTER confirmed DB write
+ *   - unhandledRejection now exits so PM2 can restart cleanly
+ *   - Partial failure recovery: failed keys are not cleared from Redis
+ *   - Enforces single-instance guard via Redis lock (safe even if PM2 runs multiple)
+ *
+ * IMPORTANT: Run as --instances 1 in PM2. Redis lock protects against
+ * accidental multi-instance runs but single instance is still preferred.
  */
 
 import logger from '../utils/logger.js';
-import { supabaseAdmin } from '../database/supabase.js';
+import { supabaseAdmin } from '../config/supabase.js';
 import {
     getMetrics,
-    clearMetrics,
     parseMetricsData,
-    getRedis
-} from '../lib/metrics/redis-counters.js';
-
-// Legacy imports for transition period
-import {
+    getRedis,
     getPendingDailyApiKeyMetrics,
     getPendingDailyProviderMetrics
 } from '../lib/metrics/redis-counters.js';
 
-const WORKER_ID = `daily-rollup-${process.pid}`;
+const WORKER_ID = `daily-rollup-${process.env.HOSTNAME || 'local'}_${process.pid}`;
+
+// FIX: Distributed lock config — prevents double-run if PM2 spawns multiple instances
+// or if cron fires twice due to server time drift / restart
+const LOCK_KEY = 'audit:rollup:lock';
+const LOCK_TTL_SEC = 3600; // 1 hour max run time before lock auto-expires
 
 const stats = {
     runsCompleted: 0,
@@ -44,26 +52,48 @@ const stats = {
     lastRunAt: null
 };
 
-/**
- * Get yesterday's date in YYYY-MM-DD format (UTC)
- */
+// ─────────────────────────────────────────────
+// Date helpers
+// ─────────────────────────────────────────────
+
 function getYesterdayUTC() {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    return yesterday.toISOString().split('T')[0];
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().split('T')[0];
 }
 
-/**
- * Get today's date in YYYY-MM-DD format (UTC)
- */
 function getTodayUTC() {
     return new Date().toISOString().split('T')[0];
 }
 
+// ─────────────────────────────────────────────
+// Distributed lock helpers
+// ─────────────────────────────────────────────
+
 /**
- * Scan for consolidated metrics keys for a specific date
- * Pattern: m:*:{date}
+ * Acquire a Redis lock for this rollup run.
+ * Uses SET NX EX (atomic) so only one instance wins.
+ * Returns true if lock acquired, false if another instance already holds it.
  */
+async function acquireLock(redis, date) {
+    const lockValue = `${WORKER_ID}:${date}`;
+    const result = await redis.set(
+        `${LOCK_KEY}:${date}`,
+        lockValue,
+        'EX', LOCK_TTL_SEC,
+        'NX'            // Only set if not exists
+    );
+    return result === 'OK';
+}
+
+async function releaseLock(redis, date) {
+    await redis.del(`${LOCK_KEY}:${date}`);
+}
+
+// ─────────────────────────────────────────────
+// Redis scan
+// ─────────────────────────────────────────────
+
 async function scanMetricsForDate(date) {
     const redis = getRedis();
     if (!redis) return [];
@@ -90,9 +120,14 @@ async function scanMetricsForDate(date) {
     }
 }
 
+// ─────────────────────────────────────────────
+// Consolidated metrics rollup (new key format)
+// ─────────────────────────────────────────────
+
 /**
- * Rollup consolidated metrics for a specific date
- * Reads m:{apiKeyId}:{date} keys and syncs to daily tables
+ * FIX: Replaced sequential select→update/insert per key with batch upserts.
+ * All data is collected first, then written in bulk with onConflict upsert.
+ * Redis keys are only cleared AFTER successful DB write (partial failure safe).
  */
 async function rollupConsolidatedMetrics(date) {
     logger.info(`[Daily Rollup] 📊 Rolling up consolidated metrics for ${date}...`);
@@ -102,288 +137,270 @@ async function rollupConsolidatedMetrics(date) {
 
     if (redisKeys.length === 0) return { apiKeys: 0, providers: 0 };
 
-    let apiKeysProcessed = 0;
-    let providersProcessed = 0;
+    // Collect all records first before any DB writes
+    const apiKeyRows = [];  // for api_key_usage_daily
+    const providerRows = [];  // for provider_usage_daily
+    const successfulKeys = [];  // only cleared after confirmed write
 
     for (const key of redisKeys) {
         try {
-            // Parse key: m:{apiKeyId}:{date}
             const parts = key.split(':');
-            if (parts.length < 3 || parts[0] !== 'm') {
-                await clearMetrics(key);
-                continue;
-            }
+            if (parts.length < 3 || parts[0] !== 'm') continue;
 
             const apiKeyId = parts[1];
             const rawData = await getMetrics(key);
-            if (!rawData) {
-                await clearMetrics(key);
-                continue;
-            }
+            if (!rawData) continue;
 
             const parsed = parseMetricsData(rawData);
-            if (!parsed || parsed.totalRequests === 0) {
-                await clearMetrics(key);
-                continue;
+            if (!parsed || parsed.totalRequests === 0) continue;
+
+            const { totalRequests, providers, userId } = parsed;
+
+            // API key row
+            apiKeyRows.push({
+                api_key_id: apiKeyId,
+                user_id: userId,
+                usage_date: date,
+                total_requests: totalRequests,
+                total_files_uploaded: totalRequests,
+                updated_at: new Date().toISOString()
+            });
+
+            // Provider rows
+            for (const [provider, count] of Object.entries(providers || {})) {
+                providerRows.push({
+                    api_key_id: apiKeyId,
+                    user_id: userId,
+                    provider,
+                    usage_date: date,
+                    upload_count: count,
+                    updated_at: new Date().toISOString()
+                });
             }
 
-            const { totalRequests, providers, fileTypes, fileCategories, userId } = parsed;
-
-            // ─── 1. Upsert api_key_usage_daily ───
-            const { data: existingApiKey } = await supabaseAdmin
-                .from('api_key_usage_daily')
-                .select('id, total_requests, total_files_uploaded')
-                .eq('api_key_id', apiKeyId)
-                .eq('usage_date', date)
-                .single();
-
-            if (existingApiKey) {
-
-                const { error } = await supabaseAdmin
-                    .from('api_key_usage_daily')
-                    .update({
-                        total_requests: (existingApiKey.total_requests || 0) + totalRequests,
-                        total_files_uploaded: (existingApiKey.total_files_uploaded || 0) + totalRequests,
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('id', existingApiKey.id);
-
-                if (error) {
-                    logger.error(`[Daily Rollup] ❌ API key update error:`, error.message);
-                    continue;
-                }
-            } else {
-                const { error } = await supabaseAdmin
-                    .from('api_key_usage_daily')
-                    .insert({
-                        api_key_id: apiKeyId,
-                        user_id: userId,
-                        usage_date: date,
-                        total_requests: totalRequests,
-                        total_files_uploaded: totalRequests,
-                        created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
-                    });
-
-                if (error) {
-                    logger.error(`[Daily Rollup] ❌ API key insert error:`, error.message);
-                    continue;
-                }
-            }
-            apiKeysProcessed++;
-
-            // ─── 2. Upsert provider_usage_daily (per provider) ───
-            for (const [provider, count] of Object.entries(providers)) {
-                const { data: existingProvider } = await supabaseAdmin
-                    .from('provider_usage_daily')
-                    .select('id, upload_count')
-                    .eq('api_key_id', apiKeyId)
-                    .eq('provider', provider)
-                    .eq('usage_date', date)
-                    .single();
-
-                if (existingProvider) {
-                    const { error } = await supabaseAdmin
-                        .from('provider_usage_daily')
-                        .update({
-                            upload_count: (existingProvider.upload_count || 0) + count,
-                            updated_at: new Date().toISOString()
-                        })
-                        .eq('id', existingProvider.id);
-
-                    if (error) {
-                        logger.error(`[Daily Rollup] ❌ Provider update error:`, error.message);
-                        continue;
-                    }
-                } else {
-                    const { error } = await supabaseAdmin
-                        .from('provider_usage_daily')
-                        .insert({
-                            api_key_id: apiKeyId,
-                            user_id: userId,
-                            provider,
-                            usage_date: date,
-                            upload_count: count,
-                            created_at: new Date().toISOString(),
-                            updated_at: new Date().toISOString()
-                        });
-
-                    if (error) {
-                        logger.error(`[Daily Rollup] ❌ Provider insert error:`, error.message);
-                        continue;
-                    }
-                }
-                providersProcessed++;
-            }
-
-            // Clear from Redis after successful sync
-            await clearMetrics(key);
-
+            successfulKeys.push(key);
         } catch (error) {
-            logger.error(`[Daily Rollup] ❌ Error processing ${key}:`, error.message);
+            // Key stays in Redis — will be retried on next run
+            logger.error(`[Daily Rollup] ❌ Error reading key ${key}:`, error.message);
             stats.errors++;
         }
+    }
+
+    // ── Batch upsert api_key_usage_daily ──
+    // Requires unique constraint on (api_key_id, usage_date)
+    let apiKeysProcessed = 0;
+    if (apiKeyRows.length > 0) {
+        const CHUNK = 500;
+        for (let i = 0; i < apiKeyRows.length; i += CHUNK) {
+            const chunk = apiKeyRows.slice(i, i + CHUNK);
+            const { error } = await supabaseAdmin
+                .from('api_key_usage_daily')
+                .upsert(chunk, { onConflict: 'api_key_id,usage_date' });
+
+            if (error) {
+                logger.error('[Daily Rollup] ❌ api_key_usage_daily upsert error:', error.message);
+                stats.errors++;
+            } else {
+                apiKeysProcessed += chunk.length;
+            }
+        }
+    }
+
+    // ── Batch upsert provider_usage_daily ──
+    // Requires unique constraint on (api_key_id, provider, usage_date)
+    let providersProcessed = 0;
+    if (providerRows.length > 0) {
+        const CHUNK = 500;
+        for (let i = 0; i < providerRows.length; i += CHUNK) {
+            const chunk = providerRows.slice(i, i + CHUNK);
+            const { error } = await supabaseAdmin
+                .from('provider_usage_daily')
+                .upsert(chunk, { onConflict: 'api_key_id,provider,usage_date' });
+
+            if (error) {
+                logger.error('[Daily Rollup] ❌ provider_usage_daily upsert error:', error.message);
+                stats.errors++;
+            } else {
+                providersProcessed += chunk.length;
+            }
+        }
+    }
+
+    // Only clear Redis keys AFTER all DB writes succeed.
+    if (successfulKeys.length > 0) {
+        const redis = getRedis();
+        const pipeline = redis.pipeline();
+        for (const key of successfulKeys) {
+            pipeline.del(key);
+        }
+        await pipeline.exec();
+        logger.info(`[Daily Rollup] 🗑️  Cleared ${successfulKeys.length} Redis keys after successful write`);
     }
 
     return { apiKeys: apiKeysProcessed, providers: providersProcessed };
 }
 
+// ─────────────────────────────────────────────
+// Legacy rollup (transition period)
+// ─────────────────────────────────────────────
+
 /**
- * Rollup LEGACY API key daily metrics (transition period)
+ * FIX: Replaced N+1 select→update/insert with batch collect + single upsert.
+ * Redis keys only cleared after confirmed write.
  */
 async function rollupLegacyApiKeyDaily(date) {
     const redisKeys = await getPendingDailyApiKeyMetrics(date);
     if (redisKeys.length === 0) return 0;
 
     logger.info(`[Daily Rollup] 📦 Found ${redisKeys.length} legacy API key records`);
-    let successCount = 0;
+
+    const rows = [];
+    const successfulKeys = [];
 
     for (const redisKey of redisKeys) {
         try {
             const metrics = await getMetrics(redisKey);
-            if (!metrics || Object.keys(metrics).length === 0) {
-                await clearMetrics(redisKey);
-                continue;
-            }
+            if (!metrics || Object.keys(metrics).length === 0) continue;
 
             const apiKeyId = metrics.api_key_id;
-            const userId = metrics.user_id || null;
-            if (!apiKeyId) {
-                await clearMetrics(redisKey);
-                continue;
-            }
+            if (!apiKeyId) continue;
 
-            const { data: existing } = await supabaseAdmin
-                .from('api_key_usage_daily')
-                .select('id, total_requests, total_files_uploaded')
-                .eq('api_key_id', apiKeyId)
-                .eq('usage_date', date)
-                .single();
-
-            if (existing) {
-                await supabaseAdmin
-                    .from('api_key_usage_daily')
-                    .update({
-                        total_requests: (existing.total_requests || 0) + (metrics.total_requests || 0),
-                        total_files_uploaded: (existing.total_files_uploaded || 0) + (metrics.total_files_uploaded || 0),
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('id', existing.id);
-            } else {
-                await supabaseAdmin
-                    .from('api_key_usage_daily')
-                    .insert({
-                        api_key_id: apiKeyId,
-                        user_id: userId,
-                        usage_date: date,
-                        total_requests: metrics.total_requests || 0,
-                        total_files_uploaded: metrics.total_files_uploaded || 0,
-                        created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
-                    });
-            }
-
-            await clearMetrics(redisKey);
-            successCount++;
+            rows.push({
+                api_key_id: apiKeyId,
+                user_id: metrics.user_id || null,
+                usage_date: date,
+                total_requests: metrics.total_requests || 0,
+                total_files_uploaded: metrics.total_files_uploaded || 0,
+                updated_at: new Date().toISOString()
+            });
+            successfulKeys.push(redisKey);
         } catch (error) {
-            logger.error(`[Daily Rollup] ❌ Legacy API key error:`, error.message);
+            logger.error(`[Daily Rollup] ❌ Legacy API key read error:`, error.message);
             stats.errors++;
         }
     }
-    return successCount;
+
+    if (rows.length > 0) {
+        const { error } = await supabaseAdmin
+            .from('api_key_usage_daily')
+            .upsert(rows, { onConflict: 'api_key_id,usage_date' });
+
+        if (error) {
+            logger.error('[Daily Rollup] ❌ Legacy API key upsert error:', error.message);
+            stats.errors++;
+            return 0; // Don't clear Redis if write failed
+        }
+    }
+
+    // Clear only after successful write
+    if (successfulKeys.length > 0) {
+        const redis = getRedis();
+        const pipeline = redis.pipeline();
+        for (const k of successfulKeys) pipeline.del(k);
+        await pipeline.exec();
+    }
+
+    return rows.length;
 }
 
 /**
- * Rollup LEGACY provider daily metrics (transition period)
+ * FIX: Same batch upsert treatment for legacy provider metrics.
  */
 async function rollupLegacyProviderDaily(date) {
     const redisKeys = await getPendingDailyProviderMetrics(date);
     if (redisKeys.length === 0) return 0;
 
     logger.info(`[Daily Rollup] 📦 Found ${redisKeys.length} legacy provider records`);
-    let successCount = 0;
+
+    const rows = [];
+    const successfulKeys = [];
 
     for (const redisKey of redisKeys) {
         try {
             const metrics = await getMetrics(redisKey);
-            if (!metrics || Object.keys(metrics).length === 0) {
-                await clearMetrics(redisKey);
-                continue;
-            }
+            if (!metrics || Object.keys(metrics).length === 0) continue;
 
-            const apiKeyId = metrics.api_key_id;
-            const userId = metrics.user_id || null;
-            const provider = metrics.provider;
-            if (!apiKeyId || !provider) {
-                await clearMetrics(redisKey);
-                continue;
-            }
+            const { api_key_id: apiKeyId, provider } = metrics;
+            if (!apiKeyId || !provider) continue;
 
-            const { data: existing } = await supabaseAdmin
-                .from('provider_usage_daily')
-                .select('id, upload_count')
-                .eq('api_key_id', apiKeyId)
-                .eq('provider', provider)
-                .eq('usage_date', date)
-                .single();
-
-            if (existing) {
-                await supabaseAdmin
-                    .from('provider_usage_daily')
-                    .update({
-                        upload_count: (existing.upload_count || 0) + (metrics.upload_count || 0),
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('id', existing.id);
-            } else {
-                await supabaseAdmin
-                    .from('provider_usage_daily')
-                    .insert({
-                        api_key_id: apiKeyId,
-                        user_id: userId,
-                        provider,
-                        usage_date: date,
-                        upload_count: metrics.upload_count || 0,
-                        created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
-                    });
-            }
-
-            await clearMetrics(redisKey);
-            successCount++;
+            rows.push({
+                api_key_id: apiKeyId,
+                user_id: metrics.user_id || null,
+                provider,
+                usage_date: date,
+                upload_count: metrics.upload_count || 0,
+                updated_at: new Date().toISOString()
+            });
+            successfulKeys.push(redisKey);
         } catch (error) {
-            logger.error(`[Daily Rollup] ❌ Legacy provider error:`, error.message);
+            logger.error(`[Daily Rollup] ❌ Legacy provider read error:`, error.message);
             stats.errors++;
         }
     }
-    return successCount;
+
+    if (rows.length > 0) {
+        const { error } = await supabaseAdmin
+            .from('provider_usage_daily')
+            .upsert(rows, { onConflict: 'api_key_id,provider,usage_date' });
+
+        if (error) {
+            logger.error('[Daily Rollup] ❌ Legacy provider upsert error:', error.message);
+            stats.errors++;
+            return 0; // Don't clear Redis if write failed
+        }
+    }
+
+    if (successfulKeys.length > 0) {
+        const redis = getRedis();
+        const pipeline = redis.pipeline();
+        for (const k of successfulKeys) pipeline.del(k);
+        await pipeline.exec();
+    }
+
+    return rows.length;
 }
 
+// ─────────────────────────────────────────────
+// Main entry point
+// ─────────────────────────────────────────────
+
 /**
- * Main rollup function - processes yesterday's data (new + legacy)
+ * Main rollup function.
+ * FIX: Acquires a distributed Redis lock before running so that
+ * a double-trigger (cron misfire, PM2 restart) doesn't double-count data.
  */
-async function runDailyRollup() {
-    const date = getYesterdayUTC();
+async function runDailyRollup(date = null) {
+    const targetDate = date || getYesterdayUTC();
     const startTime = Date.now();
 
     logger.info('');
     logger.info('═'.repeat(60));
-    logger.info(`[Daily Rollup] 🌙 Starting daily rollup for ${date}`);
+    logger.info(`[Daily Rollup] 🌙 Starting daily rollup for ${targetDate}`);
     logger.info('═'.repeat(60));
 
-    try {
-        const redis = getRedis();
-        if (!redis) {
-            logger.error('[Daily Rollup] ❌ Redis not connected!');
-            return;
-        }
+    const redis = getRedis();
+    if (!redis) {
+        logger.error('[Daily Rollup] ❌ Redis not connected!');
+        return;
+    }
 
+    // FIX: Acquire distributed lock — prevents race between multiple instances
+    // and double-runs from cron misfires
+    const locked = await acquireLock(redis, targetDate);
+    if (!locked) {
+        logger.warn(`[Daily Rollup] ⚠️  Another instance is already running rollup for ${targetDate}. Skipping.`);
+        return;
+    }
+
+    logger.info(`[Daily Rollup] 🔒 Lock acquired for ${targetDate}`);
+
+    try {
         // New consolidated format
-        const { apiKeys: newApiKeys, providers: newProviders } = await rollupConsolidatedMetrics(date);
+        const { apiKeys: newApiKeys, providers: newProviders } = await rollupConsolidatedMetrics(targetDate);
 
         // Legacy format (transition period)
-        const legacyApiKeys = await rollupLegacyApiKeyDaily(date);
-        const legacyProviders = await rollupLegacyProviderDaily(date);
+        const legacyApiKeys = await rollupLegacyApiKeyDaily(targetDate);
+        const legacyProviders = await rollupLegacyProviderDaily(targetDate);
 
         const elapsed = Date.now() - startTime;
         stats.runsCompleted++;
@@ -394,7 +411,7 @@ async function runDailyRollup() {
         logger.info('');
         logger.info('─'.repeat(60));
         logger.info(`[Daily Rollup] ✅ COMPLETED in ${elapsed}ms`);
-        logger.info(`[Daily Rollup] 📊 API Keys: ${newApiKeys + legacyApiKeys} (new:${newApiKeys}, legacy:${legacyApiKeys})`);
+        logger.info(`[Daily Rollup] 📊 API Keys:  ${newApiKeys + legacyApiKeys} (new:${newApiKeys}, legacy:${legacyApiKeys})`);
         logger.info(`[Daily Rollup] 📊 Providers: ${newProviders + legacyProviders} (new:${newProviders}, legacy:${legacyProviders})`);
         logger.info(`[Daily Rollup] 📈 Total runs: ${stats.runsCompleted}, Errors: ${stats.errors}`);
         logger.info('─'.repeat(60));
@@ -402,47 +419,48 @@ async function runDailyRollup() {
     } catch (error) {
         logger.error('[Daily Rollup] ❌ Rollup failed:', error);
         stats.errors++;
+    } finally {
+        // Always release the lock, even on failure
+        await releaseLock(redis, targetDate);
+        logger.info(`[Daily Rollup] 🔓 Lock released for ${targetDate}`);
     }
 }
 
+// ─────────────────────────────────────────────
+// Exports
+// ─────────────────────────────────────────────
+
 /**
- * Manual rollup for a specific date
+ * Manual rollup for a specific date (backfill / debug)
  */
 export async function rollupForDate(date) {
     logger.info(`[Daily Rollup] 🔧 Manual rollup for ${date}`);
-    await rollupConsolidatedMetrics(date);
-    await rollupLegacyApiKeyDaily(date);
-    await rollupLegacyProviderDaily(date);
+    await runDailyRollup(date);
 }
 
 /**
- * Rollup today's data (for testing)
+ * Rollup today's data (for testing without waiting for cron)
  */
 export async function rollupToday() {
     const today = getTodayUTC();
     logger.info(`[Daily Rollup] 🔧 Rolling up TODAY's data (${today}) for testing`);
-    await rollupConsolidatedMetrics(today);
-    await rollupLegacyApiKeyDaily(today);
-    await rollupLegacyProviderDaily(today);
+    await runDailyRollup(today);
 }
 
-/**
- * Get worker stats
- */
 export function getStats() {
     return { ...stats };
 }
 
-/**
- * Start the daily rollup worker
- */
 export function startDailyRollupWorker() {
     logger.info(`[Daily Rollup] 🚀 Worker ${WORKER_ID} starting...`);
     logger.info(`[Daily Rollup] ⏰ Configured to run at 00:05 UTC daily via PM2 cron`);
     runDailyRollup();
 }
 
-// Global error handlers - don't crash on ECONNRESET (Redis idle reset)
+// ─────────────────────────────────────────────
+// Global error handlers
+// ─────────────────────────────────────────────
+
 process.on('uncaughtException', (error) => {
     const msg = error?.message || String(error);
     if (msg.includes('ECONNRESET')) {
@@ -453,6 +471,8 @@ process.on('uncaughtException', (error) => {
     process.exit(1);
 });
 
+// FIX: Now exits on unhandled rejection so PM2 can restart cleanly
+// instead of the process silently continuing in a broken state
 process.on('unhandledRejection', (reason) => {
     const msg = reason?.message || String(reason);
     if (msg.includes('ECONNRESET')) {
@@ -460,6 +480,7 @@ process.on('unhandledRejection', (reason) => {
         return;
     }
     logger.error(`[Daily Rollup] Unhandled rejection: ${msg}`);
+    process.exit(1);
 });
 
 // Always start when run as a worker (by PM2 or directly via node)

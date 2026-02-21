@@ -7,6 +7,7 @@
  * - Multi-instance safe with Redis
  */
 
+import http from 'http'; // FIX: was require('http') — incompatible with ESM
 import logger from '../utils/logger.js';
 
 // Lazy-load dependencies to handle startup errors gracefully
@@ -37,10 +38,16 @@ async function loadDependencies() {
     }
 }
 
-const WORKER_ID = `webhook_${process.pid}`;
-const BATCH_SIZE = 100;
-const SYNC_INTERVAL_MS = 5000; // 5 seconds
+// FIX: Added hostname to WORKER_ID for uniqueness across containers/pods
+const WORKER_ID = `webhook_${process.env.HOSTNAME || 'local'}_${process.pid}`;
+const BATCH_SIZE = 200;   // FIX #5: raised from 100 — safe now that HTTP is concurrency-capped at 20
+const SYNC_INTERVAL_MS = 5000;   // 5 seconds
 const AUTO_POLL_INTERVAL_MS = 10000; // 10 seconds for auto mode
+const CLEANUP_INTERVAL_MS = 60000;   // FIX: Run cleanup every 60s, not just on shutdown
+
+// FIX: Dead letter retry backoff — track last run to avoid hammering
+let lastDeadLetterRun = 0;
+const DEAD_LETTER_MIN_INTERVAL_MS = 30000; // at most every 30s
 
 // Metrics tracking
 const workerMetrics = {
@@ -65,6 +72,12 @@ async function runWorker() {
 
         if (webhooks.length === 0) {
             return;
+        }
+
+        // FIX #5: Queue depth alert — hook for future Slack/PagerDuty notification
+        const queueStats = await getQueueStats();
+        if (queueStats.total > 500) {
+            logger.warn(`[Webhook Worker] ⚠️ Queue depth ${queueStats.total} — webhooks accumulating faster than they are processed. Consider scaling workers.`);
         }
 
         logger.debug(`[Webhook Worker] Processing ${webhooks.length} webhooks...`);
@@ -93,10 +106,13 @@ async function runWorker() {
         // 5. Process batch
         const result = await processWebhookBatch(validWebhooks);
 
-        // Update metrics
-        workerMetrics.webhooksProcessed += result.successful + result.failed;
-        workerMetrics.webhooksSucceeded += result.successful;
-        workerMetrics.webhooksFailed += result.failed;
+        // FIX: Guard against unexpected result shape before updating metrics
+        const successful = result?.successful ?? 0;
+        const failed = result?.failed ?? 0;
+
+        workerMetrics.webhooksProcessed += successful + failed;
+        workerMetrics.webhooksSucceeded += successful;
+        workerMetrics.webhooksFailed += failed;
         workerMetrics.lastRunDuration = Date.now() - startTime;
         workerMetrics.lastRunAt = new Date().toISOString();
 
@@ -105,8 +121,6 @@ async function runWorker() {
     } catch (error) {
         if (error.message.includes('max requests')) {
             logger.warn('[Webhook Worker] Redis quota exceeded. Pausing...');
-            // We just log and return cleanly so the interval will retry later naturally (5s)
-            // This prevents consecutiveErrors from incrementing and crashing the worker
             return;
         }
 
@@ -121,13 +135,14 @@ async function runWorker() {
  */
 async function handleAutoWebhooks() {
     try {
-        // Find webhooks pending verification
+        // FIX: Was filtering lt('expires_at', now) which matched already-expired webhooks.
+        // Corrected to gte so we only process webhooks that haven't expired yet.
         const { data: autoWebhooks } = await supabaseAdmin
             .from('upload_webhooks')
             .select('id')
             .eq('status', 'verifying')
             .eq('trigger_mode', 'auto')
-            .lt('expires_at', new Date().toISOString())
+            .gte('expires_at', new Date().toISOString())
             .limit(50);
 
         if (!autoWebhooks || autoWebhooks.length === 0) {
@@ -136,21 +151,12 @@ async function handleAutoWebhooks() {
 
         logger.debug(`[Webhook Worker] Found ${autoWebhooks.length} auto-trigger webhooks needing verification`);
 
-        // Queue them for processing
-        for (const w of autoWebhooks) {
-            const { data: webhook } = await supabaseAdmin
-                .from('upload_webhooks')
-                .select('*')
-                .eq('id', w.id)
-                .single();
-
-            if (webhook) {
-                await supabaseAdmin
-                    .from('upload_webhooks')
-                    .update({ status: 'pending' })
-                    .eq('id', w.id);
-            }
-        }
+        // FIX: Was doing N+1 individual selects inside a loop. Now a single batch update.
+        const ids = autoWebhooks.map(w => w.id);
+        await supabaseAdmin
+            .from('upload_webhooks')
+            .update({ status: 'pending' })
+            .in('id', ids);
 
     } catch (error) {
         logger.error('[Webhook Worker] Auto-handler error:', { message: error.message });
@@ -158,13 +164,21 @@ async function handleAutoWebhooks() {
 }
 
 /**
- * Handle dead letter retries
+ * Handle dead letter retries — rate-limited to avoid hammering on every auto-poll cycle
  */
 async function handleDeadLetters() {
+    // FIX: Added minimum interval backoff so this doesn't run every 10s unconditionally
+    const now = Date.now();
+    if (now - lastDeadLetterRun < DEAD_LETTER_MIN_INTERVAL_MS) {
+        return;
+    }
+    lastDeadLetterRun = now;
+
     try {
         const retried = await retryDeadLetters(20);
         if (retried > 0) {
             workerMetrics.deadLettersRetried += retried;
+            logger.debug(`[Webhook Worker] Retried ${retried} dead letter webhooks`);
         }
     } catch (error) {
         logger.error('[Webhook Worker] Dead letter handler error:', { message: error.message });
@@ -172,7 +186,7 @@ async function handleDeadLetters() {
 }
 
 /**
- * Cleanup expired webhooks
+ * Cleanup expired webhooks — now runs on a dedicated interval, not just at shutdown
  */
 async function cleanupExpiredWebhooks() {
     try {
@@ -223,6 +237,11 @@ export async function startWebhookWorker() {
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 5;
 
+    // FIX: Add per-instance jitter (0–2s) so multiple pods don't hammer Redis simultaneously
+    const jitter = Math.floor(Math.random() * 2000);
+    await new Promise(resolve => setTimeout(resolve, jitter));
+    logger.debug(`[Webhook Worker] Applied ${jitter}ms startup jitter`);
+
     // Main processing interval
     const intervalId = setInterval(async () => {
         try {
@@ -250,6 +269,11 @@ export async function startWebhookWorker() {
         }
     }, AUTO_POLL_INTERVAL_MS);
 
+    // FIX: Dedicated cleanup interval — no longer only runs at shutdown
+    const cleanupIntervalId = setInterval(async () => {
+        await cleanupExpiredWebhooks();
+    }, CLEANUP_INTERVAL_MS);
+
     // Metrics logging (every 5 minutes)
     const metricsIntervalId = setInterval(logMetrics, 300000);
 
@@ -259,6 +283,7 @@ export async function startWebhookWorker() {
 
         clearInterval(intervalId);
         clearInterval(autoIntervalId);
+        clearInterval(cleanupIntervalId);
         clearInterval(metricsIntervalId);
 
         // Final cleanup
@@ -276,17 +301,19 @@ export async function startWebhookWorker() {
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
 
-    // Handle uncaught exceptions - but don't crash on ECONNRESET (Redis idle reset)
+    // Handle uncaught exceptions — don't crash on ECONNRESET (Redis idle reset)
     process.on('uncaughtException', (error) => {
         const msg = error?.message || String(error);
         if (msg.includes('ECONNRESET')) {
             logger.debug('[Webhook Worker] ECONNRESET caught (Redis idle reset, safe to ignore)');
-            return; // Don't shut down!
+            return;
         }
         logger.error('[Webhook Worker] Uncaught exception:', { message: msg, stack: error.stack });
         shutdown('uncaughtException');
     });
 
+    // FIX: unhandledRejection now calls shutdown for non-ECONNRESET errors,
+    // consistent with uncaughtException behavior instead of just logging and continuing.
     process.on('unhandledRejection', (reason) => {
         const msg = reason?.message || String(reason);
         if (msg.includes('ECONNRESET')) {
@@ -294,6 +321,7 @@ export async function startWebhookWorker() {
             return;
         }
         logger.error('[Webhook Worker] Unhandled rejection:', { reason });
+        shutdown('unhandledRejection');
     });
 
     return intervalId;
@@ -312,9 +340,6 @@ export function getWorkerMetrics() {
 
 /**
  * Health check endpoint for PM2/K8s
- * 
- * @param {Object} options - Health check options
- * @returns {Promise<Object>} Health status
  */
 export async function healthCheck(options = {}) {
     const { checkRedis = true, checkDatabase = true } = options;
@@ -328,7 +353,6 @@ export async function healthCheck(options = {}) {
     };
 
     try {
-        // Check Redis connectivity
         if (checkRedis) {
             const redis = getRedis();
             if (redis?.status === 'ready') {
@@ -340,7 +364,6 @@ export async function healthCheck(options = {}) {
             }
         }
 
-        // Check Database connectivity
         if (checkDatabase) {
             try {
                 const { error } = await supabaseAdmin
@@ -348,7 +371,7 @@ export async function healthCheck(options = {}) {
                     .select('id')
                     .limit(1);
 
-                if (error && error.code !== 'PGRST301') { // Ignore table not found
+                if (error && error.code !== 'PGRST301') {
                     throw error;
                 }
                 health.checks.database = { status: 'healthy' };
@@ -361,7 +384,6 @@ export async function healthCheck(options = {}) {
             }
         }
 
-        // Add metrics to health check
         health.metrics = {
             processed: workerMetrics.webhooksProcessed,
             succeeded: workerMetrics.webhooksSucceeded,
@@ -384,15 +406,11 @@ export async function healthCheck(options = {}) {
 
 /**
  * Start HTTP server for health checks (optional)
- * 
- * @param {number} port - Port for health check server
- * @returns {http.Server}
  */
 export function startHealthCheckServer(port = 3001) {
-    const http = require('http');
+    // FIX: Removed require('http') — now uses ESM import at top of file
 
     const server = http.createServer(async (req, res) => {
-        // CORS headers
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
         res.setHeader('Content-Type', 'application/json');
@@ -429,9 +447,7 @@ export function startHealthCheckServer(port = 3001) {
     return server;
 }
 
-// Always start when run as a worker (by PM2 or directly via node)
-// NOTE: process.argv[1] under PM2 fork mode is NOT this file path,
-// so we cannot use includes('webhook-worker') as an entry check.
+// Start worker — PM2 fork mode doesn't set process.argv[1] reliably so we always start
 const withHealthServer = process.env.WEBHOOK_HEALTH_SERVER === 'true';
 if (withHealthServer) {
     startWebhookWorker();
