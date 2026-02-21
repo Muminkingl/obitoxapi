@@ -9,15 +9,12 @@
  * HASH FIELDS:
  *   req          - total request count
  *   p:{provider} - per-provider count
- *   ft:{mimeType} - file type count
- *   fc:{category} - file category count
  *   ts           - last activity timestamp
  *   uid          - user ID
  *
  * FIXES IN THIS VERSION:
  *   - N+1 queries replaced with batch upserts (onConflict)
  *   - Distributed Redis lock prevents double-run / race conditions
- *   - File type and category data now actually persisted to DB
  *   - Redis keys only cleared AFTER confirmed DB write
  *   - unhandledRejection now exits so PM2 can restart cleanly
  *   - Partial failure recovery: failed keys are not cleared from Redis

@@ -49,42 +49,6 @@ export async function logAudit({
     }
 
     try {
-        // 🔥 BACKPRESSURE: Check queue length BEFORE pushing
-        const queueLength = await redis.llen('audit:queue');
-
-        if (queueLength > MAX_QUEUE_LENGTH) {
-            console.error(`⚠️  Audit queue overflow! Queue length: ${queueLength}`);
-
-            // 🚨 CRITICAL EVENTS: Write directly to DB (slow but guaranteed)
-            if (event_category === 'critical') {
-                console.log(`🚨 Critical event - writing directly to DB: ${event_type}`);
-
-                await supabaseAdmin.from('audit_logs').insert({
-                    user_id,
-                    resource_type,
-                    resource_id,
-                    event_type,
-                    event_category,
-                    description,
-                    metadata,
-                    ip_address,
-                    user_agent,
-                    created_at: new Date().toISOString()
-                });
-
-                // Track overflow events for monitoring
-                await redis.incr('audit:overflow_count');
-
-            } else {
-                // ℹ️  NON-CRITICAL: Drop event (acceptable under extreme load)
-                console.warn(`⚠️  Dropping non-critical audit event: ${event_type}`);
-                await redis.incr('audit:dropped_count');
-            }
-
-            return;
-        }
-
-        // ✅ Queue is healthy, safe to push
         const log = {
             user_id,
             resource_type,
@@ -98,12 +62,13 @@ export async function logAudit({
             created_at: new Date().toISOString()
         };
 
-        // Non-blocking push to Redis queue
+        // Direct LPUSH — 1 Redis command (removed LLEN check which cost 1 cmd per event).
+        // The audit-worker handles queue overflow by dropping non-critical events when
+        // it detects a backlog, so over-length protection stays in the consumer, not here.
         await redis.lpush('audit:queue', JSON.stringify(log));
 
     } catch (error) {
         console.error('Failed to queue audit log:', error.message);
-        // Fail gracefully - don't block API request
     }
 }
 

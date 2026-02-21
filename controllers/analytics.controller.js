@@ -78,7 +78,7 @@ export const getUploadAnalytics = async (req, res) => {
       // Get API key summary - QUOTA TRACKING ONLY (request counts)
       const { data: apiKeyData, error: apiKeyError } = await supabaseAdmin
         .from('api_keys')
-        .select('total_requests, total_files_uploaded, file_type_counts')
+        .select('total_requests, total_files_uploaded')
         .eq('id', apiKeyId)
         .single();
 
@@ -115,8 +115,7 @@ export const getUploadAnalytics = async (req, res) => {
 
       return {
         summary,
-        providers: providerBreakdown,
-        fileTypes: apiKeyData?.file_type_counts || {}
+        providers: providerBreakdown
       };
     });
 
@@ -323,77 +322,3 @@ export const getProviderUsageAnalytics = async (req, res) => {
   }
 };
 
-/**
- * Get file type distribution analytics - WITH CACHING
- * 
- * Tracks MIME types for segmentation/validation purposes.
- */
-export const getFileTypeAnalytics = async (req, res) => {
-  try {
-    const apiKeyId = req.apiKeyId;
-
-    if (!apiKeyId) {
-      return res.status(401).json({
-        success: false,
-        error: 'UNAUTHORIZED',
-        message: 'API key is required'
-      });
-    }
-
-    const cacheKey = `analytics:filetypes:${apiKeyId}`;
-
-    const { data, fromCache } = await withCache(cacheKey, async () => {
-      // Get file type counts from api_keys
-      const { data: apiKeyData, error } = await supabaseAdmin
-        .from('api_keys')
-        .select('file_type_counts, total_files_uploaded')
-        .eq('id', apiKeyId)
-        .single();
-
-      if (error) throw error;
-
-      const fileTypeCounts = apiKeyData?.file_type_counts || {};
-      const totalFiles = apiKeyData?.total_files_uploaded || 0;
-
-      // Convert to array with percentages
-      const fileTypes = Object.entries(fileTypeCounts).map(([type, count]) => ({
-        type,
-        count,
-        percentage: totalFiles > 0 ? Math.round((count / totalFiles) * 100) : 0
-      })).sort((a, b) => b.count - a.count);
-
-      // Group by category (image, video, document, etc.)
-      const categories = fileTypes.reduce((acc, ft) => {
-        const category = ft.type.split('/')[0] || 'other';
-        if (!acc[category]) {
-          acc[category] = { count: 0, types: [] };
-        }
-        acc[category].count += ft.count;
-        acc[category].types.push(ft);
-        return acc;
-      }, {});
-
-      return {
-        totalFiles,
-        fileTypes,
-        categories
-      };
-    });
-
-    res.set('Cache-Control', 'private, max-age=60');
-
-    res.json({
-      success: true,
-      data,
-      meta: { cached: fromCache }
-    });
-
-  } catch (error) {
-    logger.error('File type analytics error', { error: error.message });
-    res.status(500).json({
-      success: false,
-      error: 'FILE_TYPE_ANALYTICS_ERROR',
-      message: error.message
-    });
-  }
-};

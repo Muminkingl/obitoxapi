@@ -98,8 +98,7 @@ import { setupR2BucketCors, verifyR2BucketCors } from '../middlewares/cors.middl
 import {
   getUploadAnalytics,
   getDailyUsageAnalytics,
-  getProviderUsageAnalytics,
-  getFileTypeAnalytics
+  getProviderUsageAnalytics
 } from '../controllers/analytics.controller.js';
 
 // ✅ NEW: Import Validation Controller (Tier 1 Feature #1 - File Validation)
@@ -312,8 +311,6 @@ router.get('/analytics/daily', validateApiKey, unifiedRateLimitMiddleware, signa
 // Get provider usage analytics
 router.get('/analytics/providers', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, getProviderUsageAnalytics);
 
-// Get file type distribution analytics
-router.get('/analytics/file-types', validateApiKey, unifiedRateLimitMiddleware, signatureValidator, getFileTypeAnalytics);
 
 // Legacy stats endpoint (for backward compatibility)
 router.get('/stats', validateApiKey, async (req, res) => {

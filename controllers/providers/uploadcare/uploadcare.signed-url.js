@@ -160,7 +160,7 @@ export const generateUploadcareSignedUrl = async (req, res) => {
         const totalTime = Date.now() - startTime;
 
         // 🚀 SINGLE METRICS CALL (Redis-backed)
-        updateRequestMetrics(apiKeyId, userId, 'uploadcare', true, { fileSize: fileSize || 0, contentType })
+        updateRequestMetrics(apiKeyId, userId, 'uploadcare', true, { fileSize: fileSize || 0 })
             .catch(() => { });
 
         logger.info('Uploadcare signed URL generated', { requestId, totalTime });

@@ -272,7 +272,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         }).catch(err => logger.error('Background metrics error', { error: err.message }));
 
         // 🚀 REDIS METRICS: Provider usage tracking
-        updateRequestMetrics(apiKey, userId, 'supabase', true, { fileSize: fileSize || 0, contentType })
+        updateRequestMetrics(apiKey, userId, 'supabase', true, { fileSize: fileSize || 0 })
             .catch(() => { });
 
 

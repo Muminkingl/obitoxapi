@@ -7,8 +7,6 @@
  * HASH FIELDS:
  *   req          - total request count
  *   p:{provider} - per-provider count (e.g., p:uploadcare, p:s3)
- *   ft:{mimeType} - file type count (e.g., ft:image/jpeg)
- *   fc:{category} - file category count (e.g., fc:image)
  *   ts           - last activity timestamp
  *   uid          - user ID
  *
@@ -16,11 +14,9 @@
  *   - Run overlap guard (isRunning flag) prevents concurrent sync pile-up
  *   - N+1 queries replaced with batch upserts
  *   - Redis keys cleared ONLY after all DB writes confirmed
- *   - fileCategories now actually written to DB (was silently dropped)
  *   - lastUsedAt validated before new Date() to prevent mid-loop crash
  *   - unhandledRejection now exits so PM2 can restart cleanly
  *   - Per-window stats (reset every 5 min) alongside lifetime totals
- *   - file_type_counts merge race documented and moved to upsert pattern
  */
 
 import { getRedis } from '../config/redis.js';
@@ -109,7 +105,7 @@ async function syncConsolidatedMetrics() {
             if (!parsed || parsed.totalRequests === 0) continue;
 
             const { apiKeyId, date } = keyParts;
-            const { totalRequests, providers, fileTypes, lastUsedAt, userId } = parsed;
+            const { totalRequests, providers, lastUsedAt, userId } = parsed;
 
             // Guard: skip keys with no userId — api_keys.user_id is NOT NULL.
             // Can happen with stale Redis keys written before uid tracking was added,
@@ -128,17 +124,11 @@ async function syncConsolidatedMetrics() {
             if (existingApiRow) {
                 existingApiRow.total_requests += totalRequests;
                 existingApiRow.total_files_uploaded += totalRequests;
-                // Merge file_type_counts
-                for (const [mimeType, count] of Object.entries(fileTypes || {})) {
-                    existingApiRow.file_type_counts[mimeType] =
-                        (existingApiRow.file_type_counts[mimeType] || 0) + count;
-                }
             } else {
                 apiKeyRows.set(apiKeyId, {
                     id: apiKeyId,
                     total_requests: totalRequests,
                     total_files_uploaded: totalRequests,
-                    file_type_counts: { ...(fileTypes || {}) },
                     last_used_at: usedAt
                 });
             }
@@ -149,17 +139,12 @@ async function syncConsolidatedMetrics() {
                 const existingProvider = providerRows.get(pKey);
                 if (existingProvider) {
                     existingProvider.upload_count += count;
-                    for (const [mimeType, typeCount] of Object.entries(fileTypes || {})) {
-                        existingProvider.file_type_counts[mimeType] =
-                            (existingProvider.file_type_counts[mimeType] || 0) + typeCount;
-                    }
                 } else {
                     providerRows.set(pKey, {
                         api_key_id: apiKeyId,
                         user_id: userId,
                         provider,
                         upload_count: count,
-                        file_type_counts: { ...(fileTypes || {}) },
                         last_used_at: usedAt
                     });
                 }
@@ -187,8 +172,6 @@ async function syncConsolidatedMetrics() {
     // The api_key MUST already exist in DB for any request to have written Redis metrics
     // (auth validates the key). If somehow the key is missing, .update() silently no-ops.
     //
-    // NOTE on file_type_counts race: two instances could race on the JSONB merge.
-    // Long-term fix: Postgres jsonb atomic merge function. Short-term: 1 instance only.
     const apiKeyBatch = Array.from(apiKeyRows.values());
     if (apiKeyBatch.length > 0) {
         const updateOps = apiKeyBatch.map(row =>
@@ -197,7 +180,6 @@ async function syncConsolidatedMetrics() {
                 .update({
                     total_requests: row.total_requests,
                     total_files_uploaded: row.total_files_uploaded,
-                    file_type_counts: row.file_type_counts,
                     last_used_at: row.last_used_at
                 })
                 .eq('id', row.id)

@@ -25,7 +25,7 @@ export const validateApiKey = async (req, res, next) => {
     // Validate API key in database with request metrics
     const { data: apiKeyData, error } = await supabaseAdmin
       .from('api_keys')
-      .select('id, user_id, name, created_at, last_used_at, total_requests, total_files_uploaded, file_type_counts')
+      .select('id, user_id, name, created_at, last_used_at, total_requests, total_files_uploaded')
       .eq('key_value', apiKey)
       .single();
 
@@ -87,8 +87,7 @@ export const validateApiKey = async (req, res, next) => {
           created_at: apiKeyData.created_at,
           last_used_at: apiKeyData.last_used_at,
           total_requests: apiKeyData.total_requests || 0,
-          total_files_uploaded: apiKeyData.total_files_uploaded || 0,
-          file_type_counts: apiKeyData.file_type_counts || {}
+          total_files_uploaded: apiKeyData.total_files_uploaded || 0
         },
         user: {
           id: user.id,
