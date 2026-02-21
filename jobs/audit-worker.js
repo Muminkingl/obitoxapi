@@ -17,8 +17,9 @@
  *   pm2 start jobs/audit-worker.js --instances 4
  */
 
-import { getRedis } from '../config/redis.js';
+import logger from '../utils/logger.js';
 import { supabaseAdmin } from '../config/supabase.js';
+import { getRedis } from '../config/redis.js';
 
 const WORKER_ID = `worker_${process.pid}`;
 
@@ -63,7 +64,7 @@ async function startAuditWorker() {
     const redis = getRedis();
 
     if (!redis) {
-        console.error('❌ Redis not available. Worker cannot start.');
+        logger.error('❌ Redis not available. Worker cannot start.');
         process.exit(1);
     }
 
@@ -71,8 +72,8 @@ async function startAuditWorker() {
     let lastFlush = Date.now();
     let batchSize = BATCH_CONFIG.small.size;
 
-    console.log(`🔄 Audit worker started: ${WORKER_ID}`);
-    console.log(`📊 Initial batch size: ${batchSize}`);
+    logger.info(`🔄 Audit worker started: ${WORKER_ID}`);
+    logger.info(`📊 Initial batch size: ${batchSize}`);
 
     // Start background metrics reporter
     startMetricsReporter(redis);
@@ -87,7 +88,7 @@ async function startAuditWorker() {
 
             // 🚨 ALERT: Queue backup detected
             if (queueLength > 5000) {
-                console.error(`🚨 [${WORKER_ID}] Queue backed up: ${queueLength} items! Using large batches (${batchSize}).`);
+                logger.error(`🚨 [${WORKER_ID}] Queue backed up: ${queueLength} items! Using large batches (${batchSize}).`);
             }
 
             // Pop from queue (blocking pop with 1-second timeout)
@@ -111,16 +112,23 @@ async function startAuditWorker() {
                 metrics.insertsLastMinute += buffer.length;
                 metrics.avgBatchTime = batchTime;
 
-                console.log(`✅ [${WORKER_ID}] Flushed ${buffer.length} logs in ${batchTime}ms`);
+                logger.info(`✅ [${WORKER_ID}] Flushed ${buffer.length} logs in ${batchTime}ms`);
 
                 buffer.length = 0;
                 lastFlush = Date.now();
             }
 
         } catch (error) {
-            console.error(`[${WORKER_ID}] Error:`, error.message);
-            metrics.failuresLastMinute++;
-            await sleep(1000); // Backoff on error
+            logger.error(`[${WORKER_ID}] Error:`, error.message);
+
+            // 🚨 gracefully handle quota limits
+            if (error.message.includes('max requests')) {
+                logger.warn(`[${WORKER_ID}] ⚠️ Redis quota exceeded. Pausing for 60 seconds...`);
+                await sleep(60000);
+            } else {
+                metrics.failuresLastMinute++;
+                await sleep(1000); // Backoff on regular error
+            }
         }
     }
 }
@@ -139,13 +147,13 @@ async function flushBatch(redis, logs) {
         if (error) throw error;
 
     } catch (error) {
-        console.error(`❌ [${WORKER_ID}] Batch insert failed:`, error.message);
-        console.error(`❌ [${WORKER_ID}] Error details:`, JSON.stringify(error, null, 2));
-        console.error(`❌ [${WORKER_ID}] First log entry:`, JSON.stringify(logs[0], null, 2));
+        logger.error(`❌ [${WORKER_ID}] Batch insert failed:`, error.message);
+        logger.error(`❌ [${WORKER_ID}] Error details:`, JSON.stringify(error, null, 2));
+        logger.error(`❌ [${WORKER_ID}] First log entry:`, JSON.stringify(logs[0], null, 2));
         metrics.failuresLastMinute += logs.length;
 
         // 🔥 OPTIMIZED: Use pipeline for faster batch re-queue
-        console.log(`🔄 [${WORKER_ID}] Re-queuing ${logs.length} failed logs...`);
+        logger.info(`🔄 [${WORKER_ID}] Re-queuing ${logs.length} failed logs...`);
         const pipeline = redis.pipeline();
         for (const log of logs) {
             pipeline.lpush('audit:failed', JSON.stringify(log));
@@ -178,7 +186,7 @@ function startMetricsReporter(redis) {
             }));
 
             // Log summary
-            console.log(`📊 [${WORKER_ID}] Metrics:`, {
+            logger.info(`📊 [${WORKER_ID}] Metrics:`, {
                 queue: metrics.queueLength,
                 batch_size: metrics.currentBatchSize,
                 inserts: metrics.insertsLastMinute,
@@ -190,17 +198,17 @@ function startMetricsReporter(redis) {
 
             // 🚨 CRITICAL ALERTS
             if (metrics.queueLength > 5000) {
-                console.error('🚨 CRITICAL: Audit queue backed up! Consider adding more workers.');
+                logger.error('🚨 CRITICAL: Audit queue backed up! Consider adding more workers.');
                 // TODO: Send to PagerDuty/Slack
             }
 
             if (metrics.failuresLastMinute > 100) {
-                console.error('🚨 CRITICAL: High failure rate! Check database connection.');
+                logger.error('🚨 CRITICAL: High failure rate! Check database connection.');
                 // TODO: Send alert
             }
 
             if (metrics.droppedEvents > 1000) {
-                console.error('⚠️  WARNING: Events being dropped! System under heavy load.');
+                logger.error('⚠️  WARNING: Events being dropped! System under heavy load.');
                 // TODO: Send alert
             }
 
@@ -209,7 +217,7 @@ function startMetricsReporter(redis) {
             metrics.failuresLastMinute = 0;
 
         } catch (error) {
-            console.error('Metrics reporter error:', error.message);
+            logger.error('Metrics reporter error:', error.message);
         }
     }, 60000); // Every 60 seconds
 }
@@ -218,8 +226,32 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Start the worker
-startAuditWorker().catch((error) => {
-    console.error('Worker crashed:', error);
+// Global error handlers - don't crash on ECONNRESET (Redis idle reset)
+process.on('uncaughtException', (error) => {
+    const msg = error?.message || String(error);
+    if (msg.includes('ECONNRESET')) {
+        logger.debug('[Audit Worker] ECONNRESET (Redis idle reset, safe to ignore)');
+        return;
+    }
+    logger.error(`Worker crashed: ${msg}`);
     process.exit(1);
 });
+
+process.on('unhandledRejection', (reason) => {
+    const msg = reason?.message || String(reason);
+    if (msg.includes('ECONNRESET')) {
+        logger.debug('[Audit Worker] ECONNRESET rejection (safe to ignore)');
+        return;
+    }
+    logger.error(`Unhandled rejection: ${msg}`);
+});
+
+// Always start when run as a worker (by PM2 or directly via node)
+// NOTE: process.argv[1] under PM2 fork mode is NOT this file path
+startAuditWorker().catch((error) => {
+    logger.error(`Worker crashed: ${error.message || error}`);
+    console.error(error);
+    process.exit(1);
+});
+
+export { startAuditWorker };

@@ -2,8 +2,13 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 
+// Validate environment variables at startup
+import { validateEnv } from './utils/env-validator.js';
+validateEnv();
+
 import { PORT } from './config/env.js';
 import { getCorsOptions, corsWithVaryHeaders } from './middlewares/cors.middleware.js';
+import logger from './utils/logger.js';
 
 import apiKeyRouter from './routes/apikey.routes.js';
 import uploadRouter from './routes/upload.routes.js';
@@ -57,8 +62,7 @@ app.get('/', (req, res) => {
 
 // Start server
 app.listen(PORT, async () => {
-  console.log(`API is running on http://localhost:${PORT}`);
-  console.log(`API key validation available at: http://localhost:${PORT}/api/v1/apikeys/validate?apiKey=ox_your_key_here`);
+  logger.info(`API is running on http://localhost:${PORT}`);
 
   // Connect to Supabase
   await connectToSupabase();
@@ -70,22 +74,23 @@ app.listen(PORT, async () => {
       // Test Redis connection (non-blocking)
       const testResult = await testRedisConnection();
       if (testResult.success) {
-        console.log(`✅ Redis: Connected (latency: ${testResult.latency}ms)`);
+        logger.info(`Redis: Connected (latency: ${testResult.latency}ms)`);
 
-        // Start metrics sync worker (requires Redis)
-        startMetricsSyncWorker();
-        console.log('✅ Metrics sync worker started');
+        // Delay metrics sync worker by 1 minute to avoid startup Redis spike
+        // This prevents 60-90 Redis reads during app initialization
+        setTimeout(() => {
+          startMetricsSyncWorker();
+          logger.debug('Metrics sync worker started (was delayed 1 min to reduce startup load)');
+        }, 60 * 1000);
+        logger.debug('Metrics sync worker scheduled in 1 minute...');
       } else {
-        console.warn(`⚠️  Redis: Connection test failed - ${testResult.error}`);
-        console.warn('   Caching will be disabled until Redis is available');
+        logger.warn(`Redis: Connection test failed - ${testResult.error}. Caching will be disabled until Redis is available`);
       }
     } catch (error) {
-      console.warn(`⚠️  Redis: Initialization error - ${error.message}`);
-      console.warn('   Caching will be disabled until Redis is available');
+      logger.warn(`Redis: Initialization error - ${error.message}. Caching will be disabled until Redis is available`);
     }
   } else {
-    console.warn('⚠️  Redis: Not configured. Caching will be disabled.');
-    console.warn('   Set REDIS_URL or UPSTASH_REDIS_URL in .env.local to enable caching');
+    logger.warn('Redis: Not configured. Caching will be disabled. Set REDIS_URL or UPSTASH_REDIS_URL in .env.local to enable caching');
   }
 });
 

@@ -8,6 +8,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '../../../config/supabase.js';
 import { SUPABASE_BUCKET, PRIVATE_BUCKET } from './supabase.config.js';
 import { generateSupabaseFilename, updateSupabaseMetrics } from './supabase.helpers.js';
+import logger from '../../../utils/logger.js';
 
 // Import multi-layer cache
 import {
@@ -88,7 +89,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
+            logger.debug(`[${requestId}] Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -120,7 +121,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
         const quotaTime = Date.now() - quotaStart;
 
         if (!quotaCheck.allowed) {
-            console.log(`[${requestId}] ❌ Quota exceeded in ${quotaTime}ms`);
+            logger.debug(`[${requestId}] Quota exceeded in ${quotaTime}ms`);
 
             return res.status(403).json({
                 success: false,
@@ -171,7 +172,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
         try {
             fileBuffer = Buffer.from(file.data, 'base64');
             if (fileBuffer.length !== file.size) {
-                console.warn(`⚠️ Size mismatch: expected ${file.size}, got ${fileBuffer.length}`);
+                logger.debug(`Size mismatch: expected ${file.size}, got ${fileBuffer.length}`);
             }
         } catch (error) {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'ENCODING_ERROR', { fileSize: file.size }).catch(() => { });
@@ -212,7 +213,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
         while (uploadAttempts < maxAttempts) {
             try {
                 uploadAttempts++;
-                console.log(`[${requestId}] 🔄 Upload attempt ${uploadAttempts}/${maxAttempts}`);
+                logger.debug(`[${requestId}] Upload attempt ${uploadAttempts}/${maxAttempts}`);
 
                 const result = await developerSupabase.storage
                     .from(targetBucket)
@@ -224,20 +225,20 @@ export const uploadToSupabaseStorage = async (req, res) => {
                 if (!uploadError) break;
 
                 if (uploadAttempts < maxAttempts) {
-                    console.warn(`⚠️ Upload attempt ${uploadAttempts} failed, retrying...`, uploadError);
+                    logger.debug(`Upload attempt ${uploadAttempts} failed, retrying...`);
                     await new Promise(resolve => setTimeout(resolve, 1000 * uploadAttempts));
                 }
             } catch (error) {
                 uploadError = error;
                 if (uploadAttempts < maxAttempts) {
-                    console.warn(`⚠️ Upload attempt ${uploadAttempts} error, retrying...`, error);
+                    logger.debug(`Upload attempt ${uploadAttempts} error, retrying...`);
                     await new Promise(resolve => setTimeout(resolve, 1000 * uploadAttempts));
                 }
             }
         }
 
         if (uploadError) {
-            console.error(`[${requestId}] ❌ Upload error after all attempts:`, uploadError);
+            logger.error(`[${requestId}] Upload error after all attempts:`, { message: uploadError.message });
 
             let errorType = 'STORAGE_ERROR';
             let errorMessage = 'Failed to upload to Supabase Storage';
@@ -292,7 +293,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
                     .createSignedUrl(filename, expiresIn);
 
                 if (signedError) {
-                    console.warn('⚠️ Could not generate signed URL:', signedError);
+                    logger.debug('Could not generate signed URL:', { message: signedError.message });
                     publicUrl = null;
                 } else {
                     publicUrl = signedUrlData.signedUrl;
@@ -307,7 +308,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
                 isPrivate = false;
             }
         } catch (error) {
-            console.warn('⚠️ Error generating URL:', error);
+            logger.debug('Error generating URL:', { message: error.message });
             publicUrl = null;
         }
 
@@ -329,7 +330,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
 
 
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, quota:${quotaTime}ms, validation:${validationTime}ms, upload:${uploadTime}ms)`);
+        logger.debug(`[${requestId}] SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, quota:${quotaTime}ms, validation:${validationTime}ms, upload:${uploadTime}ms)`);
 
         // Success response
         res.status(200).json({
@@ -362,7 +363,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { message: error.message });
 
         if (apiKey) {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {

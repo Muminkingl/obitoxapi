@@ -1,4 +1,5 @@
 import aj from '../config/arcjet.js';
+import logger from '../utils/logger.js';
 
 const arcjetMiddleware = async (req, res, next) => {
   try {
@@ -20,7 +21,7 @@ const arcjetMiddleware = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.log(`Arcjet Middleware Error: ${error}`);
+    logger.warn('Arcjet Middleware Error:', error.message);
     next(error);
   }
 };

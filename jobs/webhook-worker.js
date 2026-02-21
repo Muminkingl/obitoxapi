@@ -7,10 +7,35 @@
  * - Multi-instance safe with Redis
  */
 
-import { getRedis } from '../config/redis.js';
-import { supabaseAdmin } from '../config/supabase.js';
-import { dequeueWebhooks, getQueueStats } from '../services/webhook/queue-manager.js';
-import { processWebhook, processWebhookBatch, retryDeadLetters } from '../services/webhook/processor.js';
+import logger from '../utils/logger.js';
+
+// Lazy-load dependencies to handle startup errors gracefully
+let getRedis, supabaseAdmin, dequeueWebhooks, getQueueStats, processWebhook, processWebhookBatch, retryDeadLetters;
+
+async function loadDependencies() {
+    try {
+        const redisModule = await import('../config/redis.js');
+        getRedis = redisModule.getRedis;
+
+        const supabaseModule = await import('../config/supabase.js');
+        supabaseAdmin = supabaseModule.supabaseAdmin;
+
+        const queueModule = await import('../services/webhook/queue-manager.js');
+        dequeueWebhooks = queueModule.dequeueWebhooks;
+        getQueueStats = queueModule.getQueueStats;
+
+        const processorModule = await import('../services/webhook/processor.js');
+        processWebhook = processorModule.processWebhook;
+        processWebhookBatch = processorModule.processWebhookBatch;
+        retryDeadLetters = processorModule.retryDeadLetters;
+
+        logger.info('[Webhook Worker] Dependencies loaded successfully');
+        return true;
+    } catch (error) {
+        logger.error('[Webhook Worker] Failed to load dependencies:', { message: error.message, stack: error.stack });
+        return false;
+    }
+}
 
 const WORKER_ID = `webhook_${process.pid}`;
 const BATCH_SIZE = 100;
@@ -33,7 +58,7 @@ const workerMetrics = {
  */
 async function runWorker() {
     const startTime = Date.now();
-    
+
     try {
         // 1. Get webhooks from Redis queue
         const webhooks = await dequeueWebhooks(BATCH_SIZE);
@@ -42,7 +67,7 @@ async function runWorker() {
             return;
         }
 
-        console.log(`[Webhook Worker] 📦 Processing ${webhooks.length} webhooks...`);
+        logger.debug(`[Webhook Worker] Processing ${webhooks.length} webhooks...`);
 
         // 2. Get full webhook records from database
         const webhookIds = webhooks.map(w => w.id);
@@ -53,7 +78,7 @@ async function runWorker() {
             .in('status', ['pending', 'verifying']);
 
         if (!webhookRecords || webhookRecords.length === 0) {
-            console.log('[Webhook Worker] ⚠️ No valid webhooks found in DB');
+            logger.debug('[Webhook Worker] No valid webhooks found in DB');
             return;
         }
 
@@ -75,11 +100,19 @@ async function runWorker() {
         workerMetrics.lastRunDuration = Date.now() - startTime;
         workerMetrics.lastRunAt = new Date().toISOString();
 
-        console.log(`[Webhook Worker] ✅ Batch complete in ${workerMetrics.lastRunDuration}ms`);
+        logger.debug(`[Webhook Worker] Batch complete in ${workerMetrics.lastRunDuration}ms`);
 
     } catch (error) {
+        if (error.message.includes('max requests')) {
+            logger.warn('[Webhook Worker] Redis quota exceeded. Pausing...');
+            // We just log and return cleanly so the interval will retry later naturally (5s)
+            // This prevents consecutiveErrors from incrementing and crashing the worker
+            return;
+        }
+
         workerMetrics.errors++;
-        console.error('[Webhook Worker] ❌ Error:', error.message);
+        logger.error('[Webhook Worker] Error:', { message: error.message });
+        throw error; // Re-throw to trigger restart logic
     }
 }
 
@@ -101,7 +134,7 @@ async function handleAutoWebhooks() {
             return;
         }
 
-        console.log(`[Webhook Worker] 🔄 Found ${autoWebhooks.length} auto-trigger webhooks needing verification`);
+        logger.debug(`[Webhook Worker] Found ${autoWebhooks.length} auto-trigger webhooks needing verification`);
 
         // Queue them for processing
         for (const w of autoWebhooks) {
@@ -120,7 +153,7 @@ async function handleAutoWebhooks() {
         }
 
     } catch (error) {
-        console.error('[Webhook Worker] ❌ Auto-handler error:', error.message);
+        logger.error('[Webhook Worker] Auto-handler error:', { message: error.message });
     }
 }
 
@@ -134,7 +167,7 @@ async function handleDeadLetters() {
             workerMetrics.deadLettersRetried += retried;
         }
     } catch (error) {
-        console.error('[Webhook Worker] ❌ Dead letter handler error:', error.message);
+        logger.error('[Webhook Worker] Dead letter handler error:', { message: error.message });
     }
 }
 
@@ -147,11 +180,11 @@ async function cleanupExpiredWebhooks() {
             .rpc('cleanup_expired_webhooks');
 
         if (data && data > 0) {
-            console.log(`[Webhook Worker] 🧹 Cleaned up ${data} expired webhooks`);
+            logger.debug(`[Webhook Worker] Cleaned up ${data} expired webhooks`);
         }
     } catch (error) {
         // Function might not exist yet, ignore
-        console.log('[Webhook Worker] ℹ️ Expired webhook cleanup skipped');
+        logger.debug('[Webhook Worker] Expired webhook cleanup skipped');
     }
 }
 
@@ -170,15 +203,22 @@ function logMetrics() {
         uptime: process.uptime()
     };
 
-    console.log(`[Webhook Worker] 📊 Metrics:`, JSON.stringify(stats));
+    logger.info('[Webhook Worker] Metrics:', stats);
 }
 
 /**
  * Start the worker
  */
-export function startWebhookWorker() {
-    console.log(`[Webhook Worker] 🚀 Starting worker ${WORKER_ID}`);
-    console.log(`[Webhook Worker] ⏰ Processing interval: ${SYNC_INTERVAL_MS}ms`);
+export async function startWebhookWorker() {
+    logger.info(`[Webhook Worker] Starting worker ${WORKER_ID}`);
+    logger.info(`[Webhook Worker] Processing interval: ${SYNC_INTERVAL_MS}ms`);
+
+    // Load dependencies first
+    const loaded = await loadDependencies();
+    if (!loaded) {
+        logger.error('[Webhook Worker] Failed to load dependencies, exiting...');
+        process.exit(1);
+    }
 
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 5;
@@ -190,10 +230,10 @@ export function startWebhookWorker() {
             consecutiveErrors = 0;
         } catch (error) {
             consecutiveErrors++;
-            console.error(`[Webhook Worker] ❌ Consecutive errors: ${consecutiveErrors}`);
+            logger.error(`[Webhook Worker] Consecutive errors: ${consecutiveErrors}`);
 
             if (consecutiveErrors >= maxConsecutiveErrors) {
-                console.error('[Webhook Worker] 💥 Too many errors, restarting...');
+                logger.error('[Webhook Worker] Too many errors, restarting...');
                 clearInterval(intervalId);
                 process.exit(1);
             }
@@ -206,7 +246,7 @@ export function startWebhookWorker() {
             await handleAutoWebhooks();
             await handleDeadLetters();
         } catch (error) {
-            console.error('[Webhook Worker] ❌ Auto-handler error:', error.message);
+            logger.error('[Webhook Worker] Auto-handler error:', { message: error.message });
         }
     }, AUTO_POLL_INTERVAL_MS);
 
@@ -215,8 +255,8 @@ export function startWebhookWorker() {
 
     // Graceful shutdown
     const shutdown = async (signal) => {
-        console.log(`[Webhook Worker] 🛑 Received ${signal}, shutting down...`);
-        
+        logger.info(`[Webhook Worker] Received ${signal}, shutting down...`);
+
         clearInterval(intervalId);
         clearInterval(autoIntervalId);
         clearInterval(metricsIntervalId);
@@ -226,24 +266,34 @@ export function startWebhookWorker() {
             await runWorker(); // Process remaining
             await cleanupExpiredWebhooks();
         } catch (error) {
-            console.error('[Webhook Worker] ❌ Final cleanup error:', error.message);
+            logger.error('[Webhook Worker] Final cleanup error:', { message: error.message });
         }
 
-        console.log('[Webhook Worker] ✅ Shutdown complete');
+        logger.info('[Webhook Worker] Shutdown complete');
         process.exit(0);
     };
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
 
-    // Handle uncaught exceptions
+    // Handle uncaught exceptions - but don't crash on ECONNRESET (Redis idle reset)
     process.on('uncaughtException', (error) => {
-        console.error('[Webhook Worker] 💥 Uncaught exception:', error);
+        const msg = error?.message || String(error);
+        if (msg.includes('ECONNRESET')) {
+            logger.debug('[Webhook Worker] ECONNRESET caught (Redis idle reset, safe to ignore)');
+            return; // Don't shut down!
+        }
+        logger.error('[Webhook Worker] Uncaught exception:', { message: msg, stack: error.stack });
         shutdown('uncaughtException');
     });
 
     process.on('unhandledRejection', (reason) => {
-        console.error('[Webhook Worker] 💥 Unhandled rejection:', reason);
+        const msg = reason?.message || String(reason);
+        if (msg.includes('ECONNRESET')) {
+            logger.debug('[Webhook Worker] ECONNRESET rejection (Redis idle reset, safe to ignore)');
+            return;
+        }
+        logger.error('[Webhook Worker] Unhandled rejection:', { reason });
     });
 
     return intervalId;
@@ -262,8 +312,6 @@ export function getWorkerMetrics() {
 
 /**
  * Health check endpoint for PM2/K8s
- * 
- * ✅ ADDED: Health check endpoint for container orchestration
  * 
  * @param {Object} options - Health check options
  * @returns {Promise<Object>} Health status
@@ -305,9 +353,9 @@ export async function healthCheck(options = {}) {
                 }
                 health.checks.database = { status: 'healthy' };
             } catch (dbError) {
-                health.checks.database = { 
-                    status: 'unhealthy', 
-                    reason: dbError instanceof Error ? dbError.message : 'Unknown error' 
+                health.checks.database = {
+                    status: 'unhealthy',
+                    reason: dbError instanceof Error ? dbError.message : 'Unknown error'
                 };
                 health.status = 'unhealthy';
             }
@@ -357,8 +405,8 @@ export function startHealthCheckServer(port = 3001) {
 
         if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
             const health = await healthCheck();
-            const statusCode = health.status === 'healthy' ? 200 : 
-                               health.status === 'degraded' ? 200 : 503;
+            const statusCode = health.status === 'healthy' ? 200 :
+                health.status === 'degraded' ? 200 : 503;
             res.writeHead(statusCode);
             res.end(JSON.stringify(health, null, 2));
             return;
@@ -375,21 +423,19 @@ export function startHealthCheckServer(port = 3001) {
     });
 
     server.listen(port, () => {
-        console.log(`[Webhook Worker] 🏥 Health check server running on port ${port}`);
+        logger.info(`[Webhook Worker] Health check server running on port ${port}`);
     });
 
     return server;
 }
 
-// Run if called directly
-if (process.argv[1]?.includes('webhook-worker')) {
-    // Check if running with health server
-    const withHealthServer = process.env.WEBHOOK_HEALTH_SERVER === 'true';
-    
-    if (withHealthServer) {
-        startWebhookWorker();
-        startHealthCheckServer();
-    } else {
-        startWebhookWorker();
-    }
+// Always start when run as a worker (by PM2 or directly via node)
+// NOTE: process.argv[1] under PM2 fork mode is NOT this file path,
+// so we cannot use includes('webhook-worker') as an entry check.
+const withHealthServer = process.env.WEBHOOK_HEALTH_SERVER === 'true';
+if (withHealthServer) {
+    startWebhookWorker();
+    startHealthCheckServer();
+} else {
+    startWebhookWorker();
 }

@@ -1,10 +1,12 @@
+import logger from '../utils/logger.js';
+
 const errorMiddleware = (err, req, res, next) => {
   try {
     let error = { ...err };
 
     error.message = err.message;
 
-    console.error(err);
+    logger.error('Error middleware:', err.message, { stack: err.stack });
 
     // Mongoose bad ObjectId
     if (err.name === 'CastError') {

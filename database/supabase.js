@@ -1,15 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
-
-dotenv.config();
-
-// Use the existing Supabase credentials from your frontend
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+import { SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY } from '../config/env.js';
+import logger from '../utils/logger.js';
 
 // Client for authenticated user operations (uses anon key)
-export const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+export const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     autoRefreshToken: false,
     persistSession: false
@@ -17,7 +11,7 @@ export const supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
 });
 
 // Admin client for service operations (uses service role key)
-export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+export const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: {
     autoRefreshToken: false,
     persistSession: false
@@ -31,14 +25,14 @@ const connectToSupabase = async () => {
     const { data, error } = await supabaseAdmin.from('profiles').select('count', { count: 'exact', head: true });
     
     if (error) {
-      console.error('Error connecting to Supabase:', error);
+      logger.error('Error connecting to Supabase:', { message: error.message });
       return false;
     }
     
-    console.log('Connected to Supabase successfully');
+    logger.debug('Connected to Supabase successfully');
     return true;
   } catch (error) {
-    console.error('Failed to connect to Supabase:', error);
+    logger.error('Failed to connect to Supabase:', { message: error.message });
     return false;
   }
 };

@@ -21,6 +21,7 @@ import { checkUserQuota } from '../shared/analytics.new.js';
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Download file from Uploadcare (get file info and public URL)
@@ -153,7 +154,7 @@ export const downloadUploadcareFile = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 'uploadcare', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
+        logger.debug(`[${requestId}] SUCCESS in ${totalTime}ms`);
 
         res.status(200).json({
             success: true,
@@ -190,7 +191,7 @@ export const downloadUploadcareFile = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { error: error.message });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', false)

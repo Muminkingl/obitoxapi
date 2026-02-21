@@ -1,5 +1,6 @@
 import { supabaseAdmin } from '../database/supabase.js';
 import { getRedis } from '../config/redis.js';
+import logger from '../utils/logger.js';
 
 /**
  * Optimized API Key Validation Middleware with Redis Caching
@@ -29,21 +30,19 @@ const fetchApiKeyFromDatabase = async (apiKey) => {
     .single();
 
   if (error) {
-    console.error('❌ Error fetching API key from database:', error.message);
-    console.error('   Error code:', error.code);
-    console.error('   Error details:', error.details || error.hint || 'No additional details');
+    logger.error('Error fetching API key from database:', error.message);
+    logger.error('  Error code:', error.code);
+    logger.error('  Error details:', error.details || error.hint || 'No additional details');
     return null;
   }
 
   if (!apiKeyData) {
-    console.warn('⚠️  API key not found in database:', apiKey.substring(0, 20) + '...');
+    logger.warn('API key not found in database:', apiKey.substring(0, 20) + '...');
     return null;
   }
 
   // Log success in development
-  if (process.env.NODE_ENV === 'development') {
-    console.log('✅ API key fetched from database:', apiKeyData.id);
-  }
+  logger.debug('API key fetched from database:', apiKeyData.id);
 
   // Get user profile data with computed tier (for caching)
   // ✅ NEW: Query profiles_with_tier view for computed tier
@@ -89,7 +88,7 @@ const getApiKeyData = async (apiKey) => {
       }
     } catch (cacheError) {
       // Redis error - log but don't fail, fall back to DB
-      console.warn('Redis cache read error:', cacheError.message);
+      logger.warn('Redis cache read error:', cacheError.message);
     }
   }
 
@@ -106,7 +105,7 @@ const getApiKeyData = async (apiKey) => {
       await redis.setex(cacheKey, CACHE_TTL, JSON.stringify(data));
     } catch (cacheError) {
       // Cache write failed - log but don't fail
-      console.warn('Redis cache write error:', cacheError.message);
+      logger.warn('Redis cache write error:', cacheError.message);
     }
   }
 
@@ -142,14 +141,12 @@ const validateApiKey = async (req, res, next) => {
     const result = await getApiKeyData(apiKey);
 
     if (!result || !result.data) {
-      // Log for debugging (only in development)
-      if (process.env.NODE_ENV === 'development') {
-        console.error('❌ API key validation failed:', {
-          apiKey: apiKey.substring(0, 20) + '...',
-          hasResult: !!result,
-          hasData: result?.data ? true : false
-        });
-      }
+      // Log for debugging
+      logger.debug('API key validation failed:', {
+        apiKey: apiKey.substring(0, 20) + '...',
+        hasResult: !!result,
+        hasData: result?.data ? true : false
+      });
 
       return res.status(401).json({
         success: false,
@@ -207,7 +204,7 @@ const validateApiKey = async (req, res, next) => {
       .update({ last_used_at: new Date().toISOString() })
       .eq('id', apiKeyData.id)
       .then(() => { })
-      .catch(err => console.error('Failed to update last_used_at:', err));
+      .catch(err => logger.error('Failed to update last_used_at:', err.message));
 
     // ✅ REMOVED: Direct api_usage_logs insert
     // API usage is now logged via trackApiUsage() in controllers
@@ -229,7 +226,7 @@ const validateApiKey = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error('API key validation error:', error);
+    logger.error('API key validation error:', error.message);
 
     // Don't expose internal error details in production
     const isDevelopment = process.env.NODE_ENV === 'development';
@@ -255,7 +252,7 @@ export const invalidateApiKeyCache = async (apiKey) => {
     const cacheKey = `${CACHE_KEY_PREFIX}${apiKey}`;
     await redis.del(cacheKey);
   } catch (error) {
-    console.warn('Failed to invalidate API key cache:', error.message);
+    logger.warn('Failed to invalidate API key cache:', error.message);
   }
 };
 

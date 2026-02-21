@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { SUPABASE_BUCKET } from './supabase.config.js';
 import { updateSupabaseMetrics } from './supabase.helpers.js';
+import logger from '../../../utils/logger.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkUserQuota } from '../shared/analytics.new.js';
 
@@ -137,7 +138,7 @@ export const completeSupabaseUpload = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('💥 Supabase upload completion error:', error);
+        logger.error('Supabase upload completion error:', { message: error.message });
 
         if (apiKey) {
             await updateSupabaseMetrics(apiKey, 'supabase', false, 'COMPLETION_ERROR', {

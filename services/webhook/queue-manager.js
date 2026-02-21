@@ -8,6 +8,7 @@
  */
 
 import { getRedis } from '../../config/redis.js';
+import logger from '../../utils/logger.js';
 
 const WEBHOOK_QUEUE_KEY = 'webhook:queue';
 const WEBHOOK_PROCESSING_KEY = 'webhook:processing';
@@ -25,7 +26,7 @@ export async function enqueueWebhook(webhookId, payload, priority = 0) {
     const redis = getRedis();
 
     if (!redis) {
-        console.error('[Webhook Queue] Redis not available');
+        logger.error('[Webhook Queue] Redis not available');
         return false;
     }
 
@@ -41,16 +42,16 @@ export async function enqueueWebhook(webhookId, payload, priority = 0) {
             // High priority: add to sorted set with current timestamp as score
             // Lower score = higher priority
             await redis.zadd(WEBHOOK_PRIORITY_KEY, Date.now(), queueItem);
-            console.log(`[Webhook Queue] ✅ Enqueued ${webhookId} (HIGH PRIORITY)`);
+            logger.debug(`[Webhook Queue] Enqueued ${webhookId} (HIGH PRIORITY)`);
         } else {
             // Normal priority: add to list (FIFO)
             await redis.lpush(WEBHOOK_QUEUE_KEY, queueItem);
-            console.log(`[Webhook Queue] ✅ Enqueued ${webhookId}`);
+            logger.debug(`[Webhook Queue] Enqueued ${webhookId}`);
         }
 
         return true;
     } catch (error) {
-        console.error('[Webhook Queue] ❌ Enqueue failed:', error.message);
+        logger.error('[Webhook Queue] Enqueue failed:', { message: error.message });
         return false;
     }
 }
@@ -65,7 +66,7 @@ export async function dequeueWebhooks(batchSize = 100) {
     const redis = getRedis();
 
     if (!redis) {
-        console.warn('[Webhook Queue] Redis not available');
+        logger.warn('[Webhook Queue] Redis not available');
         return [];
     }
 
@@ -102,12 +103,12 @@ export async function dequeueWebhooks(batchSize = 100) {
         }
 
         if (items.length > 0) {
-            console.log(`[Webhook Queue] 📦 Dequeued ${items.length} webhooks`);
+            logger.debug(`[Webhook Queue] Dequeued ${items.length} webhooks`);
         }
 
         return items;
     } catch (error) {
-        console.error('[Webhook Queue] ❌ Dequeue failed:', error.message);
+        logger.error('[Webhook Queue] Dequeue failed:', { message: error.message });
         return [];
     }
 }
@@ -130,7 +131,7 @@ export async function getQueueLength() {
 
         return listLen + priorityLen;
     } catch (error) {
-        console.error('[Webhook Queue] ❌ Queue length check failed:', error.message);
+        logger.error('[Webhook Queue] Queue length check failed:', { message: error.message });
         return 0;
     }
 }
@@ -165,7 +166,7 @@ export async function getQueueStats() {
             priority: priorityCount
         };
     } catch (error) {
-        console.error('[Webhook Queue] ❌ Stats check failed:', error.message);
+        logger.error('[Webhook Queue] Stats check failed:', { message: error.message });
         return { total: 0, normal: 0, priority: 0 };
     }
 }
@@ -182,7 +183,7 @@ export async function requeueWebhook(webhookId, payload, delayMs = 5000) {
     const redis = getRedis();
 
     if (!redis) {
-        console.error('[Webhook Queue] Redis not available');
+        logger.error('[Webhook Queue] Redis not available');
         return false;
     }
 
@@ -199,10 +200,10 @@ export async function requeueWebhook(webhookId, payload, delayMs = 5000) {
         // Will be moved back to main queue after delay
         await redis.setex(`${WEBHOOK_PROCESSING_KEY}:${webhookId}`, Math.ceil(delayMs / 1000), queueItem);
 
-        console.log(`[Webhook Queue] 🔄 Requeued ${webhookId} for retry in ${delayMs}ms`);
+        logger.debug(`[Webhook Queue] Requeued ${webhookId} for retry in ${delayMs}ms`);
         return true;
     } catch (error) {
-        console.error('[Webhook Queue] ❌ Requeue failed:', error.message);
+        logger.error('[Webhook Queue] Requeue failed:', { message: error.message });
         return false;
     }
 }
@@ -225,7 +226,7 @@ export async function removeWebhook(webhookId) {
             const parsed = JSON.parse(item);
             if (parsed.id === webhookId) {
                 await redis.lrem(WEBHOOK_QUEUE_KEY, 0, item);
-                console.log(`[Webhook Queue] 🗑️ Removed ${webhookId} from queue`);
+                logger.debug(`[Webhook Queue] Removed ${webhookId} from queue`);
                 break;
             }
         }
@@ -236,7 +237,7 @@ export async function removeWebhook(webhookId) {
             const parsed = JSON.parse(item);
             if (parsed.id === webhookId) {
                 await redis.zrem(WEBHOOK_PRIORITY_KEY, item);
-                console.log(`[Webhook Queue] 🗑️ Removed ${webhookId} from priority queue`);
+                logger.debug(`[Webhook Queue] Removed ${webhookId} from priority queue`);
                 break;
             }
         }
@@ -246,7 +247,7 @@ export async function removeWebhook(webhookId) {
 
         return true;
     } catch (error) {
-        console.error('[Webhook Queue] ❌ Remove failed:', error.message);
+        logger.error('[Webhook Queue] Remove failed:', { message: error.message });
         return false;
     }
 }
@@ -267,10 +268,10 @@ export async function clearQueue() {
             redis.del(WEBHOOK_PRIORITY_KEY)
         ]);
 
-        console.log('[Webhook Queue] 🧹 Queue cleared');
+        logger.info('[Webhook Queue] Queue cleared');
         return true;
     } catch (error) {
-        console.error('[Webhook Queue] ❌ Clear failed:', error.message);
+        logger.error('[Webhook Queue] Clear failed:', { message: error.message });
         return false;
     }
 }

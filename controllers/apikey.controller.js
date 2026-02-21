@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../database/supabase.js';
+import logger from '../utils/logger.js';
 
 // Validate API key and return user information
 export const validateApiKey = async (req, res, next) => {
@@ -101,7 +102,7 @@ export const validateApiKey = async (req, res, next) => {
       }
     });
   } catch (error) {
-    console.error('API key validation error:', error);
+    logger.error('API key validation error', { error: error.message });
     return res.status(500).json({
       success: false,
       message: 'Error validating API key',
@@ -127,7 +128,7 @@ export const validateApiKeyPost = async (req, res, next) => {
     req.headers['x-api-key'] = apiKey;
     return validateApiKey(req, res, next);
   } catch (error) {
-    console.error('API key validation error:', error);
+    logger.error('API key validation error', { error: error.message });
     return res.status(500).json({
       success: false,
       message: 'Error validating API key',

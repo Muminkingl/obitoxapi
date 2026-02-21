@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
-import { UPSTASH_REDIS_URL, REDIS_URL } from './env.js';
+import { REDIS_URL } from './env.js';
+import logger from '../utils/logger.js';
 
 /**
  * Redis connection for caching and rate limiting
@@ -7,45 +8,52 @@ import { UPSTASH_REDIS_URL, REDIS_URL } from './env.js';
  * 
  * Connection priority:
  * 1. REDIS_URL (if provided) - for direct Redis connection
- * 2. UPSTASH_REDIS_URL (if provided) - for Upstash REST API
  * 
  * Configuration optimized for:
  * - Low latency (<5ms)
  * - High availability
  * - Auto-reconnection
+ * - Graceful handling of idle connection resets (ECONNRESET)
  */
 let redis;
 
 // Determine which URL to use
-const redisUrl = REDIS_URL || UPSTASH_REDIS_URL;
+const redisUrl = REDIS_URL;
 
 if (!redisUrl) {
-  console.warn('⚠️  Redis URL not found. Caching will be disabled.');
-  console.warn('   Please set REDIS_URL or UPSTASH_REDIS_URL in .env.local');
+  logger.warn('Redis URL not found. Caching will be disabled. Set REDIS_URL in .env.local');
 } else {
-  // Create Redis client with optimized settings
+  // Create Redis client with optimized settings for Upstash
   redis = new Redis(redisUrl, {
     // Connection settings
-    maxRetriesPerRequest: 2,
+    maxRetriesPerRequest: 3,
     enableReadyCheck: false,
     lazyConnect: true,
-    
-    // Retry settings
+
+    // Retry settings - more aggressive for serverless
     retryStrategy: (times) => {
-      const delay = Math.min(times * 50, 2000);
-      console.log(`Redis retry attempt ${times}, waiting ${delay}ms...`);
+      if (times > 10) {
+        logger.error('Redis: Max retry attempts reached');
+        return null; // Stop retrying
+      }
+      const delay = Math.min(times * 100, 3000);
+      logger.debug(`Redis retry attempt ${times}, waiting ${delay}ms...`);
       return delay;
     },
-    
+
     // Connection timeout
     connectTimeout: 10000,
-    
-    // Keep connection alive
-    keepAlive: 30000,
-    
+
+    // Keep connection alive - ping every 10s to prevent idle disconnect
+    keepAlive: 10000,
+
     // Enable offline queue (queue commands when disconnected)
     enableOfflineQueue: true,
-    
+
+    // Auto-reconnect on connection drop
+    autoResubscribe: true,
+    autoResendUnfulfilledCommands: true,
+
     // Log connection events in development
     ...(process.env.NODE_ENV === 'development' && {
       showFriendlyErrorStack: true,
@@ -54,24 +62,39 @@ if (!redisUrl) {
 
   // Connection event handlers
   redis.on('connect', () => {
-    console.log('✅ Redis: Connecting...');
+    logger.debug('Redis: Connecting...');
   });
 
   redis.on('ready', () => {
-    console.log('✅ Redis: Connected and ready');
+    logger.info('Redis: Connected and ready');
   });
 
   redis.on('error', (err) => {
-    console.error('❌ Redis connection error:', err.message);
-    // Don't crash the app, just log the error
+    // ECONNRESET is normal for idle Upstash connections - don't log as error
+    // ioredis may emit error as string "read ECONNRESET" or as Error object
+    const msg = err?.message || String(err);
+    if (
+      msg.includes('ECONNRESET') ||
+      err?.code === 'ECONNRESET' ||
+      msg.includes('ECONNREFUSED') ||
+      msg === 'read ECONNRESET'
+    ) {
+      logger.debug('Redis: Connection reset (normal for idle connections)');
+    } else {
+      logger.error('Redis connection error:', { message: msg });
+    }
   });
 
   redis.on('close', () => {
-    console.warn('⚠️  Redis: Connection closed');
+    logger.debug('Redis: Connection closed (will auto-reconnect)');
   });
 
   redis.on('reconnecting', (delay) => {
-    console.log(`🔄 Redis: Reconnecting in ${delay}ms...`);
+    logger.debug(`Redis: Reconnecting in ${delay}ms...`);
+  });
+
+  redis.on('end', () => {
+    logger.warn('Redis: Connection ended (no more retries)');
   });
 
   // Test connection on startup (non-blocking)
@@ -80,11 +103,14 @@ if (!redisUrl) {
       const startTime = Date.now();
       return redis.ping().then(() => {
         const latency = Date.now() - startTime;
-        console.log(`✅ Redis: Connection test successful (latency: ${latency}ms)`);
+        logger.info(`Redis: Connection test successful (latency: ${latency}ms)`);
       });
     })
     .catch((err) => {
-      console.error('❌ Redis: Connection test failed:', err.message);
+      // Don't log ECONNRESET as error on startup
+      if (!err.message?.includes('ECONNRESET')) {
+        logger.error('Redis: Connection test failed:', { message: err.message });
+      }
     });
 }
 
@@ -94,7 +120,7 @@ if (!redisUrl) {
  */
 export const getRedis = () => {
   if (!redis) {
-    console.warn('⚠️  Redis not initialized. Returning null.');
+    logger.debug('Redis not initialized. Returning null.');
     return null;
   }
   return redis;

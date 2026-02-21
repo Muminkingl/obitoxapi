@@ -13,6 +13,7 @@ import {
     validateFileForUploadcare,
     generateUploadcareFilename
 } from './uploadcare.helpers.js';
+import logger from '../../../utils/logger.js';
 
 // ✅ NEW: Import File Validator for server-side validation
 import { validateFileMetadata } from '../../../utils/file-validator.js';
@@ -103,7 +104,7 @@ export const generateUploadcareSignedUrl = async (req, res) => {
         const { magicBytes, validation } = req.body;
 
         if (validation || magicBytes) {
-            console.log(`[${requestId}] 🔍 Running server-side file validation...`);
+            logger.debug('Running server-side file validation', { requestId });
 
             const validationResult = validateFileMetadata({
                 filename,
@@ -114,7 +115,7 @@ export const generateUploadcareSignedUrl = async (req, res) => {
             });
 
             if (!validationResult.valid) {
-                console.log(`[${requestId}] ❌ Validation failed: ${validationResult.errors?.length} errors`);
+                logger.warn('File validation failed', { requestId, errorCount: validationResult.errors?.length });
                 updateRequestMetrics(apiKeyId, userId, 'uploadcare', false).catch(() => { });
 
                 return res.status(400).json({
@@ -129,9 +130,9 @@ export const generateUploadcareSignedUrl = async (req, res) => {
                 });
             }
 
-            console.log(`[${requestId}] ✅ Validation passed`);
+            logger.debug('Validation passed', { requestId, detectedMimeType: validationResult.detectedMimeType });
             if (validationResult.detectedMimeType) {
-                console.log(`[${requestId}]    detected type: ${validationResult.detectedMimeType}`);
+                logger.debug('Detected MIME type', { requestId, detectedMimeType: validationResult.detectedMimeType });
             }
         }
 
@@ -162,14 +163,14 @@ export const generateUploadcareSignedUrl = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 'uploadcare', true, { fileSize: fileSize || 0, contentType })
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
+        logger.info('Uploadcare signed URL generated', { requestId, totalTime });
 
         // ✅ NEW: WEBHOOK CREATION (Optional - same pattern as R2/Supabase)
         let webhookResult = null;
         const { webhook } = req.body;
 
         if (webhook && webhook.url) {
-            console.log(`[${requestId}] 🔗 Creating webhook for ${filename}...`);
+            logger.debug('Creating webhook for file', { requestId, filename });
 
             try {
                 const webhookId = generateWebhookId();
@@ -194,24 +195,24 @@ export const generateUploadcareSignedUrl = async (req, res) => {
                 }).select().single();
 
                 if (insertError) {
-                    console.error(`[${requestId}] ⚠️ Webhook DB insert failed:`, insertError.message);
+                    logger.error('Webhook DB insert failed', { requestId, error: insertError.message });
                 } else {
                     webhookResult = {
                         webhookId,
                         webhookSecret,
                         triggerMode: webhook.trigger || 'manual'
                     };
-                    console.log(`[${requestId}] ✅ Webhook created: ${webhookId}`);
+                    logger.debug('Webhook created', { requestId, webhookId });
 
                     // ✅ Queue webhook for auto-trigger mode (worker will process)
                     if ((webhook.trigger || 'manual') === 'auto') {
-                        console.log(`[${requestId}] 📤 Enqueueing webhook for auto-trigger...`);
+                        logger.debug('Enqueueing webhook for auto-trigger', { requestId, webhookId });
                         await enqueueWebhook(webhookId, insertedWebhook, 0);
-                        console.log(`[${requestId}] ✅ Webhook enqueued to Redis`);
+                        logger.debug('Webhook enqueued to Redis', { requestId, webhookId });
                     }
                 }
             } catch (webhookError) {
-                console.error(`[${requestId}] ⚠️ Webhook creation failed:`, webhookError.message);
+                logger.error('Webhook creation failed', { requestId, error: webhookError.message });
                 // Continue without webhook - don't fail the entire request
             }
         }
@@ -256,7 +257,7 @@ export const generateUploadcareSignedUrl = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error('Uploadcare signed URL generation failed', { requestId, totalTime, error: error.message });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 'uploadcare', false)

@@ -11,6 +11,7 @@ import { supabaseAdmin } from '../../config/supabase.js';
 import { generateWebhookSignature, buildWebhookPayload, constructPublicUrl } from '../../utils/webhook/signature.js';
 import { verifyFile } from './verifier.js';
 import { enqueueWebhook, requeueWebhook } from './queue-manager.js';
+import logger from '../../utils/logger.js';
 
 // ✅ ADDED: Environment variable configuration
 const MAX_ATTEMPTS = parseInt(process.env.WEBHOOK_MAX_ATTEMPTS || '3');
@@ -37,7 +38,7 @@ export async function processWebhook(webhookRecord) {
     const { id, webhook_url, webhook_secret, provider, bucket, file_key, filename } = webhookRecord;
     const startTime = Date.now();
 
-    console.log(`[Webhook Processor] Processing ${id}...`);
+    logger.debug(`[Webhook Processor] Processing ${id}...`);
 
     try {
         // 1. Verify file exists (if not already verified)
@@ -82,11 +83,11 @@ export async function processWebhook(webhookRecord) {
             completed_at: new Date().toISOString()
         });
 
-        console.log(`[Webhook Processor] ✅ Completed ${id} in ${Date.now() - startTime}ms`);
+        logger.debug(`[Webhook Processor] Completed ${id} in ${Date.now() - startTime}ms`);
         return { success: true };
 
     } catch (error) {
-        console.error(`[Webhook Processor] ❌ Failed ${id}:`, error.message);
+        logger.error(`[Webhook Processor] Failed ${id}:`, { message: error.message });
         
         const attemptCount = webhookRecord.attempt_count + 1;
         
@@ -158,7 +159,7 @@ function recordFailure(url) {
         // Open circuit if threshold exceeded
         if (state.failureCount >= CIRCUIT_BREAK_THRESHOLD) {
             state.breakUntil = Date.now() + CIRCUIT_BREAK_DURATION;
-            console.warn(`[Webhook Processor] 🚨 Circuit opened for ${domain} after ${state.failureCount} failures`);
+            logger.warn(`[Webhook Processor] Circuit opened for ${domain} after ${state.failureCount} failures`);
         }
 
         circuitBreaker.set(domain, state);
@@ -280,7 +281,7 @@ export async function processWebhookBatch(webhookRecords) {
         }
     });
 
-    console.log(`[Webhook Processor] 📊 Batch: ${successful} success, ${failed} failed`);
+    logger.debug(`[Webhook Processor] Batch: ${successful} success, ${failed} failed`);
     
     return { successful, failed, details };
 }
@@ -301,9 +302,9 @@ async function moveToDeadLetter(webhook, failureReason) {
             last_attempt_at: new Date().toISOString()
         });
 
-        console.log(`[Webhook Processor] 📦 Moved ${webhook.id} to dead letter`);
+        logger.debug(`[Webhook Processor] Moved ${webhook.id} to dead letter`);
     } catch (error) {
-        console.error('[Webhook Processor] ❌ Dead letter insert failed:', error.message);
+        logger.error('[Webhook Processor] Dead letter insert failed:', { message: error.message });
     }
 }
 
@@ -325,7 +326,7 @@ async function updateWebhookStatus(id, status, updates) {
             })
             .eq('id', id);
     } catch (error) {
-        console.error(`[Webhook Processor] ❌ Status update failed for ${id}:`, error.message);
+        logger.error(`[Webhook Processor] Status update failed for ${id}:`, { message: error.message });
     }
 }
 
@@ -345,7 +346,7 @@ async function updateWebhookRecord(id, data) {
             })
             .eq('id', id);
     } catch (error) {
-        console.error(`[Webhook Processor] ❌ Record update failed for ${id}:`, error.message);
+        logger.error(`[Webhook Processor] Record update failed for ${id}:`, { message: error.message });
     }
 }
 
@@ -367,11 +368,10 @@ export async function retryDeadLetters(limit = 10) {
             .order('created_at', { ascending: true });
 
         if (!deadLetters || deadLetters.length === 0) {
-            console.log('[Webhook Processor] No dead letters to retry');
             return 0;
         }
 
-        console.log(`[Webhook Processor] 🔄 Retrying ${deadLetters.length} dead letters`);
+        logger.debug(`[Webhook Processor] Retrying ${deadLetters.length} dead letters`);
 
         let retried = 0;
         for (const dl of deadLetters) {
@@ -408,15 +408,15 @@ export async function retryDeadLetters(limit = 10) {
 
                 retried++;
             } catch (error) {
-                console.error(`[Webhook Processor] ❌ Retry failed for ${dl.webhook_id}:`, error.message);
+                logger.error(`[Webhook Processor] Retry failed for ${dl.webhook_id}:`, { message: error.message });
             }
         }
 
-        console.log(`[Webhook Processor] ✅ Retried ${retried} dead letters`);
+        logger.debug(`[Webhook Processor] Retried ${retried} dead letters`);
         return retried;
 
     } catch (error) {
-        console.error('[Webhook Processor] ❌ Dead letter retry failed:', error.message);
+        logger.error('[Webhook Processor] Dead letter retry failed:', { message: error.message });
         return 0;
     }
 }
@@ -438,10 +438,10 @@ export async function resolveDeadLetter(deadLetterId, resolvedBy) {
             })
             .eq('id', deadLetterId);
 
-        console.log(`[Webhook Processor] ✅ Dead letter ${deadLetterId} resolved`);
+        logger.debug(`[Webhook Processor] Dead letter ${deadLetterId} resolved`);
         return true;
     } catch (error) {
-        console.error('[Webhook Processor] ❌ Resolve failed:', error.message);
+        logger.error('[Webhook Processor] Resolve failed:', { message: error.message });
         return false;
     }
 }
@@ -476,7 +476,7 @@ export async function getProcessingMetrics() {
 
         return metrics;
     } catch (error) {
-        console.error('[Webhook Processor] ❌ Metrics fetch failed:', error.message);
+        logger.error('[Webhook Processor] Metrics fetch failed:', { message: error.message });
         return null;
     }
 }

@@ -16,9 +16,7 @@
 import { getRedis } from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { getPendingMetrics, parseMetricsKey, parseMetricsData, getMetrics, clearMetrics } from '../lib/metrics/redis-counters.js';
-
-// Also import legacy functions for transition period
-import { getPendingApiKeyMetrics, getPendingProviderMetrics } from '../lib/metrics/redis-counters.js';
+import logger from '../utils/logger.js';
 
 const WORKER_ID = `metrics-worker-${process.pid}`;
 
@@ -91,7 +89,7 @@ async function syncConsolidatedMetrics() {
                     .eq('id', apiKeyId);
 
                 if (error) {
-                    console.error(`[Metrics Worker] ❌ Error updating api_key ${apiKeyId}:`, error.message);
+                    logger.error(`[Metrics Worker] Error updating api_key ${apiKeyId}:`, { message: error.message });
                     continue;
                 }
                 apiKeysProcessed++;
@@ -123,7 +121,7 @@ async function syncConsolidatedMetrics() {
                         .eq('id', existing.id);
 
                     if (error) {
-                        console.error(`[Metrics Worker] ❌ Error updating provider_usage:`, error.message);
+                        logger.error(`[Metrics Worker] Error updating provider_usage:`, { message: error.message });
                         continue;
                     }
                 } else {
@@ -139,7 +137,7 @@ async function syncConsolidatedMetrics() {
                         });
 
                     if (error) {
-                        console.error(`[Metrics Worker] ❌ Error inserting provider_usage:`, error.message);
+                        logger.error(`[Metrics Worker] Error inserting provider_usage:`, { message: error.message });
                         continue;
                     }
                 }
@@ -150,7 +148,7 @@ async function syncConsolidatedMetrics() {
             await clearMetrics(key);
 
         } catch (error) {
-            console.error(`[Metrics Worker] ❌ Error processing ${key}:`, error.message);
+            logger.error(`[Metrics Worker] Error processing ${key}:`, { message: error.message });
             stats.errors++;
         }
     }
@@ -159,143 +157,26 @@ async function syncConsolidatedMetrics() {
 }
 
 /**
- * Sync OLD-format API key metrics (transition period — will self-clean in ~7 days)
- */
-async function syncLegacyApiKeyMetrics() {
-    const redisKeys = await getPendingApiKeyMetrics();
-    if (redisKeys.length === 0) return 0;
-
-    let processed = 0;
-    for (const key of redisKeys) {
-        try {
-            const metrics = await getMetrics(key);
-            if (!metrics || Object.keys(metrics).length === 0) {
-                await clearMetrics(key);
-                continue;
-            }
-
-            const apiKeyId = key.replace('metrics:apikey:', '');
-            if (!apiKeyId) {
-                await clearMetrics(key);
-                continue;
-            }
-
-            const { data: current } = await supabaseAdmin
-                .from('api_keys')
-                .select('total_requests, total_files_uploaded')
-                .eq('id', apiKeyId)
-                .single();
-
-            if (current) {
-                await supabaseAdmin
-                    .from('api_keys')
-                    .update({
-                        total_requests: (current.total_requests || 0) + (metrics.total_requests || 0),
-                        total_files_uploaded: (current.total_files_uploaded || 0) + (metrics.total_files_uploaded || 0),
-                        last_used_at: new Date().toISOString()
-                    })
-                    .eq('id', apiKeyId);
-            }
-
-            await clearMetrics(key);
-            processed++;
-        } catch (error) {
-            console.error(`[Metrics Worker] ❌ Legacy key error ${key}:`, error.message);
-            stats.errors++;
-        }
-    }
-    return processed;
-}
-
-/**
- * Sync OLD-format provider metrics (transition period)
- */
-async function syncLegacyProviderMetrics() {
-    const redisKeys = await getPendingProviderMetrics();
-    if (redisKeys.length === 0) return 0;
-
-    let processed = 0;
-    for (const key of redisKeys) {
-        try {
-            const metrics = await getMetrics(key);
-            if (!metrics || Object.keys(metrics).length === 0) {
-                await clearMetrics(key);
-                continue;
-            }
-
-            const apiKeyId = metrics.api_key_id;
-            const provider = metrics.provider;
-            if (!apiKeyId || !provider) {
-                await clearMetrics(key);
-                continue;
-            }
-
-            const { data: existing } = await supabaseAdmin
-                .from('provider_usage')
-                .select('id, upload_count')
-                .eq('api_key_id', apiKeyId)
-                .eq('provider', provider)
-                .single();
-
-            if (existing) {
-                await supabaseAdmin
-                    .from('provider_usage')
-                    .update({
-                        upload_count: (existing.upload_count || 0) + (metrics.upload_count || 0),
-                        last_used_at: new Date().toISOString()
-                    })
-                    .eq('id', existing.id);
-            } else {
-                await supabaseAdmin
-                    .from('provider_usage')
-                    .insert({
-                        api_key_id: apiKeyId,
-                        user_id: metrics.user_id,
-                        provider,
-                        upload_count: metrics.upload_count || 0,
-                        last_used_at: new Date().toISOString()
-                    });
-            }
-
-            await clearMetrics(key);
-            processed++;
-        } catch (error) {
-            console.error(`[Metrics Worker] ❌ Legacy provider error ${key}:`, error.message);
-            stats.errors++;
-        }
-    }
-    return processed;
-}
-
-/**
- * Run metrics sync (handles both new and legacy format)
+ * Run metrics sync
  */
 export async function startMetricsSyncWorker() {
     const startTime = Date.now();
 
-    console.log(`[Metrics Worker] 🚀 Starting sync...`);
+    logger.debug(`[Metrics Worker] Starting sync...`);
 
     try {
-        // New consolidated format
-        const { apiKeys: newApiKeys, providers: newProviders } = await syncConsolidatedMetrics();
-
-        // Legacy format (will auto-clean within 7 days)
-        const legacyApiKeys = await syncLegacyApiKeyMetrics();
-        const legacyProviders = await syncLegacyProviderMetrics();
-
-        const totalApiKeys = newApiKeys + legacyApiKeys;
-        const totalProviders = newProviders + legacyProviders;
+        const { apiKeys, providers } = await syncConsolidatedMetrics();
 
         const elapsed = Date.now() - startTime;
         stats.runsCompleted++;
-        stats.apiKeysProcessed += totalApiKeys;
-        stats.providersProcessed += totalProviders;
+        stats.apiKeysProcessed += apiKeys;
+        stats.providersProcessed += providers;
 
-        console.log(`[Metrics Worker] ✅ COMPLETED in ${elapsed}ms`);
-        console.log(`[Metrics Worker] 📊 API Keys: ${totalApiKeys} (new:${newApiKeys}, legacy:${legacyApiKeys}), Providers: ${totalProviders} (new:${newProviders}, legacy:${legacyProviders})`);
+        logger.debug(`[Metrics Worker] COMPLETED in ${elapsed}ms`);
+        logger.debug(`[Metrics Worker] API Keys: ${apiKeys}, Providers: ${providers}`);
 
     } catch (error) {
-        console.error('[Metrics Worker] ❌ Sync failed:', error.message);
+        logger.error('[Metrics Worker] Sync failed:', { message: error.message });
         stats.errors++;
     }
 }
@@ -306,3 +187,51 @@ export async function startMetricsSyncWorker() {
 export function getWorkerStats() {
     return { ...stats };
 }
+
+// Global error handlers - don't crash on ECONNRESET (Redis idle reset)
+process.on('uncaughtException', (error) => {
+    const msg = error?.message || String(error);
+    if (msg.includes('ECONNRESET')) {
+        logger.debug('[Metrics Worker] ECONNRESET (Redis idle reset, safe to ignore)');
+        return;
+    }
+    logger.error(`[Metrics Worker] Worker crashed: ${msg}`);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+    const msg = reason?.message || String(reason);
+    if (msg.includes('ECONNRESET')) {
+        logger.debug('[Metrics Worker] ECONNRESET rejection (safe to ignore)');
+        return;
+    }
+    logger.error(`[Metrics Worker] Unhandled rejection: ${msg}`);
+});
+
+// ========================
+// MAIN ENTRY POINT
+// ========================
+const SYNC_INTERVAL_MS = 5000; // 5 seconds
+
+async function main() {
+    logger.info(`[Metrics Worker] Starting worker ${WORKER_ID}`);
+    logger.info(`[Metrics Worker] Sync interval: ${SYNC_INTERVAL_MS}ms`);
+
+    // Run immediately on startup
+    await startMetricsSyncWorker();
+
+    // Then run on interval
+    setInterval(async () => {
+        await startMetricsSyncWorker();
+    }, SYNC_INTERVAL_MS);
+
+    // Log stats every 5 minutes
+    setInterval(() => {
+        logger.info('[Metrics Worker] Stats:', stats);
+    }, 300000);
+}
+
+main().catch(error => {
+    logger.error('[Metrics Worker] Startup error:', { message: error.message });
+    process.exit(1);
+});

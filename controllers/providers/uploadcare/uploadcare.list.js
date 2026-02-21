@@ -19,6 +19,7 @@ import { checkUserQuota } from '../shared/analytics.new.js';
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * List files from Uploadcare
@@ -113,7 +114,7 @@ export const listUploadcareFiles = async (req, res) => {
         const operationTime = Date.now() - operationStart;
         const totalTime = Date.now() - startTime;
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (${listData.results?.length || 0} files)`);
+        logger.debug(`[${requestId}] SUCCESS in ${totalTime}ms (${listData.results?.length || 0} files)`);
 
         // 🚀 SINGLE METRICS CALL (Redis-backed)
         updateRequestMetrics(apiKeyId, userId, 'uploadcare', true)
@@ -144,7 +145,7 @@ export const listUploadcareFiles = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { error: error.message });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', false)

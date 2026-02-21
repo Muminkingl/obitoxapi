@@ -7,6 +7,7 @@
 
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 import { formatErrorResponse } from '../shared/error.helper.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Track upload event
@@ -45,7 +46,7 @@ export const trackUploadEvent = async (req, res) => {
         if (userId && apiKeyId) {
             const success = event === 'completed';
             updateRequestMetrics(apiKeyId, userId, 'uploadcare', success, { fileSize: fileSize || 0 })
-                .catch(err => console.error('Metrics error:', err));
+                .catch(err => logger.error('Metrics error:', { error: err.message }));
         }
 
         // 4. Return success immediately
@@ -59,7 +60,7 @@ export const trackUploadEvent = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Track event error:', error);
+        logger.error('Track event error:', { error });
 
         return res.status(500).json(
             formatErrorResponse(

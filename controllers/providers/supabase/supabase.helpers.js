@@ -6,6 +6,7 @@
 
 import { supabaseAdmin } from '../../../config/supabase.js';
 import crypto from 'crypto';
+import logger from '../../../utils/logger.js';
 import {
     SUPABASE_BUCKET,
     PRIVATE_BUCKET,
@@ -108,7 +109,7 @@ export const checkRateLimit = async (apiKey) => {
             .limit(RATE_LIMIT_PER_MINUTE + 1);
 
         if (minuteError) {
-            console.error('Rate limit check error (minute):', minuteError);
+            logger.error('Rate limit check error (minute):', { message: minuteError.message });
             return { allowed: true, remaining: RATE_LIMIT_PER_MINUTE };
         }
 
@@ -130,7 +131,7 @@ export const checkRateLimit = async (apiKey) => {
             .limit(RATE_LIMIT_PER_HOUR + 1);
 
         if (hourError) {
-            console.error('Rate limit check error (hour):', hourError);
+            logger.error('Rate limit check error (hour):', { message: hourError.message });
             return { allowed: true, remaining: RATE_LIMIT_PER_HOUR };
         }
 
@@ -152,7 +153,7 @@ export const checkRateLimit = async (apiKey) => {
                 created_at: now.toISOString()
             })
             .then(() => { })
-            .catch(err => console.error('Request log error:', err));
+            .catch(err => logger.error('Request log error:', { message: err.message }));
 
         const minuteRemaining = RATE_LIMIT_PER_MINUTE - (minuteRequests?.length || 0);
         const hourRemaining = RATE_LIMIT_PER_HOUR - (hourRequests?.length || 0);
@@ -162,7 +163,7 @@ export const checkRateLimit = async (apiKey) => {
             remaining: Math.min(minuteRemaining, hourRemaining)
         };
     } catch (error) {
-        console.error('Rate limit check error:', error);
+        logger.error('Rate limit check error:', { message: error.message });
         return { allowed: true, remaining: RATE_LIMIT_PER_MINUTE };
     }
 };
@@ -180,7 +181,7 @@ export const checkUserQuota = async (apiKey) => {
             .single();
 
         if (error && error.code !== 'PGRST116') {
-            console.error('Quota check error:', error);
+            logger.error('Quota check error:', { message: error.message });
             return { allowed: true, remaining: { files: MAX_FILES_PER_USER } };
         }
 
@@ -201,7 +202,7 @@ export const checkUserQuota = async (apiKey) => {
             current: { files: currentFiles }
         };
     } catch (error) {
-        console.error('Quota check error:', error);
+        logger.error('Quota check error:', { message: error.message });
         return { allowed: true, remaining: { files: MAX_FILES_PER_USER } };
     }
 };
@@ -333,7 +334,7 @@ export const generateSupabaseFilename = (originalName, apiKey = null) => {
 
         return `${keyPrefix}_${baseName}_${timestamp}_${randomBytes}.${extension}`;
     } catch (error) {
-        console.error('Error generating filename:', error);
+        logger.error('Error generating filename:', { message: error.message });
         return `file_${Date.now()}.bin`;
     }
 };
@@ -344,7 +345,7 @@ export const generateSupabaseFilename = (originalName, apiKey = null) => {
 export const updateSupabaseMetrics = async (apiKey, provider, success, errorType = null, additionalData = {}) => {
     try {
         if (!apiKey) {
-            console.warn('⚠️ No API key provided for metrics update');
+            logger.warn('No API key provided for metrics update');
             return;
         }
 
@@ -356,7 +357,7 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
             .single();
 
         if (fetchError) {
-            console.error('❌ Error fetching current metrics:', fetchError);
+            logger.error('Error fetching current metrics:', { message: fetchError.message });
             return;
         }
 
@@ -374,7 +375,7 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
             })
             .eq('id', apiKey)
             .then(() => { })
-            .catch(err => console.error('Metrics update error:', err));
+            .catch(err => logger.error('Metrics update error:', { message: err.message }));
 
         // Update provider usage (upload count only)
         const { data: providerData, error: providerError } = await supabaseAdmin
@@ -385,7 +386,7 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
             .single();
 
         if (providerError && providerError.code !== 'PGRST116') {
-            console.error('❌ Error fetching provider metrics:', providerError);
+            logger.error('Error fetching provider metrics:', { message: providerError.message });
         } else if (providerError?.code === 'PGRST116') {
             // Insert new record
             await supabaseAdmin
@@ -399,7 +400,7 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
                     updated_at: new Date().toISOString()
                 })
                 .then(() => { })
-                .catch(err => console.error('Provider insert error:', err));
+                .catch(err => logger.error('Provider insert error:', { message: err.message }));
         } else {
             // Update existing
             const currentCount = providerData?.upload_count || 0;
@@ -414,7 +415,7 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
                 .eq('api_key_id', apiKey)
                 .eq('provider', provider)
                 .then(() => { })
-                .catch(err => console.error('Provider update error:', err));
+                .catch(err => logger.error('Provider update error:', { message: err.message }));
         }
 
         // Log errors
@@ -429,10 +430,10 @@ export const updateSupabaseMetrics = async (apiKey, provider, success, errorType
                     created_at: new Date().toISOString()
                 })
                 .then(() => { })
-                .catch(err => console.error('Error log insert error:', err));
+                .catch(err => logger.error('Error log insert error:', { message: err.message }));
         }
 
     } catch (error) {
-        console.error('Error updating metrics:', error);
+        logger.error('Error updating metrics:', { message: error.message });
     }
 };

@@ -5,6 +5,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { updateSupabaseMetrics } from './supabase.helpers.js';
+import logger from '../../../utils/logger.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import { checkUserQuota } from '../shared/analytics.new.js';
 
@@ -76,7 +77,7 @@ export const listSupabaseBuckets = async (req, res) => {
         const { data: buckets, error: bucketsError } = await developerSupabase.storage.listBuckets();
 
         if (bucketsError) {
-            console.error('❌ Failed to list buckets:', bucketsError);
+            logger.error('Failed to list buckets:', { message: bucketsError.message });
             return res.status(500).json({
                 success: false,
                 error: 'BUCKETS_LIST_ERROR',
@@ -111,7 +112,7 @@ export const listSupabaseBuckets = async (req, res) => {
                         createdAt: bucket.created_at
                     };
                 } catch (error) {
-                    console.warn(`⚠️ Could not get stats for bucket ${bucket.name}:`, error.message);
+                    logger.warn(`Could not get stats for bucket ${bucket.name}:`, { message: error.message });
                     return {
                         name: bucket.name,
                         public: bucket.public,
@@ -137,7 +138,7 @@ export const listSupabaseBuckets = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('❌ Error listing buckets:', error);
+        logger.error('Error listing buckets:', { message: error.message });
 
         await updateSupabaseMetrics(apiKey, 'supabase', false, 'GENERAL_ERROR', {
             operation: 'list_buckets',

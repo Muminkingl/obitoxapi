@@ -20,6 +20,7 @@ import { checkUserQuota } from '../shared/analytics.new.js';
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Delete file from Uploadcare using their REST API
@@ -113,7 +114,7 @@ export const deleteUploadcareFile = async (req, res) => {
 
         // Delete from Uploadcare using REST API
         const delUrl = `${UPLOADCARE_API_BASE}/files/${fileUuid}/storage/`;
-        console.log(`[${requestId}] 🗑️ Deleting from Uploadcare: ${fileUuid}`);
+        logger.info(`[${requestId}] Deleting from Uploadcare: ${fileUuid}`);
 
         const deleteResponse = await fetch(delUrl, {
             method: 'DELETE',
@@ -148,7 +149,7 @@ export const deleteUploadcareFile = async (req, res) => {
         const operationTime = Date.now() - operationStart;
         const totalTime = Date.now() - startTime;
 
-        console.log(`[${requestId}] ✅ File deleted in ${totalTime}ms`);
+        logger.debug(`[${requestId}] File deleted in ${totalTime}ms`);
 
         // 🚀 SINGLE METRICS CALL (Redis-backed)
         updateRequestMetrics(apiKeyId, userId, 'uploadcare', true)
@@ -175,7 +176,7 @@ export const deleteUploadcareFile = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { error: error.message });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, userId || apiKeyId, 'uploadcare', false)

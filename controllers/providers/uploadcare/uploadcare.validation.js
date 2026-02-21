@@ -21,6 +21,7 @@ import redis from '../../../config/redis.js';
 
 // Quota check
 import { checkUserQuota } from '../shared/analytics.new.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Validate file before upload (fast, synchronous validation)
@@ -143,7 +144,7 @@ export const validateUploadcareFile = async (req, res) => {
         // Background metrics
         updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
 
-        console.log(`[${requestId}] ✅ Validation complete in ${totalTime}ms (Valid: ${validationResults.isValid})`);
+        logger.debug(`[${requestId}] Validation complete in ${totalTime}ms (Valid: ${validationResults.isValid})`);
 
         res.status(200).json({
             success: true,
@@ -162,7 +163,7 @@ export const validateUploadcareFile = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { error: error.message });
 
         if (apiKeyId) {
             updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
@@ -214,7 +215,7 @@ export const getUploadcareProjectSettings = async (req, res) => {
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
+            logger.debug(`[${requestId}] Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -231,7 +232,7 @@ export const getUploadcareProjectSettings = async (req, res) => {
             const settingsData = JSON.parse(cachedSettings);
             const totalTime = Date.now() - startTime;
 
-            console.log(`[${requestId}] 🎯 Settings from cache in ${totalTime}ms`);
+            logger.debug(`[${requestId}] Settings from cache in ${totalTime}ms`);
 
             return res.status(200).json({
                 success: true,
@@ -282,7 +283,7 @@ export const getUploadcareProjectSettings = async (req, res) => {
         // Cache for 1 hour (settings rarely change)
         await redis.setex(cacheKey, 3600, JSON.stringify(responseData));
 
-        console.log(`[${requestId}] ✅ Settings retrieved in ${totalTime}ms`);
+        logger.debug(`[${requestId}] Settings retrieved in ${totalTime}ms`);
 
         // Background metrics
         updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
@@ -305,7 +306,7 @@ export const getUploadcareProjectSettings = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { error: error.message });
 
         if (apiKeyId) {
             updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });
@@ -468,7 +469,7 @@ export const validateUploadcareSvg = async (req, res) => {
         const operationTime = Date.now() - operationStart;
         const totalTime = Date.now() - startTime;
 
-        console.log(`[${requestId}] ✅ SVG validated in ${totalTime}ms (Safe: ${validationResults.isValid})`);
+        logger.debug(`[${requestId}] SVG validated in ${totalTime}ms (Safe: ${validationResults.isValid})`);
 
         // Background metrics
         updateUploadcareMetrics(apiKeyId, userId, 'uploadcare', 'success', 0).catch(() => { });
@@ -491,7 +492,7 @@ export const validateUploadcareSvg = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { error: error.message });
 
         if (apiKeyId) {
             updateUploadcareMetrics(apiKeyId, req.userId, 'uploadcare', 'failed', 0).catch(() => { });

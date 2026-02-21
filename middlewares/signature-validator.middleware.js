@@ -20,6 +20,7 @@
 
 import { verifySignature, isTimestampValid } from '../utils/signature.utils.js';
 import { supabaseAdmin } from '../config/supabase.js';
+import logger from '../utils/logger.js';
 
 /**
  * Signature Validation Middleware
@@ -42,7 +43,7 @@ export async function signatureValidator(req, res, next) {
         const timestamp = req.headers['x-timestamp'];
 
         if (!signature) {
-            console.log(`[${requestId}] ❌ Missing X-Signature header`);
+            logger.debug(`[${requestId}] Missing X-Signature header`);
             return res.status(401).json({
                 success: false,
                 error: 'MISSING_SIGNATURE',
@@ -52,7 +53,7 @@ export async function signatureValidator(req, res, next) {
         }
 
         if (!timestamp) {
-            console.log(`[${requestId}] ❌ Missing X-Timestamp header`);
+            logger.debug(`[${requestId}] Missing X-Timestamp header`);
             return res.status(401).json({
                 success: false,
                 error: 'MISSING_TIMESTAMP',
@@ -68,7 +69,7 @@ export async function signatureValidator(req, res, next) {
         const timestampNum = parseInt(timestamp);
 
         if (isNaN(timestampNum)) {
-            console.log(`[${requestId}] ❌ Invalid timestamp format: ${timestamp}`);
+            logger.debug(`[${requestId}] Invalid timestamp format: ${timestamp}`);
             return res.status(401).json({
                 success: false,
                 error: 'INVALID_TIMESTAMP',
@@ -78,7 +79,7 @@ export async function signatureValidator(req, res, next) {
 
         if (!isTimestampValid(timestampNum)) {
             const age = Date.now() - timestampNum;
-            console.log(`[${requestId}] ❌ Timestamp too old: ${Math.floor(age / 1000)}s`);
+            logger.debug(`[${requestId}] Timestamp too old: ${Math.floor(age / 1000)}s`);
             return res.status(401).json({
                 success: false,
                 error: 'EXPIRED_TIMESTAMP',
@@ -96,7 +97,7 @@ export async function signatureValidator(req, res, next) {
         const apiKeyId = req.apiKeyId;
 
         if (!apiKeyId) {
-            console.log(`[${requestId}] ❌ No apiKeyId found in request (middleware order issue?)`);
+            logger.debug(`[${requestId}] No apiKeyId found in request (middleware order issue?)`);
             return res.status(500).json({
                 success: false,
                 error: 'INTERNAL_ERROR',
@@ -109,7 +110,7 @@ export async function signatureValidator(req, res, next) {
 
         // Fallback to DB only if not cached (edge case)
         if (!secret_hash) {
-            console.log(`[${requestId}] ⚠️ secret_hash not cached, falling back to DB`);
+            logger.debug(`[${requestId}] secret_hash not cached, falling back to DB`);
             const { data: keyData, error: dbError } = await supabaseAdmin
                 .from('api_keys')
                 .select('secret_hash')
@@ -117,7 +118,7 @@ export async function signatureValidator(req, res, next) {
                 .single();
 
             if (dbError || !keyData) {
-                console.error(`[${requestId}] ❌ Failed to fetch secret_hash:`, dbError?.message);
+                logger.error(`[${requestId}] Failed to fetch secret_hash:`, dbError?.message);
                 return res.status(500).json({
                     success: false,
                     error: 'DATABASE_ERROR',
@@ -130,10 +131,10 @@ export async function signatureValidator(req, res, next) {
 
         if (!secret_hash) {
             // Legacy key without secret - allow through for backwards compatibility
-            console.log(`[${requestId}] ⚠️ No secret_hash for API key (legacy key?)`);
-            console.log(`[${requestId}] ✅ Allowing request (legacy key without secret)`);
+            logger.debug(`[${requestId}] No secret_hash for API key (legacy key?)`);
+            logger.debug(`[${requestId}] Allowing request (legacy key without secret)`);
             const totalTime = Date.now() - startTime;
-            console.log(`[${requestId}] Signature validation bypassed in ${totalTime}ms (legacy key)`);
+            logger.debug(`[${requestId}] Signature validation bypassed in ${totalTime}ms (legacy key)`);
             return next();
         }
 
@@ -150,7 +151,7 @@ export async function signatureValidator(req, res, next) {
         const providedSecret = req.headers['x-api-secret'];
 
         if (!providedSecret) {
-            console.log(`[${requestId}] ❌ Missing X-API-Secret header`);
+            logger.debug(`[${requestId}] Missing X-API-Secret header`);
             return res.status(401).json({
                 success: false,
                 error: 'MISSING_SECRET',
@@ -166,7 +167,7 @@ export async function signatureValidator(req, res, next) {
             .digest('hex');
 
         if (providedSecretHash !== secret_hash) {
-            console.log(`[${requestId}] ❌ Secret hash mismatch`);
+            logger.warn(`[${requestId}] Secret hash mismatch`);
             return res.status(401).json({
                 success: false,
                 error: 'INVALID_SECRET',
@@ -181,7 +182,7 @@ export async function signatureValidator(req, res, next) {
         try {
             isValidSignature = verifySignature(req, signature, providedSecret);
         } catch (error) {
-            console.error(`[${requestId}] ❌ Signature verification error:`, error.message);
+            logger.error(`[${requestId}] Signature verification error:`, error.message);
             return res.status(401).json({
                 success: false,
                 error: 'SIGNATURE_ERROR',
@@ -191,7 +192,7 @@ export async function signatureValidator(req, res, next) {
         }
 
         if (!isValidSignature) {
-            console.log(`[${requestId}] ❌ Invalid signature`);
+            logger.warn(`[${requestId}] Invalid signature`);
             return res.status(401).json({
                 success: false,
                 error: 'INVALID_SIGNATURE',
@@ -205,14 +206,14 @@ export async function signatureValidator(req, res, next) {
         // ============================================================
 
         const totalTime = Date.now() - startTime;
-        console.log(`[${requestId}] ✅ Signature validated in ${totalTime}ms`);
+        logger.debug(`[${requestId}] Signature validated in ${totalTime}ms`);
 
         // Continue to next middleware
         next();
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] ❌ Unexpected error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Unexpected error after ${totalTime}ms:`, error.message);
 
         return res.status(500).json({
             success: false,

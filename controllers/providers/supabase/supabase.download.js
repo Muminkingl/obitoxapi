@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { SUPABASE_BUCKET, PRIVATE_BUCKET } from './supabase.config.js';
 import { updateSupabaseMetrics } from './supabase.helpers.js';
+import logger from '../../../utils/logger.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
@@ -25,7 +26,7 @@ export const downloadSupabaseFile = async (req, res) => {
     let apiKey;
 
     try {
-        console.log('📥 Downloading from Supabase Storage...');
+        logger.debug('Downloading from Supabase Storage...');
 
         const {
             fileUrl,
@@ -72,7 +73,7 @@ export const downloadSupabaseFile = async (req, res) => {
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
+            logger.debug(`[${requestId}] Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -183,7 +184,7 @@ export const downloadSupabaseFile = async (req, res) => {
 
 
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms`);
+        logger.debug(`[${requestId}] SUCCESS in ${totalTime}ms`);
 
         // Success response
         res.status(200).json({
@@ -212,7 +213,7 @@ export const downloadSupabaseFile = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error(`[${requestId}] Error after ${totalTime}ms:`, { message: error.message });
 
         if (apiKey) {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {

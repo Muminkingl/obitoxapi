@@ -60,6 +60,7 @@
     "@aws-sdk/client-s3": "^3.958.0",
     "@aws-sdk/s3-request-presigner": "^3.958.0",
     "@supabase/supabase-js": "^2.56.1",
+    "@upstash/redis": "^1.36.2",
     "@upstash/workflow": "^0.2.7",
     "bcryptjs": "^2.4.3",
     "bull": "^4.16.5",

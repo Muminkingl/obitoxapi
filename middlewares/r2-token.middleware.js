@@ -14,6 +14,7 @@
 import jwt from 'jsonwebtoken';
 import { supabaseAdmin } from '../config/supabase.js';
 import { formatR2Error } from '../controllers/providers/r2/r2.config.js';
+import logger from '../utils/logger.js';
 
 /**
  * Middleware to validate R2 access tokens
@@ -98,7 +99,7 @@ export async function validateR2AccessToken(req, res, next) {
                 .single();
 
             if (dbError && dbError.code !== 'PGRST116') {  // PGRST116 = not found
-                console.warn('Token revocation check failed:', dbError.message);
+                logger.warn('Token revocation check failed:', dbError.message);
                 // Continue anyway - fail open (token works even if DB check fails)
             }
 
@@ -110,7 +111,7 @@ export async function validateR2AccessToken(req, res, next) {
                 ));
             }
         } catch (checkError) {
-            console.warn('Token check error:', checkError.message);
+            logger.warn('Token check error:', checkError.message);
             // Continue - fail open
         }
 
@@ -145,13 +146,13 @@ export async function validateR2AccessToken(req, res, next) {
             validationTime: `${totalTime}ms`
         };
 
-        console.log(`[Token Validation] ✅ Token valid in ${totalTime}ms`);
+        logger.debug(`[Token Validation] Token valid in ${totalTime}ms`);
 
         next();
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[Token Validation] ❌ Error (${totalTime}ms):`, error.message);
+        logger.error(`[Token Validation] Error (${totalTime}ms):`, error.message);
 
         return res.status(500).json(formatR2Error(
             'TOKEN_VALIDATION_ERROR',

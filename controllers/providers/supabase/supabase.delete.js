@@ -7,6 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '../../../config/supabase.js';
 import { SUPABASE_BUCKET, PRIVATE_BUCKET } from './supabase.config.js';
 import { updateSupabaseMetrics } from './supabase.helpers.js';
+import logger from '../../../utils/logger.js';
 
 // Import multi-layer cache
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
@@ -25,7 +26,7 @@ export const deleteSupabaseFile = async (req, res) => {
     let apiKey;
 
     try {
-        console.log('🗑️ Deleting file from Supabase Storage...');
+        logger.debug('Deleting file from Supabase Storage...');
 
         const {
             fileUrl,
@@ -72,7 +73,7 @@ export const deleteSupabaseFile = async (req, res) => {
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
+            logger.debug(`[${requestId}] Blocked by memory guard in ${memoryTime}ms`);
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -143,7 +144,7 @@ export const deleteSupabaseFile = async (req, res) => {
             .remove([targetFilename]);
 
         if (error) {
-            console.error('❌ Supabase Storage delete error:', error);
+            logger.error('Supabase Storage delete error:', { message: error.message });
 
             let errorType = 'DELETE_ERROR';
             let statusCode = 500;
@@ -169,7 +170,7 @@ export const deleteSupabaseFile = async (req, res) => {
         const operationTime = Date.now() - operationStart;
         const totalTime = Date.now() - startTime;
 
-        console.log(`[${requestId}] ✅ File deleted in ${totalTime}ms`);
+        logger.debug(`[${requestId}] File deleted in ${totalTime}ms`);
 
         // Background metrics update
         updateSupabaseMetrics(apiKey, 'supabase', true, 'DELETE_SUCCESS').catch(() => { });
@@ -201,7 +202,7 @@ export const deleteSupabaseFile = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Supabase Storage delete error:`, error);
+        logger.error(`[${requestId}] Supabase Storage delete error:`, { message: error.message });
 
         if (apiKey) {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {

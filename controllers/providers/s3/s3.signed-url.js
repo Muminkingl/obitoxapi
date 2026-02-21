@@ -46,6 +46,9 @@ import { enqueueWebhook } from '../../../services/webhook/queue-manager.js';
 // ✅ SECURITY: Encrypt credentials before storing in DB
 import { encryptCredential } from '../../../utils/credential-encryption.js';
 
+// ✅ PRODUCTION: Structured logger
+import logger from '../../../utils/logger.js';
+
 /**
  * Generate presigned URL for S3 upload
  * Target Performance: 7-15ms P95
@@ -216,7 +219,7 @@ export const generateS3SignedUrl = async (req, res) => {
         const { magicBytes, validation } = req.body;
 
         if (validation || magicBytes) {
-            console.log(`[${requestId}] 🔍 Running server-side file validation...`);
+            logger.debug('Running server-side file validation', { requestId });
 
             const validationResult = validateFileMetadata({
                 filename,
@@ -227,7 +230,7 @@ export const generateS3SignedUrl = async (req, res) => {
             });
 
             if (!validationResult.valid) {
-                console.log(`[${requestId}] ❌ Validation failed: ${validationResult.errors?.length} errors`);
+                logger.warn('File validation failed', { requestId, errorCount: validationResult.errors?.length });
                 updateRequestMetrics(apiKeyId, userId, 's3', false).catch(() => { });
 
                 return res.status(400).json({
@@ -242,10 +245,7 @@ export const generateS3SignedUrl = async (req, res) => {
                 });
             }
 
-            console.log(`[${requestId}] ✅ Validation passed`);
-            if (validationResult.detectedMimeType) {
-                console.log(`[${requestId}]    detected type: ${validationResult.detectedMimeType}`);
-            }
+            logger.debug('Validation passed', { requestId, detectedType: validationResult.detectedMimeType });
         }
 
         // ✅ NEW: SMART EXPIRY CALCULATION
@@ -254,7 +254,7 @@ export const generateS3SignedUrl = async (req, res) => {
         let smartExpiryResult = null;
 
         if (fileSize && fileSize > 0 && (networkInfo || bufferMultiplier || minExpirySeconds || maxExpirySeconds)) {
-            console.log(`[${requestId}] 🧠 Calculating smart expiry...`);
+            logger.debug('Calculating smart expiry', { requestId });
 
             smartExpiryResult = calculateSmartExpiry({
                 fileSize: fileSize || 0,
@@ -267,11 +267,11 @@ export const generateS3SignedUrl = async (req, res) => {
             // Override expiresIn with smart calculated value
             expiresIn = smartExpiryResult.expirySeconds;
 
-            console.log(`[${requestId}] 🧠 Smart expiry calculated:`, {
+            logger.debug('Smart expiry calculated', { 
+                requestId,
                 fileSize: smartExpiryResult.reasoning.fileSize,
                 networkType: smartExpiryResult.networkType,
                 estimatedUpload: smartExpiryResult.reasoning.estimatedUploadTime,
-                buffer: smartExpiryResult.reasoning.bufferTime,
                 finalExpiry: smartExpiryResult.reasoning.finalExpiry
             });
         }
@@ -322,14 +322,14 @@ export const generateS3SignedUrl = async (req, res) => {
         })
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (signing: ${signingTime}ms)`);
+        logger.info('S3 signed URL generated', { requestId, totalTime, signingTime });
 
         // ✅ NEW: WEBHOOK CREATION
         let webhookResult = null;
         const { webhook } = req.body;
 
         if (webhook && webhook.url) {
-            console.log(`[${requestId}] 🔗 Creating webhook for ${filename}...`);
+            logger.debug('Creating webhook', { requestId, filename });
 
             try {
                 const webhookId = generateWebhookId();
@@ -359,24 +359,23 @@ export const generateS3SignedUrl = async (req, res) => {
                 }).select().single();
 
                 if (insertError) {
-                    console.error(`[${requestId}] ⚠️ Webhook DB insert failed:`, insertError.message);
+                    logger.warn('Webhook DB insert failed', { requestId, error: insertError.message });
                 } else {
                     webhookResult = {
                         webhookId,
                         webhookSecret,
                         triggerMode: webhook.trigger || 'manual'
                     };
-                    console.log(`[${requestId}] ✅ Webhook created: ${webhookId}`);
+                    logger.debug('Webhook created', { requestId, webhookId });
 
                     // ✅ Queue webhook for auto-trigger mode (worker will process)
                     if ((webhook.trigger || 'manual') === 'auto') {
-                        console.log(`[${requestId}] 📤 Enqueueing webhook for auto-trigger...`);
                         await enqueueWebhook(webhookId, insertedWebhook, 0);
-                        console.log(`[${requestId}] ✅ Webhook enqueued to Redis`);
+                        logger.debug('Webhook enqueued to Redis', { requestId, webhookId });
                     }
                 }
             } catch (webhookError) {
-                console.error(`[${requestId}] ⚠️ Webhook creation failed:`, webhookError.message);
+                logger.warn('Webhook creation failed', { requestId, error: webhookError.message });
                 // Continue without webhook - don't fail the entire request
             }
         }
@@ -435,7 +434,7 @@ export const generateS3SignedUrl = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error('S3 signed URL generation failed', { requestId, totalTime, error: error.message });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)

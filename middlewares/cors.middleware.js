@@ -14,6 +14,7 @@
  */
 
 import { NODE_ENV } from '../config/env.js';
+import logger from '../utils/logger.js';
 
 
 // ============================================================================
@@ -203,7 +204,7 @@ function logRejectedRequest(req, reason) {
         reason,
     };
 
-    console.warn('[CORS REJECTED]', JSON.stringify(logData));
+    logger.warn('[CORS REJECTED]', logData);
 }
 
 // ============================================================================
@@ -484,7 +485,7 @@ export const setupS3BucketCors = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[S3 CORS] Configuration failed:', error);
+        logger.error('[S3 CORS] Configuration failed:', error.message);
 
         if (error.name === 'AccessDenied') {
             return res.status(403).json({
@@ -679,7 +680,7 @@ export const setupR2BucketCors = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('[R2 CORS] Configuration failed:', error);
+        logger.error('[R2 CORS] Configuration failed:', error.message);
 
         if (error.name === 'AccessDenied') {
             return res.status(403).json({

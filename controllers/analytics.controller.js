@@ -17,6 +17,7 @@
 
 import { supabaseAdmin } from '../database/supabase.js';
 import { getRedis } from '../config/redis.js';
+import logger from '../utils/logger.js';
 
 const CACHE_TTL = 60; // 60 seconds
 
@@ -133,7 +134,7 @@ export const getUploadAnalytics = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Analytics error:', error);
+    logger.error('Analytics error', { error: error.message });
     res.status(500).json({
       success: false,
       error: 'ANALYTICS_ERROR',
@@ -209,7 +210,7 @@ export const getDailyUsageAnalytics = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Daily analytics error:', error);
+    logger.error('Daily analytics error', { error: error.message });
     res.status(500).json({
       success: false,
       error: 'DAILY_ANALYTICS_ERROR',
@@ -313,7 +314,7 @@ export const getProviderUsageAnalytics = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Provider analytics error:', error);
+    logger.error('Provider analytics error', { error: error.message });
     res.status(500).json({
       success: false,
       error: 'PROVIDER_ANALYTICS_ERROR',
@@ -388,7 +389,7 @@ export const getFileTypeAnalytics = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('File type analytics error:', error);
+    logger.error('File type analytics error', { error: error.message });
     res.status(500).json({
       success: false,
       error: 'FILE_TYPE_ANALYTICS_ERROR',

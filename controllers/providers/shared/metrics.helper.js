@@ -25,6 +25,7 @@
  */
 
 import { getRedis } from '../../../config/redis.js';
+import logger from '../../../utils/logger.js';
 
 const METRICS_TTL = 60 * 60 * 24 * 7; // 7 days
 
@@ -57,21 +58,21 @@ export const updateRequestMetrics = async (
 
   try {
     if (!apiKeyId) {
-      console.warn('[Metrics] ⚠️ Missing apiKeyId - skipping metrics');
+      logger.warn('Missing apiKeyId - skipping metrics');
       return;
     }
 
     const redis = getRedis();
 
     if (!redis) {
-      console.warn('[Metrics] ⚠️ Redis not available - skipping metrics');
+      logger.warn('Redis not available - skipping metrics');
       metricsFailureCount++;
       lastFailureTime = Date.now();
       return;
     }
 
     if (redis.status !== 'ready') {
-      console.warn(`[Metrics] ⚠️ Redis status: ${redis.status} - skipping metrics`);
+      logger.warn('Redis not ready - skipping metrics', { status: redis.status });
       metricsFailureCount++;
       lastFailureTime = Date.now();
       return;
@@ -134,7 +135,7 @@ export const updateRequestMetrics = async (
       });
 
       if (hasErrors) {
-        console.error('[Metrics] ❌ Pipeline had errors:', errors);
+        logger.error('Redis pipeline had errors', { errors });
         metricsFailureCount++;
         lastFailureTime = Date.now();
       } else {
@@ -145,11 +146,11 @@ export const updateRequestMetrics = async (
     const duration = Date.now() - startTime;
 
     if (duration > 50) {
-      console.warn(`[Metrics] ⚠️ Slow update: ${duration}ms for ${key}`);
+      logger.debug('Slow metrics update', { duration, key });
     }
 
   } catch (error) {
-    console.error('[Metrics] ❌ Error updating metrics:', {
+    logger.error('Error updating metrics', {
       error: error.message,
       apiKeyId,
       provider,

@@ -19,6 +19,7 @@ import redis from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { logAudit, logCriticalAudit } from '../utils/audit-logger.js';
 import { checkQuota } from '../utils/quota-manager.js';
+import logger from '../utils/logger.js';
 
 // === TIER LIMITS ===
 const TIER_LIMITS = {
@@ -80,7 +81,7 @@ async function getUserTier(userId) {
         await redis.setex(cacheKey, 300, JSON.stringify(cacheData));
         return tier;
     } catch (err) {
-        console.error('Error getting user tier:', err.message);
+        logger.error('Error getting user tier:', err.message);
         return 'free';
     }
 }
@@ -104,7 +105,7 @@ async function getUserIdFromApiKey(apiKey) {
             return data.user_id;
         }
     } catch (err) {
-        console.error('Error getting user_id from API key:', err.message);
+        logger.error('Error getting user_id from API key:', err.message);
     }
 
     return null;
@@ -175,7 +176,7 @@ async function trackViolationAndCheckBan(identifier, userId, requestId) {
     const violationCount = await redis.incr(violationsKey);
     await redis.expire(violationsKey, CONFIG.VIOLATION_TTL);
 
-    console.log(`[${requestId}] 📊 Lifetime violations: ${violationCount}`);
+    logger.debug(`[${requestId}] Lifetime violations: ${violationCount}`);
 
     const existingBan = await redis.get(banKey);
 
@@ -194,13 +195,13 @@ async function trackViolationAndCheckBan(identifier, userId, requestId) {
                 newBanLevel = 'PERMANENT';
                 newBanDuration = BAN_DURATIONS.PERMANENT;
                 isPermanent = true;
-                console.log(`[${requestId}] 🚨🚨🚨 ESCALATING TO PERMANENT!`);
+                logger.warn(`[${requestId}] ESCALATING TO PERMANENT!`);
 
             } else if (violationCount >= BAN_THRESHOLDS.SECOND_BAN && banData.banLevel === '5_MIN') {
                 shouldEscalate = true;
                 newBanLevel = '1_DAY';
                 newBanDuration = BAN_DURATIONS.SECOND;
-                console.log(`[${requestId}] 🚨 ESCALATING TO 1 DAY!`);
+                logger.warn(`[${requestId}] ESCALATING TO 1 DAY!`);
             }
 
             if (shouldEscalate) {
@@ -375,7 +376,7 @@ async function savePermanentBan(identifier, userId, violationCount, requestId) {
             }).catch(() => { });
         }
     } catch (error) {
-        console.error(`[${requestId}] Error saving permanent ban:`, error.message);
+        logger.error(`[${requestId}] Error saving permanent ban:`, error.message);
     }
 }
 
@@ -407,7 +408,7 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
             return next();
         }
 
-        console.log(`[${requestId}] 🔍 Checking: ${identifier.substring(0, 20)}...`);
+        logger.debug(`[${requestId}] Checking: ${identifier.substring(0, 20)}...`);
 
         // =========================================================================
         // 🚀 MEGA-PIPELINE: Get ALL data in ONE Redis round-trip!
@@ -527,7 +528,7 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         if (permBan) {
             try {
                 const banData = JSON.parse(permBan);
-                console.log(`[${requestId}] ⚡ FAST REJECT: Permanent ban`);
+                logger.debug(`[${requestId}] FAST REJECT: Permanent ban`);
                 return res.status(429).json({
                     success: false,
                     error: 'BANNED',
@@ -551,7 +552,7 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
                 const remainingSeconds = Math.ceil((banData.expiresAt - Date.now()) / 1000);
 
                 if (remainingSeconds > 0) {
-                    console.log(`[${requestId}] ⚡ FAST REJECT: ${banData.banLevel} ban`);
+                    logger.debug(`[${requestId}] FAST REJECT: ${banData.banLevel} ban`);
                     return res.status(429).json({
                         success: false,
                         error: 'BANNED',
@@ -575,13 +576,13 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         const limits = TIER_LIMITS[tier] || TIER_LIMITS.free;
         const tierLimit = limits.requestsPerMonth;
 
-        console.log(`[${requestId}] 📊 Tier: ${limits.label}`);
+        logger.debug(`[${requestId}] Tier: ${limits.label}`);
 
         if (tierLimit !== -1 && currentQuota) {
             const quota = parseInt(currentQuota);
 
             if (quota >= tierLimit) {
-                console.log(`[${requestId}] ⚡ FAST REJECT: Quota exceeded ${quota}/${tierLimit}`);
+                logger.warn(`[${requestId}] FAST REJECT: Quota exceeded ${quota}/${tierLimit}`);
 
                 // Log quota exceeded (non-blocking)
                 if (userId) {
@@ -616,7 +617,7 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
 
         if (limits.requestsPerMinute === -1) {
             const totalTime = Date.now() - startTime;
-            console.log(`[${requestId}] ✅ OK: Enterprise (unlimited) (${totalTime}ms)`);
+            logger.debug(`[${requestId}] OK: Enterprise (unlimited) (${totalTime}ms)`);
 
             // OPT-2: Pass quota data to controllers (avoid redundant Redis fetch)
             req.quotaChecked = {
@@ -634,10 +635,10 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         // CHECK 5: Rate Limit Exceeded
         // =========================================================================
 
-        console.log(`[${requestId}] 📊 Rate: ${requestCount}/${limits.requestsPerMinute} per minute`);
+        logger.debug(`[${requestId}] Rate: ${requestCount}/${limits.requestsPerMinute} per minute`);
 
         if (requestCount > limits.requestsPerMinute) {
-            console.log(`[${requestId}] 🚨 RATE LIMIT EXCEEDED!`);
+            logger.warn(`[${requestId}] RATE LIMIT EXCEEDED!`);
 
             const result = await trackViolationAndCheckBan(identifier, userId, requestId);
 
@@ -691,7 +692,7 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         // =========================================================================
 
         const totalTime = Date.now() - startTime;
-        console.log(`[${requestId}] ✅ OK: ${requestCount}/${limits.requestsPerMinute} (${totalTime}ms)`);
+        logger.debug(`[${requestId}] OK: ${requestCount}/${limits.requestsPerMinute} (${totalTime}ms)`);
 
         // OPT-2: Pass quota data to controllers (avoid redundant Redis fetch)
         req.quotaChecked = {
@@ -709,7 +710,7 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] ❌ Error (${totalTime}ms):`, error.message);
+        logger.error(`[${requestId}] Error (${totalTime}ms):`, error.message);
         next(); // Fail open
     }
 }

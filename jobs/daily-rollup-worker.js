@@ -19,6 +19,7 @@
  *   uid          - user ID
  */
 
+import logger from '../utils/logger.js';
 import { supabaseAdmin } from '../database/supabase.js';
 import {
     getMetrics,
@@ -84,7 +85,7 @@ async function scanMetricsForDate(date) {
 
         return keys;
     } catch (error) {
-        console.error('[Daily Rollup] ❌ Error scanning metrics:', error.message);
+        logger.error('[Daily Rollup] ❌ Error scanning metrics:', error.message);
         return [];
     }
 }
@@ -94,10 +95,10 @@ async function scanMetricsForDate(date) {
  * Reads m:{apiKeyId}:{date} keys and syncs to daily tables
  */
 async function rollupConsolidatedMetrics(date) {
-    console.log(`[Daily Rollup] 📊 Rolling up consolidated metrics for ${date}...`);
+    logger.info(`[Daily Rollup] 📊 Rolling up consolidated metrics for ${date}...`);
 
     const redisKeys = await scanMetricsForDate(date);
-    console.log(`[Daily Rollup] Found ${redisKeys.length} consolidated metric records`);
+    logger.info(`[Daily Rollup] Found ${redisKeys.length} consolidated metric records`);
 
     if (redisKeys.length === 0) return { apiKeys: 0, providers: 0 };
 
@@ -128,33 +129,27 @@ async function rollupConsolidatedMetrics(date) {
 
             const { totalRequests, providers, fileTypes, fileCategories, userId } = parsed;
 
-            // ─── 1. Upsert api_key_usage_daily (with file types) ───
+            // ─── 1. Upsert api_key_usage_daily ───
             const { data: existingApiKey } = await supabaseAdmin
                 .from('api_key_usage_daily')
-                .select('id, total_requests, total_files_uploaded, file_type_counts')
+                .select('id, total_requests, total_files_uploaded')
                 .eq('api_key_id', apiKeyId)
                 .eq('usage_date', date)
                 .single();
 
             if (existingApiKey) {
-                // Merge file types with existing
-                const mergedFileTypes = existingApiKey.file_type_counts || {};
-                for (const [mimeType, typeCount] of Object.entries(fileTypes || {})) {
-                    mergedFileTypes[mimeType] = (mergedFileTypes[mimeType] || 0) + typeCount;
-                }
 
                 const { error } = await supabaseAdmin
                     .from('api_key_usage_daily')
                     .update({
                         total_requests: (existingApiKey.total_requests || 0) + totalRequests,
                         total_files_uploaded: (existingApiKey.total_files_uploaded || 0) + totalRequests,
-                        file_type_counts: mergedFileTypes,
                         updated_at: new Date().toISOString()
                     })
                     .eq('id', existingApiKey.id);
 
                 if (error) {
-                    console.error(`[Daily Rollup] ❌ API key update error:`, error.message);
+                    logger.error(`[Daily Rollup] ❌ API key update error:`, error.message);
                     continue;
                 }
             } else {
@@ -166,46 +161,38 @@ async function rollupConsolidatedMetrics(date) {
                         usage_date: date,
                         total_requests: totalRequests,
                         total_files_uploaded: totalRequests,
-                        file_type_counts: fileTypes || {},
                         created_at: new Date().toISOString(),
                         updated_at: new Date().toISOString()
                     });
 
                 if (error) {
-                    console.error(`[Daily Rollup] ❌ API key insert error:`, error.message);
+                    logger.error(`[Daily Rollup] ❌ API key insert error:`, error.message);
                     continue;
                 }
             }
             apiKeysProcessed++;
 
-            // ─── 2. Upsert provider_usage_daily (per provider + file types) ───
+            // ─── 2. Upsert provider_usage_daily (per provider) ───
             for (const [provider, count] of Object.entries(providers)) {
                 const { data: existingProvider } = await supabaseAdmin
                     .from('provider_usage_daily')
-                    .select('id, upload_count, file_type_counts')
+                    .select('id, upload_count')
                     .eq('api_key_id', apiKeyId)
                     .eq('provider', provider)
                     .eq('usage_date', date)
                     .single();
-
-                // Merge file types with existing
-                const mergedFileTypes = existingProvider?.file_type_counts || {};
-                for (const [mimeType, typeCount] of Object.entries(fileTypes || {})) {
-                    mergedFileTypes[mimeType] = (mergedFileTypes[mimeType] || 0) + typeCount;
-                }
 
                 if (existingProvider) {
                     const { error } = await supabaseAdmin
                         .from('provider_usage_daily')
                         .update({
                             upload_count: (existingProvider.upload_count || 0) + count,
-                            file_type_counts: mergedFileTypes,
                             updated_at: new Date().toISOString()
                         })
                         .eq('id', existingProvider.id);
 
                     if (error) {
-                        console.error(`[Daily Rollup] ❌ Provider update error:`, error.message);
+                        logger.error(`[Daily Rollup] ❌ Provider update error:`, error.message);
                         continue;
                     }
                 } else {
@@ -217,13 +204,12 @@ async function rollupConsolidatedMetrics(date) {
                             provider,
                             usage_date: date,
                             upload_count: count,
-                            file_type_counts: fileTypes || {},
                             created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString()
                         });
 
                     if (error) {
-                        console.error(`[Daily Rollup] ❌ Provider insert error:`, error.message);
+                        logger.error(`[Daily Rollup] ❌ Provider insert error:`, error.message);
                         continue;
                     }
                 }
@@ -234,7 +220,7 @@ async function rollupConsolidatedMetrics(date) {
             await clearMetrics(key);
 
         } catch (error) {
-            console.error(`[Daily Rollup] ❌ Error processing ${key}:`, error.message);
+            logger.error(`[Daily Rollup] ❌ Error processing ${key}:`, error.message);
             stats.errors++;
         }
     }
@@ -249,7 +235,7 @@ async function rollupLegacyApiKeyDaily(date) {
     const redisKeys = await getPendingDailyApiKeyMetrics(date);
     if (redisKeys.length === 0) return 0;
 
-    console.log(`[Daily Rollup] 📦 Found ${redisKeys.length} legacy API key records`);
+    logger.info(`[Daily Rollup] 📦 Found ${redisKeys.length} legacy API key records`);
     let successCount = 0;
 
     for (const redisKey of redisKeys) {
@@ -300,7 +286,7 @@ async function rollupLegacyApiKeyDaily(date) {
             await clearMetrics(redisKey);
             successCount++;
         } catch (error) {
-            console.error(`[Daily Rollup] ❌ Legacy API key error:`, error.message);
+            logger.error(`[Daily Rollup] ❌ Legacy API key error:`, error.message);
             stats.errors++;
         }
     }
@@ -314,7 +300,7 @@ async function rollupLegacyProviderDaily(date) {
     const redisKeys = await getPendingDailyProviderMetrics(date);
     if (redisKeys.length === 0) return 0;
 
-    console.log(`[Daily Rollup] 📦 Found ${redisKeys.length} legacy provider records`);
+    logger.info(`[Daily Rollup] 📦 Found ${redisKeys.length} legacy provider records`);
     let successCount = 0;
 
     for (const redisKey of redisKeys) {
@@ -366,7 +352,7 @@ async function rollupLegacyProviderDaily(date) {
             await clearMetrics(redisKey);
             successCount++;
         } catch (error) {
-            console.error(`[Daily Rollup] ❌ Legacy provider error:`, error.message);
+            logger.error(`[Daily Rollup] ❌ Legacy provider error:`, error.message);
             stats.errors++;
         }
     }
@@ -380,15 +366,15 @@ async function runDailyRollup() {
     const date = getYesterdayUTC();
     const startTime = Date.now();
 
-    console.log('');
-    console.log('═'.repeat(60));
-    console.log(`[Daily Rollup] 🌙 Starting daily rollup for ${date}`);
-    console.log('═'.repeat(60));
+    logger.info('');
+    logger.info('═'.repeat(60));
+    logger.info(`[Daily Rollup] 🌙 Starting daily rollup for ${date}`);
+    logger.info('═'.repeat(60));
 
     try {
         const redis = getRedis();
         if (!redis) {
-            console.error('[Daily Rollup] ❌ Redis not connected!');
+            logger.error('[Daily Rollup] ❌ Redis not connected!');
             return;
         }
 
@@ -405,16 +391,16 @@ async function runDailyRollup() {
         stats.apiKeysRolledUp += newApiKeys + legacyApiKeys;
         stats.providersRolledUp += newProviders + legacyProviders;
 
-        console.log('');
-        console.log('─'.repeat(60));
-        console.log(`[Daily Rollup] ✅ COMPLETED in ${elapsed}ms`);
-        console.log(`[Daily Rollup] 📊 API Keys: ${newApiKeys + legacyApiKeys} (new:${newApiKeys}, legacy:${legacyApiKeys})`);
-        console.log(`[Daily Rollup] 📊 Providers: ${newProviders + legacyProviders} (new:${newProviders}, legacy:${legacyProviders})`);
-        console.log(`[Daily Rollup] 📈 Total runs: ${stats.runsCompleted}, Errors: ${stats.errors}`);
-        console.log('─'.repeat(60));
+        logger.info('');
+        logger.info('─'.repeat(60));
+        logger.info(`[Daily Rollup] ✅ COMPLETED in ${elapsed}ms`);
+        logger.info(`[Daily Rollup] 📊 API Keys: ${newApiKeys + legacyApiKeys} (new:${newApiKeys}, legacy:${legacyApiKeys})`);
+        logger.info(`[Daily Rollup] 📊 Providers: ${newProviders + legacyProviders} (new:${newProviders}, legacy:${legacyProviders})`);
+        logger.info(`[Daily Rollup] 📈 Total runs: ${stats.runsCompleted}, Errors: ${stats.errors}`);
+        logger.info('─'.repeat(60));
 
     } catch (error) {
-        console.error('[Daily Rollup] ❌ Rollup failed:', error);
+        logger.error('[Daily Rollup] ❌ Rollup failed:', error);
         stats.errors++;
     }
 }
@@ -423,7 +409,7 @@ async function runDailyRollup() {
  * Manual rollup for a specific date
  */
 export async function rollupForDate(date) {
-    console.log(`[Daily Rollup] 🔧 Manual rollup for ${date}`);
+    logger.info(`[Daily Rollup] 🔧 Manual rollup for ${date}`);
     await rollupConsolidatedMetrics(date);
     await rollupLegacyApiKeyDaily(date);
     await rollupLegacyProviderDaily(date);
@@ -434,7 +420,7 @@ export async function rollupForDate(date) {
  */
 export async function rollupToday() {
     const today = getTodayUTC();
-    console.log(`[Daily Rollup] 🔧 Rolling up TODAY's data (${today}) for testing`);
+    logger.info(`[Daily Rollup] 🔧 Rolling up TODAY's data (${today}) for testing`);
     await rollupConsolidatedMetrics(today);
     await rollupLegacyApiKeyDaily(today);
     await rollupLegacyProviderDaily(today);
@@ -451,14 +437,33 @@ export function getStats() {
  * Start the daily rollup worker
  */
 export function startDailyRollupWorker() {
-    console.log(`[Daily Rollup] 🚀 Worker ${WORKER_ID} starting...`);
-    console.log(`[Daily Rollup] ⏰ Configured to run at 00:05 UTC daily via PM2 cron`);
+    logger.info(`[Daily Rollup] 🚀 Worker ${WORKER_ID} starting...`);
+    logger.info(`[Daily Rollup] ⏰ Configured to run at 00:05 UTC daily via PM2 cron`);
     runDailyRollup();
 }
 
-// Run if executed directly
-if (process.argv[1]?.includes('daily-rollup-worker')) {
-    startDailyRollupWorker();
-}
+// Global error handlers - don't crash on ECONNRESET (Redis idle reset)
+process.on('uncaughtException', (error) => {
+    const msg = error?.message || String(error);
+    if (msg.includes('ECONNRESET')) {
+        logger.debug('[Daily Rollup] ECONNRESET (Redis idle reset, safe to ignore)');
+        return;
+    }
+    logger.error(`[Daily Rollup] Worker crashed: ${msg}`);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+    const msg = reason?.message || String(reason);
+    if (msg.includes('ECONNRESET')) {
+        logger.debug('[Daily Rollup] ECONNRESET rejection (safe to ignore)');
+        return;
+    }
+    logger.error(`[Daily Rollup] Unhandled rejection: ${msg}`);
+});
+
+// Always start when run as a worker (by PM2 or directly via node)
+// NOTE: process.argv[1] under PM2 fork mode is NOT this file path
+startDailyRollupWorker();
 
 export { runDailyRollup };

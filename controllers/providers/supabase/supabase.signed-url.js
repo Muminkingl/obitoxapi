@@ -7,6 +7,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { SUPABASE_BUCKET, PRIVATE_BUCKET } from './supabase.config.js';
 import { generateSupabaseFilename, updateSupabaseMetrics } from './supabase.helpers.js';
+import logger from '../../../utils/logger.js';
 
 // NEW: Import multi-layer cache
 import {
@@ -95,7 +96,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         const memoryTime = Date.now() - memoryStart;
 
         if (!memCheck.allowed) {
-            console.log(`[${requestId}] ❌ Blocked by memory guard in ${memoryTime}ms`);
+            logger.warn('Request blocked by memory guard', { requestId, memoryTime, remaining: memCheck.remaining });
             return res.status(429).json({
                 success: false,
                 error: 'RATE_LIMIT_EXCEEDED',
@@ -116,7 +117,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         const quotaTime = Date.now() - quotaStart;
 
         if (!quotaCheck.allowed) {
-            console.log(`[${requestId}] ❌ Quota exceeded in ${quotaTime}ms`);
+            logger.warn('Quota exceeded', { requestId, quotaTime, limit: quotaCheck.limit, used: quotaCheck.current });
 
             return res.status(403).json({
                 success: false,
@@ -146,7 +147,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         const bucketTime = Date.now() - bucketStart;
 
         if (!bucketCheck.allowed && !bucketCheck.fallback) {
-            console.log(`[${requestId}] ❌ Bucket access denied in ${bucketTime}ms`);
+            logger.warn('Bucket access denied', { requestId, bucketTime, bucket: targetBucket, layer: bucketCheck.layer });
             return res.status(403).json({
                 success: false,
                 error: 'BUCKET_ACCESS_DENIED',
@@ -188,7 +189,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         const { magicBytes, validation } = req.body;
 
         if (validation || magicBytes) {
-            console.log(`[${requestId}] 🔍 Running server-side file validation...`);
+            logger.debug('Running server-side file validation', { requestId });
 
             const validationResult = validateFileMetadata({
                 filename,
@@ -199,7 +200,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
             });
 
             if (!validationResult.valid) {
-                console.log(`[${requestId}] ❌ Validation failed: ${validationResult.errors?.length} errors`);
+                logger.warn('File validation failed', { requestId, errorCount: validationResult.errors?.length });
                 updateRequestMetrics(apiKey, userId, 'supabase', false).catch(() => { });
 
                 return res.status(400).json({
@@ -214,15 +215,15 @@ export const generateSupabaseSignedUrl = async (req, res) => {
                 });
             }
 
-            console.log(`[${requestId}] ✅ Validation passed`);
+            logger.debug('Validation passed', { requestId, detectedMimeType: validationResult.detectedMimeType });
             if (validationResult.detectedMimeType) {
-                console.log(`[${requestId}]    detected type: ${validationResult.detectedMimeType}`);
+                logger.debug('Detected MIME type', { requestId, detectedMimeType: validationResult.detectedMimeType });
             }
         }
 
         // Generate unique filename
         const uniqueFilename = generateSupabaseFilename(filename, apiKey);
-        console.log(`[${requestId}] 📝 Generated filename: ${uniqueFilename}`);
+        logger.debug('Generated filename', { requestId, uniqueFilename });
 
         // Check expiration limits
         const maxExpiration = makePrivate ? 24 * 60 * 60 : 7 * 24 * 60 * 60;
@@ -236,7 +237,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
             });
 
         if (signedUrlError) {
-            console.error(`[${requestId}] ❌ Supabase error:`, signedUrlError);
+            logger.error('Supabase signed URL error', { requestId, error: signedUrlError.message });
             await updateSupabaseMetrics(apiKey, 'supabase', false, 'SIGNED_URL_ERROR', {
                 errorDetails: signedUrlError.message
             });
@@ -268,7 +269,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         // Update metrics in background (don't wait)
         updateSupabaseMetrics(apiKey, 'supabase', true, 'SIGNED_URL_SUCCESS', {
             fileSize: fileSize
-        }).catch(err => console.error('Background metrics error:', err));
+        }).catch(err => logger.error('Background metrics error', { error: err.message }));
 
         // 🚀 REDIS METRICS: Provider usage tracking
         updateRequestMetrics(apiKey, userId, 'supabase', true, { fileSize: fileSize || 0, contentType })
@@ -278,14 +279,14 @@ export const generateSupabaseSignedUrl = async (req, res) => {
 
         const totalTime = Date.now() - startTime;
 
-        console.log(`[${requestId}] ✅ SUCCESS in ${totalTime}ms (memory:${memoryTime}ms, quota:${quotaTime}ms, bucket:${bucketTime}ms, operation:${operationTime}ms)`);
+        logger.info('Supabase signed URL generated', { requestId, totalTime, memoryTime, quotaTime, bucketTime, operationTime });
 
         // ✅ NEW: WEBHOOK CREATION (Optional - same pattern as R2)
         let webhookResult = null;
         const { webhook } = req.body;
 
         if (webhook && webhook.url) {
-            console.log(`[${requestId}] 🔗 Creating webhook for ${filename}...`);
+            logger.debug('Creating webhook for file', { requestId, filename });
 
             try {
                 const webhookId = generateWebhookId();
@@ -310,24 +311,24 @@ export const generateSupabaseSignedUrl = async (req, res) => {
                 }).select().single();
 
                 if (insertError) {
-                    console.error(`[${requestId}] ⚠️ Webhook DB insert failed:`, insertError.message);
+                    logger.error('Webhook DB insert failed', { requestId, error: insertError.message });
                 } else {
                     webhookResult = {
                         webhookId,
                         webhookSecret,
                         triggerMode: webhook.trigger || 'manual'
                     };
-                    console.log(`[${requestId}] ✅ Webhook created: ${webhookId}`);
+                    logger.debug('Webhook created', { requestId, webhookId });
 
                     // ✅ Queue webhook for auto-trigger mode (worker will process)
                     if ((webhook.trigger || 'manual') === 'auto') {
-                        console.log(`[${requestId}] 📤 Enqueueing webhook for auto-trigger...`);
+                        logger.debug('Enqueueing webhook for auto-trigger', { requestId, webhookId });
                         await enqueueWebhook(webhookId, insertedWebhook, 0);
-                        console.log(`[${requestId}] ✅ Webhook enqueued to Redis`);
+                        logger.debug('Webhook enqueued to Redis', { requestId, webhookId });
                     }
                 }
             } catch (webhookError) {
-                console.error(`[${requestId}] ⚠️ Webhook creation failed:`, webhookError.message);
+                logger.error('Webhook creation failed', { requestId, error: webhookError.message });
                 // Continue without webhook - don't fail the entire request
             }
         }
@@ -377,13 +378,13 @@ export const generateSupabaseSignedUrl = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
+        logger.error('Supabase signed URL generation failed', { requestId, totalTime, error: error.message });
 
         // Background metrics update
         if (apiKey) {
             updateSupabaseMetrics(apiKey, 'supabase', false, 'SERVER_ERROR', {
                 errorDetails: error.message
-            }).catch(err => console.error('Background metrics error:', err));
+            }).catch(err => logger.error('Background metrics error', { error: err.message }));
 
             // 🚀 REDIS METRICS: Track failure
             updateRequestMetrics(apiKey, req.userId || apiKey, 'supabase', false)

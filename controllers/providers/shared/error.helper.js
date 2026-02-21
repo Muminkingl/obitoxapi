@@ -3,6 +3,8 @@
  * Format consistent error responses for all providers
  */
 
+import logger from '../../../utils/logger.js';
+
 /**
  * Format standard error response
  * @param {string} message - Error message
@@ -32,7 +34,7 @@ export const formatErrorResponse = (message, code = 'UNKNOWN_ERROR', details = n
  * @returns {Object} formatted error response
  */
 export const handleProviderError = (error, provider = 'unknown') => {
-    console.error(`${provider} error:`, error);
+    logger.error(`${provider} error:`, { error });
 
     const errorMessage = error.message?.toLowerCase() || '';
 

@@ -13,6 +13,7 @@
 import redis from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { getMonthKey } from '../utils/quota-manager.js';
+import logger from '../utils/logger.js';
 
 /**
  * 🔥 Non-blocking SCAN helper (replaces redis.keys())
@@ -42,7 +43,7 @@ async function scanKeys(redisClient, pattern) {
  * Sync Redis quotas to Supabase (runs every hour)
  */
 export async function syncQuotasToDatabase() {
-    console.log('[QUOTA SYNC] Starting hourly quota sync...');
+    logger.debug('[QUOTA SYNC] Starting hourly quota sync...');
 
     const month = getMonthKey();
     const pattern = `quota:*:${month}`;
@@ -56,10 +57,10 @@ export async function syncQuotasToDatabase() {
         // KEYS blocks Redis; SCAN iterates incrementally
         const keys = await scanKeys(redis, pattern);
 
-        console.log(`[QUOTA SYNC] Found ${keys.length} quota keys to sync`);
+        logger.debug(`[QUOTA SYNC] Found ${keys.length} quota keys to sync`);
 
         if (keys.length === 0) {
-            console.log('[QUOTA SYNC] No quotas to sync');
+            logger.debug('[QUOTA SYNC] No quotas to sync');
             return;
         }
 
@@ -74,7 +75,7 @@ export async function syncQuotasToDatabase() {
                     try {
                         const parts = key.split(':');
                         if (parts.length !== 3) {
-                            console.error(`[QUOTA SYNC] Invalid key format: ${key}`);
+                            logger.error(`[QUOTA SYNC] Invalid key format: ${key}`);
                             return null;
                         }
 
@@ -88,7 +89,7 @@ export async function syncQuotasToDatabase() {
                             synced_at: new Date().toISOString()
                         };
                     } catch (err) {
-                        console.error(`[QUOTA SYNC] Error processing key ${key}:`, err.message);
+                        logger.error(`[QUOTA SYNC] Error processing key ${key}:`, { message: err.message });
                         errors++;
                         return null;
                     }
@@ -107,7 +108,7 @@ export async function syncQuotasToDatabase() {
                     });
 
                 if (error) {
-                    console.error('[QUOTA SYNC] Database upsert error:', error);
+                    logger.error('[QUOTA SYNC] Database upsert error:', { error });
                     errors += validData.length;
                 } else {
                     synced += validData.length;
@@ -116,16 +117,22 @@ export async function syncQuotasToDatabase() {
         }
 
         const duration = Date.now() - startTime;
-        console.log(`[QUOTA SYNC] Complete! Synced: ${synced}, Errors: ${errors}, Duration: ${duration}ms`);
+        logger.debug(`[QUOTA SYNC] Complete! Synced: ${synced}, Errors: ${errors}, Duration: ${duration}ms`);
 
     } catch (err) {
-        console.error('[QUOTA SYNC] Fatal error:', err);
+        logger.error('[QUOTA SYNC] Fatal error:', { message: err.message });
     }
 }
 
 // Start hourly sync job
-console.log('[QUOTA SYNC] Starting hourly quota sync job...');
+logger.debug('[QUOTA SYNC] Starting hourly quota sync job...');
 setInterval(syncQuotasToDatabase, 60 * 60 * 1000); // Every hour
 
-// Also run on startup (sync any missed data)
-syncQuotasToDatabase().catch(console.error);
+// Delay first sync by 5 minutes to avoid startup Redis spike
+// This prevents 20-40 Redis reads during app initialization
+setTimeout(() => {
+    syncQuotasToDatabase().catch(err => logger.error('[QUOTA SYNC] Error:', { message: err.message }));
+    logger.debug('[QUOTA SYNC] First sync completed (was delayed 5 min to reduce startup load)');
+}, 5 * 60 * 1000);
+
+logger.debug('[QUOTA SYNC] First sync scheduled in 5 minutes...');

@@ -9,6 +9,7 @@
 
 import { checkQuota, MONTHLY_QUOTAS } from '../../../utils/quota-manager.js';
 import { getUserTierCached } from '../../../utils/tier-cache.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Check if a user has sufficient quota to make a request
@@ -38,7 +39,7 @@ export const checkUserQuota = async (userId) => {
             tier
         };
     } catch (err) {
-        console.error('❌ Quota check exception:', err.message);
+        logger.error('Quota check exception:', { message: err.message });
         // Fail open - allow request if Redis fails
         return { allowed: true, error: err.message };
     }
