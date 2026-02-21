@@ -111,6 +111,15 @@ async function syncConsolidatedMetrics() {
             const { apiKeyId, date } = keyParts;
             const { totalRequests, providers, fileTypes, lastUsedAt, userId } = parsed;
 
+            // Guard: skip keys with no userId — api_keys.user_id is NOT NULL.
+            // Can happen with stale Redis keys written before uid tracking was added,
+            // or from partial test data. The key is kept in Redis to avoid silent loss;
+            // it will retry every cycle but never succeed without a userId.
+            if (!userId) {
+                logger.warn(`[Metrics Worker] Skipping key ${key} — no userId in Redis hash (uid field missing)`);
+                continue;
+            }
+
             // FIX: validate timestamp before use
             const usedAt = safeTimestamp(lastUsedAt);
 
@@ -166,35 +175,42 @@ async function syncConsolidatedMetrics() {
         }
     }
 
-    if (successfulKeys.length === 0) return { apiKeys: 0, providers: 0, fileCategories: 0 };
+    if (successfulKeys.length === 0) return { apiKeys: 0, providers: 0 };
 
     let apiKeysProcessed = 0;
     let providersProcessed = 0;
-    let fileCategoriesProcessed = 0;
     let writesFailed = false;
 
-    // ── Batch upsert api_keys ──
-    // NOTE on file_type_counts race: two worker instances could still race on
-    // the JSONB merge. The correct long-term fix is a Postgres function that
-    // does jsonb || jsonb atomically. For now, single-instance (--instances 1)
-    // eliminates the race. The overlap guard (isRunning) prevents self-racing.
-    // Requires unique constraint / PK on api_keys.id
+    // ── Update api_keys stats ──
+    // IMPORTANT: Use UPDATE not UPSERT.
+    // The metrics worker must never INSERT into api_keys — it only knows stats fields.
+    // The api_key MUST already exist in DB for any request to have written Redis metrics
+    // (auth validates the key). If somehow the key is missing, .update() silently no-ops.
+    //
+    // NOTE on file_type_counts race: two instances could race on the JSONB merge.
+    // Long-term fix: Postgres jsonb atomic merge function. Short-term: 1 instance only.
     const apiKeyBatch = Array.from(apiKeyRows.values());
     if (apiKeyBatch.length > 0) {
-        const CHUNK = 500;
-        for (let i = 0; i < apiKeyBatch.length; i += CHUNK) {
-            const chunk = apiKeyBatch.slice(i, i + CHUNK);
-            const { error } = await supabaseAdmin
+        const updateOps = apiKeyBatch.map(row =>
+            supabaseAdmin
                 .from('api_keys')
-                .upsert(chunk, { onConflict: 'id' });
-
+                .update({
+                    total_requests: row.total_requests,
+                    total_files_uploaded: row.total_files_uploaded,
+                    file_type_counts: row.file_type_counts,
+                    last_used_at: row.last_used_at
+                })
+                .eq('id', row.id)
+        );
+        const results = await Promise.all(updateOps);
+        for (const { error } of results) {
             if (error) {
-                logger.error('[Metrics Worker] api_keys upsert error:', { message: error.message });
+                logger.error('[Metrics Worker] api_keys update error:', { message: error.message });
                 lifetimeStats.errors++;
                 windowStats.errors++;
                 writesFailed = true;
             } else {
-                apiKeysProcessed += chunk.length;
+                apiKeysProcessed++;
             }
         }
     }
