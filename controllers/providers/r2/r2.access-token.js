@@ -11,6 +11,7 @@ import { formatR2Error } from './r2.config.js';
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Generate JWT access token for specific R2 file/bucket
@@ -89,7 +90,7 @@ export const generateR2AccessToken = async (req, res) => {
         };
 
         if (!process.env.JWT_SECRET) {
-            console.error(`[${requestId}] ❌ JWT_SECRET is not set — cannot generate tokens`);
+            logger.error(`[${requestId}] ❌ JWT_SECRET is not set — cannot generate tokens`);
             return res.status(500).json(formatR2Error(
                 'CONFIGURATION_ERROR',
                 'Server is not configured for token generation'
@@ -129,7 +130,7 @@ export const generateR2AccessToken = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 'r2', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Token generated in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Token generated in ${totalTime}ms`);
 
         return res.status(200).json({
             success: true,
@@ -156,7 +157,7 @@ export const generateR2AccessToken = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] ❌ Token generation error (${totalTime}ms):`, error.message);
+        logger.error(`r2 error:`, { error });
 
         if (req.apiKeyId) {
             updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)
@@ -214,7 +215,7 @@ export const revokeR2AccessToken = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 'r2', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Token revoked in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Token revoked in ${totalTime}ms`);
 
         return res.status(200).json({
             success: true,
@@ -228,7 +229,7 @@ export const revokeR2AccessToken = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] ❌ Token revocation error (${totalTime}ms):`, error.message);
+        logger.error(`r2 error:`, { error });
 
         if (req.apiKeyId) {
             updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)

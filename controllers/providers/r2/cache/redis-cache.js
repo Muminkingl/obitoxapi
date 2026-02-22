@@ -7,6 +7,7 @@
 
 import redis from '../../../../config/redis.js';
 import { supabaseAdmin } from '../../../../config/supabase.js';
+import logger from '../../../../utils/logger.js';
 
 // Redis key prefixes
 const REDIS_KEYS = {
@@ -62,7 +63,7 @@ export async function getQuotaFromRedis(userId) {
         };
 
     } catch (error) {
-        console.error('❌ Redis quota check failed:', error.message);
+        logger.error('❌ Redis quota check failed:', { error });
 
         // Fallback to database directly
         return await fetchQuotaFromDatabase(userId);
@@ -101,7 +102,7 @@ export async function checkBucketAccessRedis(userId, bucketName, developerSupaba
         };
 
     } catch (error) {
-        console.error('❌ Redis bucket check failed:', error.message);
+        logger.error('❌ Redis bucket check failed:', { error });
 
         // Fallback to direct Supabase API call
         return {
@@ -135,11 +136,11 @@ export async function invalidateUserCache(userId) {
             }
         }
 
-        console.log(`✅ Cache invalidated for user ${userId}`);
+        logger.info(`✅ Cache invalidated for user ${userId}`);
         return true;
 
     } catch (error) {
-        console.error('❌ Cache invalidation failed:', error.message);
+        logger.error('❌ Cache invalidation failed:', { error });
         return false;
     }
 }
@@ -163,11 +164,11 @@ export async function warmupRedisCache(userId, userData) {
             }
         }
 
-        console.log(`✅ Redis cache warmed up for user ${userId}`);
+        logger.info(`✅ Redis cache warmed up for user ${userId}`);
         return true;
 
     } catch (error) {
-        console.error('❌ Redis warmup failed:', error.message);
+        logger.error('❌ Redis warmup failed:', { error });
         return false;
     }
 }
@@ -203,7 +204,7 @@ async function fetchQuotaFromDatabase(userId) {
         };
 
     } catch (error) {
-        console.error('❌ Database quota fetch failed:', error.message);
+        logger.error('❌ Database quota fetch failed:', { error });
 
         // Fail open with default values
         return {
@@ -225,7 +226,7 @@ async function fetchQuotaFromDatabase(userId) {
 async function checkSupabaseBucketAccessDirect(bucketName, developerSupabase) {
     try {
         if (!developerSupabase) {
-            console.warn('⚠️ No Supabase client provided, assuming access');
+            logger.warn('⚠️ No Supabase client provided, assuming access');
             return true; // Fail open for developer's bucket
         }
 
@@ -237,7 +238,7 @@ async function checkSupabaseBucketAccessDirect(bucketName, developerSupabase) {
         return bucket !== undefined;
 
     } catch (error) {
-        console.error('❌ Supabase bucket check failed:', error.message);
+        logger.error('❌ Supabase bucket check failed:', { error });
 
         // Fail open (assume access)
         return true;

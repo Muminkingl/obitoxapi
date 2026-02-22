@@ -7,6 +7,8 @@
  * Performance: ~5ms vs ~50ms for multiple round-trips
  */
 
+import logger from './logger.js';
+
 /**
  * Atomic Rate Limit Check + Increment
  * 
@@ -110,7 +112,7 @@ export async function evalScript(redis, script, numKeys, ...args) {
     try {
         return await redis.eval(script, numKeys, ...args);
     } catch (error) {
-        console.error('[Redis Lua] Script execution failed:', error.message);
+        logger.error(`redis script error:`, { error });
         throw error;
     }
 }

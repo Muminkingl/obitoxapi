@@ -8,6 +8,7 @@
  */
 
 import crypto from 'crypto';
+import logger from './logger.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;   // 128-bit IV
@@ -99,7 +100,7 @@ export function decryptCredential(encryptedText) {
 
         return decrypted;
     } catch (error) {
-        console.error('[CredentialEncryption] ❌ Decryption failed:', error.message);
+        logger.error(`credential encryption error:`, { error });
         // Return original text if decryption fails (key rotation scenario)
         return encryptedText;
     }

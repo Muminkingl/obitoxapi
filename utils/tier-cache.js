@@ -10,6 +10,7 @@
 
 import { supabaseAdmin } from '../config/supabase.js';
 import redis from '../config/redis.js';
+import logger from './logger.js';
 
 const TIER_CACHE_CONFIG = {
     TTL: 300, // 5 minutes in seconds
@@ -41,7 +42,7 @@ export async function getUserTierCached(userId) {
             const data = JSON.parse(cachedData);
             const cacheAge = data.cachedAt ? Math.round((Date.now() - data.cachedAt) / 1000) : 0;
 
-            console.log(`[TierCache] ✅ Cache HIT for ${userId.substring(0, 8)}... (age: ${cacheAge}s)`);
+            logger.info(`[TierCache] ✅ Cache HIT for ${userId.substring(0, 8)}... (age: ${cacheAge}s)`);
 
             return {
                 ...data,
@@ -51,7 +52,7 @@ export async function getUserTierCached(userId) {
         }
 
         // Cache miss - fetch from database
-        console.log(`[TierCache] ⚠️  Cache MISS for ${userId.substring(0, 8)}... - querying DB`);
+        logger.info(`[TierCache] ⚠️  Cache MISS for ${userId.substring(0, 8)}... - querying DB`);
 
         // ✅ NEW: Query profiles_with_tier view (computed tier + limits from subscription_plans)
         const { data: userData, error: dbError } = await supabaseAdmin
@@ -61,7 +62,7 @@ export async function getUserTierCached(userId) {
             .single();
 
         if (dbError) {
-            console.error(`[TierCache] ❌ Database error:`, dbError.message);
+            logger.error(`[TierCache] ❌ Database error:`, dbError.message);
             // Return default tier on error
             return {
                 tier: TIER_CACHE_CONFIG.DEFAULT_TIER,
@@ -98,7 +99,7 @@ export async function getUserTierCached(userId) {
             JSON.stringify(cacheData)
         );
 
-        console.log(`[TierCache] 💾 Cached tier '${tier}' for ${userId.substring(0, 8)}... (TTL: ${TIER_CACHE_CONFIG.TTL}s)`);
+        logger.info(`[TierCache] 💾 Cached tier '${tier}' for ${userId.substring(0, 8)}... (TTL: ${TIER_CACHE_CONFIG.TTL}s)`);
 
         return {
             ...cacheData,
@@ -107,7 +108,7 @@ export async function getUserTierCached(userId) {
         };
 
     } catch (error) {
-        console.error(`[TierCache] ❌ Error:`, error.message);
+        logger.error(`tier cache error:`, { error });
 
         // Fail open - return default tier
         return {
@@ -142,14 +143,14 @@ export async function invalidateTierCache(userId) {
         const result = await redis.del(cacheKey);
 
         if (result === 1) {
-            console.log(`[TierCache] 🗑️  Invalidated cache for ${userId.substring(0, 8)}...`);
+            logger.info(`[TierCache] 🗑️  Invalidated cache for ${userId.substring(0, 8)}...`);
             return true;
         } else {
-            console.log(`[TierCache] ⚠️  No cache found for ${userId.substring(0, 8)}...`);
+            logger.info(`[TierCache] ⚠️  No cache found for ${userId.substring(0, 8)}...`);
             return false;
         }
     } catch (error) {
-        console.error(`[TierCache] ❌ Failed to invalidate cache:`, error.message);
+        logger.error(`tier cache error:`, { error });
         return false;
     }
 }
@@ -170,16 +171,16 @@ export async function invalidateAllTierCaches() {
         const keys = await redis.keys(pattern);
 
         if (keys.length === 0) {
-            console.log(`[TierCache] ⚠️  No tier caches found`);
+            logger.info(`[TierCache] ⚠️  No tier caches found`);
             return 0;
         }
 
         const result = await redis.del(...keys);
-        console.log(`[TierCache] 🗑️  Invalidated ${result} tier caches`);
+        logger.info(`[TierCache] 🗑️  Invalidated ${result} tier caches`);
 
         return result;
     } catch (error) {
-        console.error(`[TierCache] ❌ Failed to invalidate all caches:`, error.message);
+        logger.error(`tier cache error:`, { error });
         return 0;
     }
 }
@@ -225,7 +226,7 @@ export async function getTierCacheStats() {
             ttl: TIER_CACHE_CONFIG.TTL
         };
     } catch (error) {
-        console.error(`[TierCache] ❌ Failed to get stats:`, error.message);
+        logger.error(`tier cache error:`, { error });
         return null;
     }
 }
@@ -239,7 +240,7 @@ export async function getTierCacheStats() {
  * @returns {Promise<number>} - Number of users cached
  */
 export async function warmTierCache(userIds) {
-    console.log(`[TierCache] 🔥 Warming cache for ${userIds.length} users...`);
+    logger.info(`[TierCache] 🔥 Warming cache for ${userIds.length} users...`);
 
     let cached = 0;
 
@@ -248,10 +249,10 @@ export async function warmTierCache(userIds) {
             await getUserTierCached(userId);
             cached++;
         } catch (error) {
-            console.error(`[TierCache] ❌ Failed to warm cache for ${userId}:`, error.message);
+            logger.error(`tier cache error for ${userId}:`, { error });
         }
     }
 
-    console.log(`[TierCache] ✅ Warmed cache for ${cached}/${userIds.length} users`);
+    logger.info(`[TierCache] ✅ Warmed cache for ${cached}/${userIds.length} users`);
     return cached;
 }

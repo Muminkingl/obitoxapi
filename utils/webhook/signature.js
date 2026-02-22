@@ -7,6 +7,7 @@
  */
 
 import crypto from 'crypto';
+import logger from '../logger.js';
 
 /**
  * Generate HMAC-SHA256 signature for webhook payload
@@ -43,7 +44,7 @@ export function verifyWebhookSignature(payload, signature, secret) {
 
         return crypto.timingSafeEqual(signatureBuffer, expectedBuffer);
     } catch (error) {
-        console.error('[Webhook Signature] Verification error:', error.message);
+        logger.error(`webhook signature error:`, { error });
         return false;
     }
 }

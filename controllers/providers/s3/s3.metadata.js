@@ -20,6 +20,7 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 // Import memory guard
 import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Get S3 object metadata
@@ -164,7 +165,7 @@ export const getS3Metadata = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ S3 metadata: ${key} (${result.ContentLength} bytes) in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ S3 metadata: ${key} (${result.ContentLength} bytes) in ${totalTime}ms`);
 
         const response = {
             success: true,
@@ -188,7 +189,7 @@ export const getS3Metadata = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 S3 metadata error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (error.name === 'NotFound' || error.name === 'NoSuchKey' || error.message.includes('NotFound')) {
             return res.status(404).json(formatS3Error(

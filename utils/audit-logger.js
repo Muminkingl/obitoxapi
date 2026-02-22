@@ -12,6 +12,7 @@
 
 import { getRedis } from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
+import logger from './logger.js';
 
 // 🚨 CRITICAL: Hard limit to prevent Redis OOM
 const MAX_QUEUE_LENGTH = 10000;
@@ -44,7 +45,7 @@ export async function logAudit({
     const redis = getRedis();
 
     if (!redis) {
-        console.warn('⚠️  Redis not available, audit log skipped');
+        logger.warn('⚠️  Redis not available, audit log skipped');
         return;
     }
 
@@ -68,7 +69,7 @@ export async function logAudit({
         await redis.lpush('audit:queue', JSON.stringify(log));
 
     } catch (error) {
-        console.error('Failed to queue audit log:', error.message);
+        logger.error(`audit logger error:`, { error });
     }
 }
 

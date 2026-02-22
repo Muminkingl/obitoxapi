@@ -12,6 +12,7 @@ import { createHash } from 'crypto';
 import redis from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { logAudit } from './audit-logger.js';
+import logger from './logger.js';
 
 // Monthly quota configuration
 export const MONTHLY_QUOTAS = {
@@ -50,7 +51,7 @@ async function getUserTier(userId) {
         await redis.setex(cacheKey, 300, JSON.stringify({ tier }));
         return tier;
     } catch (err) {
-        console.error('[QUOTA] Error fetching tier:', err.message);
+        logger.error(`quota manager error:`, { error: err });
         return 'free';
     }
 }
@@ -141,7 +142,7 @@ export async function checkQuota(userId, tier) {
             resetIn: Math.ceil((getMonthEnd() - Date.now()) / 1000)
         };
     } catch (error) {
-        console.error('[QUOTA] checkQuota error:', error.message);
+        logger.error(`quota manager error:`, { error });
 
         // Fail open - allow request if Redis fails
         return {
@@ -165,29 +166,29 @@ export async function checkQuota(userId, tier) {
 export async function incrementQuota(userId, count = 1) {
     try {
         if (!redis) {
-            console.error('[QUOTA] ❌ Redis not available - quota NOT incremented!');
+            logger.error(`[QUOTA] ❌ Redis not available - quota NOT incremented!`);
             return 0;
         }
 
         const month = getMonthKey();
         const quotaKey = `quota:${userId}:${month}`;
 
-        console.log(`[QUOTA] 📝 Incrementing quota for user ${userId}, key: ${quotaKey}, count: ${count}`);
+        logger.info(`[QUOTA] 📝 Incrementing quota for user ${userId}, key: ${quotaKey}, count: ${count}`);
 
         // Increment atomically
         const newCount = await redis.incrby(quotaKey, count);
 
-        console.log(`[QUOTA] ✅ Quota incremented! New count: ${newCount}`);
+        logger.info(`[QUOTA] ✅ Quota incremented! New count: ${newCount}`);
 
         // Restore TTL if missing
         const currentTTL = await redis.ttl(quotaKey);
 
         if (currentTTL === -1) {
             await redis.expire(quotaKey, getMonthEndTTL());
-            console.log(`[QUOTA] 🔧 TTL was missing! Restored to ${getMonthEndTTL()} seconds`);
+            logger.info(`[QUOTA] 🔧 TTL was missing! Restored to ${getMonthEndTTL()} seconds`);
         } else if (newCount === count) {
             await redis.expire(quotaKey, getMonthEndTTL());
-            console.log(`[QUOTA] ⏰ TTL set for ${quotaKey}: ${getMonthEndTTL()} seconds`);
+            logger.info(`[QUOTA] ⏰ TTL set for ${quotaKey}: ${getMonthEndTTL()} seconds`);
         }
 
         // 🔥 FIX: Get tier and CALL checkUsageWarnings
@@ -196,8 +197,7 @@ export async function incrementQuota(userId, count = 1) {
 
         return newCount;
     } catch (error) {
-        console.error('[QUOTA] ❌ incrementQuota ERROR:', error.message);
-        console.error('[QUOTA] Stack:', error.stack);
+        logger.error(`quota increment error:`, { error });
         throw error;
     }
 }
@@ -218,7 +218,7 @@ export async function checkUsageWarnings(userId, tier, currentCount) {
         const usage = currentCount / limit;
         const percentage = Math.round(usage * 100);
 
-        console.log(`[QUOTA] 🔍 Checking warnings: ${currentCount}/${limit} (${percentage}%)`);
+        logger.info(`[QUOTA] 🔍 Checking warnings: ${currentCount}/${limit} (${percentage}%)`);
 
         // 🔥 100% - Quota limit reached
         if (currentCount >= limit) {
@@ -250,7 +250,7 @@ export async function checkUsageWarnings(userId, tier, currentCount) {
                     resetAt: new Date(getMonthEnd()).toISOString()
                 });
 
-                console.log(`[QUOTA] 🚨 100% warning sent for user ${userId}`);
+                logger.info(`[QUOTA] 🚨 100% warning sent for user ${userId}`);
             }
         }
         // 80% warning
@@ -283,7 +283,7 @@ export async function checkUsageWarnings(userId, tier, currentCount) {
                     resetAt: new Date(getMonthEnd()).toISOString()
                 });
 
-                console.log(`[QUOTA] 📧 80% warning sent for user ${userId}`);
+                logger.info(`[QUOTA] 📧 80% warning sent for user ${userId}`);
             }
         }
         // 50% warning
@@ -316,11 +316,11 @@ export async function checkUsageWarnings(userId, tier, currentCount) {
                     resetAt: new Date(getMonthEnd()).toISOString()
                 });
 
-                console.log(`[QUOTA] 📧 50% warning sent for user ${userId}`);
+                logger.info(`[QUOTA] 📧 50% warning sent for user ${userId}`);
             }
         }
     } catch (error) {
-        console.error('[QUOTA] checkUsageWarnings error:', error.message);
+        logger.error(`quota manager error:`, { error });
     }
 }
 
@@ -328,7 +328,7 @@ export async function checkUsageWarnings(userId, tier, currentCount) {
  * Queue email
  */
 async function queueEmail(userId, template, data) {
-    console.log(`[QUOTA] Email queued: ${template} for user ${userId}`, data);
+    logger.info(`[QUOTA] Email queued: ${template} for user ${userId}`, data);
     // TODO: Implement with Bull/BullMQ + Resend
 }
 
@@ -354,7 +354,7 @@ export async function getQuotaUsage(userId, tier) {
             resetIn: Math.ceil((getMonthEnd() - Date.now()) / 1000)
         };
     } catch (error) {
-        console.error('[QUOTA] getQuotaUsage error:', error.message);
+        logger.error(`quota manager error:`, { error });
         return {
             current: 0,
             limit: -1,

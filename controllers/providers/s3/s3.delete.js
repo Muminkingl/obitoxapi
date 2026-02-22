@@ -19,6 +19,7 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 // Import memory guard
 import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Delete single file from S3
@@ -119,7 +120,7 @@ export const deleteS3File = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ S3 delete: ${key} in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ S3 delete: ${key} in ${totalTime}ms`);
 
         const response = {
             success: true,
@@ -144,7 +145,7 @@ export const deleteS3File = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 S3 delete error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (error.name === 'NoSuchKey' || error.message.includes('NoSuchKey')) {
             return res.status(404).json(formatS3Error(
@@ -285,7 +286,7 @@ export const batchDeleteS3Files = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ S3 batch delete: ${keys.length} files in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ S3 batch delete: ${keys.length} files in ${totalTime}ms`);
 
         const response = {
             success: true,
@@ -308,7 +309,7 @@ export const batchDeleteS3Files = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 S3 batch delete error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)

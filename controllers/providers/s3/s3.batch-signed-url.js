@@ -41,6 +41,7 @@ import { validateFileMetadata } from '../../../utils/file-validator.js';
 
 // ✅ NEW: Import Smart Expiry calculator
 import { calculateSmartExpiry } from '../../../utils/smart-expiry.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Generate multiple S3 signed URLs in one request
@@ -344,7 +345,7 @@ export const generateS3BatchSignedUrls = async (req, res) => {
         // Increment quota
         incrementQuota(userId, successCount).catch(() => { });
 
-        console.log(`[${requestId}] ✅ Batch complete: ${successCount}/${files.length} in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Batch complete: ${successCount}/${files.length} in ${totalTime}ms`);
 
         return res.status(200).json({
             success: true,
@@ -369,7 +370,7 @@ export const generateS3BatchSignedUrls = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] ❌ Batch error (${totalTime}ms):`, error.message);
+        logger.error(`s3 error:`, { error });
 
         if (req.apiKeyId) {
             updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 's3', false)

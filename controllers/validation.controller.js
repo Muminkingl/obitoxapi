@@ -8,6 +8,7 @@
  */
 
 import { validateFileMetadata } from '../utils/file-validator.js';
+import logger from '../utils/logger.js';
 
 /**
  * POST /api/v1/upload/validate
@@ -19,7 +20,7 @@ import { validateFileMetadata } from '../utils/file-validator.js';
 export async function validateFile(req, res) {
     const requestId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
-    
+
     try {
         const {
             filename,
@@ -28,26 +29,26 @@ export async function validateFile(req, res) {
             magicBytes,
             validation
         } = req.body;
-        
-        console.log(`[${requestId}] 📋 Validation request received`);
-        console.log(`[${requestId}]   filename: ${filename}`);
-        console.log(`[${requestId}]   contentType: ${contentType}`);
-        console.log(`[${requestId}]   fileSize: ${fileSize}`);
-        console.log(`[${requestId}]   magicBytes: ${magicBytes ? magicBytes.length + ' bytes' : 'not provided'}`);
-        console.log(`[${requestId}]   validation options: ${validation ? 'yes' : 'none'}`);
-        
+
+        logger.info(`[${requestId}] 📋 Validation request received`);
+        logger.info(`[${requestId}]   filename: ${filename}`);
+        logger.info(`[${requestId}]   contentType: ${contentType}`);
+        logger.info(`[${requestId}]   fileSize: ${fileSize}`);
+        logger.info(`[${requestId}]   magicBytes: ${magicBytes ? magicBytes.length + ' bytes' : 'not provided'}`);
+        logger.info(`[${requestId}]   validation options: ${validation ? 'yes' : 'none'}`);
+
         // =========================================================================
         // 1. VALIDATE REQUIRED FIELDS
         // =========================================================================
-        
+
         const missingFields = [];
         if (!filename) missingFields.push('filename');
         if (!contentType) missingFields.push('contentType');
         if (fileSize === undefined || fileSize === null) missingFields.push('fileSize');
-        
+
         if (missingFields.length > 0) {
-            console.log(`[${requestId}] ❌ Missing required fields: ${missingFields.join(', ')}`);
-            
+            logger.info(`[${requestId}] ❌ Missing required fields: ${missingFields.join(', ')}`);
+
             return res.status(400).json({
                 success: false,
                 error: 'MISSING_REQUIRED_FIELDS',
@@ -56,11 +57,11 @@ export async function validateFile(req, res) {
                 requestId
             });
         }
-        
+
         // =========================================================================
         // 2. RUN VALIDATION
         // =========================================================================
-        
+
         const result = validateFileMetadata({
             filename,
             contentType,
@@ -68,22 +69,22 @@ export async function validateFile(req, res) {
             magicBytes,
             validation: validation || {}
         });
-        
+
         const totalTime = Date.now() - startTime;
-        
-        console.log(`[${requestId}] ✅ Validation completed in ${totalTime}ms`);
-        console.log(`[${requestId}]    valid: ${result.valid}`);
-        console.log(`[${requestId}]    errors: ${result.errors?.length || 0}`);
-        console.log(`[${requestId}]    warnings: ${result.warnings?.length || 0}`);
-        
+
+        logger.info(`[${requestId}] ✅ Validation completed in ${totalTime}ms`);
+        logger.info(`[${requestId}]    valid: ${result.valid}`);
+        logger.info(`[${requestId}]    errors: ${result.errors?.length || 0}`);
+        logger.info(`[${requestId}]    warnings: ${result.warnings?.length || 0}`);
+
         if (result.detectedMimeType) {
-            console.log(`[${requestId}]    detected type: ${result.detectedMimeType} (${result.detectedSignature})`);
+            logger.info(`[${requestId}]    detected type: ${result.detectedMimeType} (${result.detectedSignature})`);
         }
-        
+
         // =========================================================================
         // 3. RETURN RESULT
         // =========================================================================
-        
+
         return res.json({
             success: true,
             requestId,
@@ -95,11 +96,11 @@ export async function validateFile(req, res) {
                 magicBytesDetected: result.checks.magicBytes.detected
             }
         });
-        
+
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Validation error after ${totalTime}ms:`, error);
-        
+        logger.error(`validation error:`, { error });
+
         return res.status(500).json({
             success: false,
             error: 'VALIDATION_ERROR',
@@ -123,17 +124,17 @@ export async function validateFile(req, res) {
 export async function validateFilesBatch(req, res) {
     const requestId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
-    
+
     try {
         const { files, validation } = req.body;
-        
-        console.log(`[${requestId}] 📋 Batch validation request received`);
-        console.log(`[${requestId}]   files: ${files?.length || 0}`);
-        
+
+        logger.info(`[${requestId}] 📋 Batch validation request received`);
+        logger.info(`[${requestId}]   files: ${files?.length || 0}`);
+
         // =========================================================================
         // 1. VALIDATE INPUT
         // =========================================================================
-        
+
         if (!files || !Array.isArray(files) || files.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -142,7 +143,7 @@ export async function validateFilesBatch(req, res) {
                 requestId
             });
         }
-        
+
         if (files.length > 50) {
             return res.status(400).json({
                 success: false,
@@ -151,14 +152,14 @@ export async function validateFilesBatch(req, res) {
                 requestId
             });
         }
-        
+
         // =========================================================================
         // 2. RUN VALIDATION ON EACH FILE
         // =========================================================================
-        
+
         const results = files.map((file, index) => {
             const { filename, contentType, fileSize, magicBytes } = file;
-            
+
             const result = validateFileMetadata({
                 filename,
                 contentType,
@@ -166,30 +167,30 @@ export async function validateFilesBatch(req, res) {
                 magicBytes,
                 validation: validation || {}
             });
-            
+
             return {
                 index,
                 filename,
                 ...result
             };
         });
-        
+
         // =========================================================================
         // 3. CALCULATE SUMMARY
         // =========================================================================
-        
+
         const validCount = results.filter(r => r.valid).length;
         const invalidCount = results.filter(r => !r.valid).length;
-        
+
         const totalTime = Date.now() - startTime;
-        
-        console.log(`[${requestId}] ✅ Batch validation completed in ${totalTime}ms`);
-        console.log(`[${requestId}]    valid: ${validCount}, invalid: ${invalidCount}`);
-        
+
+        logger.info(`[${requestId}] ✅ Batch validation completed in ${totalTime}ms`);
+        logger.info(`[${requestId}]    valid: ${validCount}, invalid: ${invalidCount}`);
+
         // =========================================================================
         // 4. RETURN RESULT
         // =========================================================================
-        
+
         return res.json({
             success: true,
             requestId,
@@ -205,11 +206,11 @@ export async function validateFilesBatch(req, res) {
                 validatedAt: new Date().toISOString()
             }
         });
-        
+
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Batch validation error after ${totalTime}ms:`, error);
-        
+        logger.error(`validation error:`, { error });
+
         return res.status(500).json({
             success: false,
             error: 'BATCH_VALIDATION_ERROR',
@@ -231,7 +232,7 @@ export async function validateFilesBatch(req, res) {
 export async function validateAndGenerateSignedUrl(req, res) {
     const requestId = `val_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const startTime = Date.now();
-    
+
     try {
         const {
             filename,
@@ -242,15 +243,15 @@ export async function validateAndGenerateSignedUrl(req, res) {
             provider,  // 's3', 'r2', 'supabase', 'uploadcare'
             ...providerOptions  // Provider-specific options
         } = req.body;
-        
-        console.log(`[${requestId}] 📋 Validate + Signed URL request`);
-        console.log(`[${requestId}]   provider: ${provider}`);
-        console.log(`[${requestId}]   filename: ${filename}`);
-        
+
+        logger.info(`[${requestId}] 📋 Validate + Signed URL request`);
+        logger.info(`[${requestId}]   provider: ${provider}`);
+        logger.info(`[${requestId}]   filename: ${filename}`);
+
         // =========================================================================
         // 1. RUN VALIDATION FIRST
         // =========================================================================
-        
+
         const validationResult = validateFileMetadata({
             filename,
             contentType,
@@ -258,10 +259,10 @@ export async function validateAndGenerateSignedUrl(req, res) {
             magicBytes,
             validation: validation || {}
         });
-        
+
         if (!validationResult.valid) {
-            console.log(`[${requestId}] ❌ Validation failed`);
-            
+            logger.info(`[${requestId}] ❌ Validation failed`);
+
             return res.status(400).json({
                 success: false,
                 error: 'VALIDATION_FAILED',
@@ -270,18 +271,18 @@ export async function validateAndGenerateSignedUrl(req, res) {
                 requestId
             });
         }
-        
-        console.log(`[${requestId}] ✅ Validation passed, proceeding to signed URL generation`);
-        
+
+        logger.info(`[${requestId}] ✅ Validation passed, proceeding to signed URL generation`);
+
         // =========================================================================
         // 2. GENERATE SIGNED URL (provider-specific)
         // =========================================================================
-        
+
         // This would delegate to the appropriate provider's signed-url handler
         // For now, we'll return validation success and let client make separate request
-        
+
         const totalTime = Date.now() - startTime;
-        
+
         return res.json({
             success: true,
             requestId,
@@ -290,11 +291,11 @@ export async function validateAndGenerateSignedUrl(req, res) {
             validation: validationResult,
             note: 'Call the provider-specific signed URL endpoint with validated parameters'
         });
-        
+
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Error after ${totalTime}ms:`, error);
-        
+        logger.error(`validation error:`, { error });
+
         return res.status(500).json({
             success: false,
             error: 'VALIDATION_ERROR',
@@ -313,7 +314,7 @@ export async function validateAndGenerateSignedUrl(req, res) {
  */
 export function getSupportedTypes(req, res) {
     const { MAGIC_BYTES_MAP, DANGEROUS_EXTENSIONS } = require('../utils/file-validator.js');
-    
+
     const supportedTypes = Object.entries(MAGIC_BYTES_MAP)
         .filter(([mime, sig]) => sig.bytes !== null)
         .map(([mime, sig]) => ({
@@ -321,7 +322,7 @@ export function getSupportedTypes(req, res) {
             signature: sig.signature,
             minBytes: sig.minBytes
         }));
-    
+
     return res.json({
         success: true,
         data: {

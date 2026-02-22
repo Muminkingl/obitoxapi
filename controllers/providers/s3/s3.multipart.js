@@ -33,6 +33,7 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 // Import memory guard
 import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
+import logger from '../../../utils/logger.js';
 
 // Multipart upload constants
 const MIN_MULTIPART_SIZE = 100 * 1024 * 1024; // 100MB
@@ -246,7 +247,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Multipart initiated in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Multipart initiated in ${totalTime}ms`);
 
         const response = {
             success: true,
@@ -286,7 +287,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Multipart initiate error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
@@ -390,7 +391,7 @@ export const completeS3MultipartUpload = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Multipart completed in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Multipart completed in ${totalTime}ms`);
 
         res.status(200).json({
             success: true,
@@ -409,7 +410,7 @@ export const completeS3MultipartUpload = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Multipart complete error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)
@@ -497,7 +498,7 @@ export const abortS3MultipartUpload = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Multipart aborted in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Multipart aborted in ${totalTime}ms`);
 
         res.status(200).json({
             success: true,
@@ -514,7 +515,7 @@ export const abortS3MultipartUpload = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Multipart abort error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)

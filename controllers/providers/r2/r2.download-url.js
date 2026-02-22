@@ -17,6 +17,7 @@ import {
     MIN_EXPIRY
 } from './r2.config.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
+import logger from '../../../utils/logger.js';
 
 // Quota check
 import { checkUserQuota } from '../shared/analytics.new.js';
@@ -115,7 +116,7 @@ export const generateR2DownloadUrl = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 'r2', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Download URL generated in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Download URL generated in ${totalTime}ms`);
 
         return res.status(200).json({
             success: true,
@@ -138,7 +139,7 @@ export const generateR2DownloadUrl = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] ❌ Download URL error (${totalTime}ms):`, error.message);
+        logger.error(`r2 error:`, { error });
 
         if (req.apiKeyId) {
             updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)

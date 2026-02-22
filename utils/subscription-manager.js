@@ -7,6 +7,7 @@
 
 import { supabaseAdmin } from '../config/supabase.js';
 import { invalidateTierCache } from '../utils/tier-cache.js';
+import logger from './logger.js';
 
 /**
  * Upgrade user subscription
@@ -17,7 +18,7 @@ import { invalidateTierCache } from '../utils/tier-cache.js';
  */
 export async function upgradeSubscription(userId, newTier) {
     try {
-        console.log(`[SUBSCRIPTION] Upgrading user ${userId.substring(0, 8)}... to ${newTier}`);
+        logger.info(`[SUBSCRIPTION] Upgrading user ${userId.substring(0, 8)}... to ${newTier}`);
 
         const now = new Date();
         const billingCycleEnd = new Date(now);
@@ -40,12 +41,12 @@ export async function upgradeSubscription(userId, newTier) {
         // 2. Invalidate tier cache (forces immediate tier change)
         await invalidateTierCache(userId);
 
-        console.log(`[SUBSCRIPTION] ✅ User upgraded to ${newTier} (cache invalidated)`);
+        logger.info(`[SUBSCRIPTION] ✅ User upgraded to ${newTier} (cache invalidated)`);
 
         return { success: true };
 
     } catch (error) {
-        console.error('[SUBSCRIPTION] ❌ Upgrade failed:', error.message);
+        logger.error(`subscription manager error:`, { error });
         return { success: false, error: error.message };
     }
 }
@@ -59,7 +60,7 @@ export async function upgradeSubscription(userId, newTier) {
  */
 export async function downgradeSubscription(userId, newTier) {
     try {
-        console.log(`[SUBSCRIPTION] Downgrading user ${userId.substring(0, 8)}... to ${newTier}`);
+        logger.info(`[SUBSCRIPTION] Downgrading user ${userId.substring(0, 8)}... to ${newTier}`);
 
         // ✅ NEW ARCHITECTURE: Write to subscription_tier_paid
         // For downgrades, we clear billing cycle (or set status to cancelled)
@@ -78,12 +79,12 @@ export async function downgradeSubscription(userId, newTier) {
         // 2. Invalidate tier cache
         await invalidateTierCache(userId);
 
-        console.log(`[SUBSCRIPTION] ✅ User downgraded to ${newTier} (cache invalidated)`);
+        logger.info(`[SUBSCRIPTION] ✅ User downgraded to ${newTier} (cache invalidated)`);
 
         return { success: true };
 
     } catch (error) {
-        console.error('[SUBSCRIPTION] ❌ Downgrade failed:', error.message);
+        logger.error(`subscription manager error:`, { error });
         return { success: false, error: error.message };
     }
 }

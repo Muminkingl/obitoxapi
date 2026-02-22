@@ -24,6 +24,7 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 // Import memory guard
 import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Generate S3 presigned download URL
@@ -161,7 +162,7 @@ export const generateS3DownloadUrl = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Download URL generated in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Download URL generated in ${totalTime}ms`);
 
         const response = {
             success: true,
@@ -191,7 +192,7 @@ export const generateS3DownloadUrl = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 Download URL error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (apiKeyId) {
             updateRequestMetrics(apiKeyId, req.userId || apiKeyId, 's3', false)

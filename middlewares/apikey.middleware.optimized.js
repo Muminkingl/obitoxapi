@@ -56,7 +56,7 @@ const fetchApiKeyFromDatabase = async (apiKey) => {
   // Using * to get all fields, then we'll filter what we need
   const { data: apiKeyData, error } = await supabaseAdmin
     .from('api_keys')
-    .select('*')
+    .select('id, user_id, name, key_value, is_active, secret_hash, total_requests, total_files_uploaded, last_used_at, created_at, updated_at')
     .eq('key_value', apiKey)
     .single();
 

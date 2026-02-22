@@ -16,6 +16,7 @@ import { HeadObjectCommand } from '@aws-sdk/client-s3';
 
 // ✅ SECURITY: Decrypt credentials stored encrypted in DB
 import { decryptCredential } from '../../utils/credential-encryption.js';
+import logger from '../../utils/logger.js';
 
 /**
  * Get appropriate S3 client based on provider
@@ -74,7 +75,7 @@ export async function verifyFile(webhook) {
 
         if (provider === 'R2') {
             if (!webhook.account_id || !webhook.access_key_id || !webhook.secret_access_key) {
-                console.log(`[Webhook Verifier] ⚠️ Skipping verification - no R2 credentials stored for ${webhook.id}`);
+                logger.info(`[Webhook Verifier] ⚠️ Skipping verification - no R2 credentials stored for ${webhook.id}`);
                 // Assume file exists since we can't verify without credentials
                 // This is safe for manual trigger mode where client confirms upload
                 return {
@@ -89,7 +90,7 @@ export async function verifyFile(webhook) {
             }
         } else if (provider === 'S3') {
             if (!webhook.access_key_id || !webhook.secret_access_key) {
-                console.log(`[Webhook Verifier] ⚠️ Skipping verification - no S3 credentials stored for ${webhook.id}`);
+                logger.info(`[Webhook Verifier] ⚠️ Skipping verification - no S3 credentials stored for ${webhook.id}`);
                 return {
                     exists: true,
                     metadata: {
@@ -103,7 +104,7 @@ export async function verifyFile(webhook) {
         } else if (provider === 'SUPABASE') {
             // ✅ Supabase uses its own Storage API - skip S3-style verification
             // For Supabase, we trust that the file was uploaded since we got a success response
-            console.log(`[Webhook Verifier] ✅ Skipping verification for Supabase - file assumed uploaded for ${webhook.id}`);
+            logger.info(`[Webhook Verifier] ✅ Skipping verification for Supabase - file assumed uploaded for ${webhook.id}`);
             return {
                 exists: true,
                 metadata: {
@@ -116,7 +117,7 @@ export async function verifyFile(webhook) {
         } else if (provider === 'UPLOADCARE') {
             // ✅ Uploadcare uses its own CDN API - skip S3-style verification
             // For Uploadcare, we trust that the file was uploaded since we got a success response
-            console.log(`[Webhook Verifier] ✅ Skipping verification for Uploadcare - file assumed uploaded for ${webhook.id}`);
+            logger.info(`[Webhook Verifier] ✅ Skipping verification for Uploadcare - file assumed uploaded for ${webhook.id}`);
             return {
                 exists: true,
                 metadata: {
@@ -144,7 +145,7 @@ export async function verifyFile(webhook) {
 
             if (storedEtag && expectedEtag && storedEtag !== expectedEtag) {
                 const error = new Error(`ETag mismatch: expected ${expectedEtag}, got ${storedEtag}`);
-                console.error(`[Webhook Verifier] ❌ ETag mismatch for ${webhook.id}`);
+                logger.error(`webhook verifier error:`, { error: `ETag mismatch for ${webhook.id}` });
                 throw error;
             }
         }
@@ -157,7 +158,7 @@ export async function verifyFile(webhook) {
             metadata: response.Metadata || {}
         };
 
-        console.log(`[Webhook Verifier] ✅ File verified: ${webhook.file_key}`);
+        logger.info(`[Webhook Verifier] ✅ File verified: ${webhook.file_key}`);
         return { exists: true, metadata };
 
     } catch (error) {
@@ -165,7 +166,7 @@ export async function verifyFile(webhook) {
             return { exists: false, metadata: null };
         }
 
-        console.error(`[Webhook Verifier] ❌ Verification error: ${error.message}`);
+        logger.error(`webhook verifier error:`, { error });
         throw error;
     }
 }
@@ -179,7 +180,7 @@ export async function verifyFile(webhook) {
  * @returns {Promise<Object>} Verification result
  */
 export async function pollForFile(webhook, maxAttempts = 10, intervalMs = 1000) {
-    console.log(`[Webhook Verifier] 🔍 Polling for file: ${webhook.file_key}`);
+    logger.info(`[Webhook Verifier] 🔍 Polling for file: ${webhook.file_key}`);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
@@ -187,12 +188,12 @@ export async function pollForFile(webhook, maxAttempts = 10, intervalMs = 1000) 
 
             if (result.exists) {
                 if (attempt > 1) {
-                    console.log(`[Webhook Verifier] ✅ File found after ${attempt} attempts`);
+                    logger.info(`[Webhook Verifier] ✅ File found after ${attempt} attempts`);
                 }
                 return result;
             }
         } catch (error) {
-            console.log(`[Webhook Verifier] ⚠️ Attempt ${attempt} failed: ${error.message}`);
+            logger.info(`[Webhook Verifier] ⚠️ Attempt ${attempt} failed: ${error.message}`);
         }
 
         // Wait before next attempt
@@ -201,7 +202,7 @@ export async function pollForFile(webhook, maxAttempts = 10, intervalMs = 1000) 
         }
     }
 
-    console.log(`[Webhook Verifier] ⚠️ File not found after ${maxAttempts} attempts`);
+    logger.info(`[Webhook Verifier] ⚠️ File not found after ${maxAttempts} attempts`);
     return { exists: false, metadata: null };
 }
 
@@ -217,7 +218,7 @@ export async function pollForFile(webhook, maxAttempts = 10, intervalMs = 1000) 
  * @returns {Promise<Object>} Verification result
  */
 export async function waitForFile(webhook, maxWaitMs = 120000) { // ✅ FIX: 2 minutes instead of 30 seconds
-    console.log(`[Webhook Verifier] ⏳ Waiting for file (max ${maxWaitMs}ms = ${maxWaitMs / 1000}s): ${webhook.file_key}`);
+    logger.info(`[Webhook Verifier] ⏳ Waiting for file (max ${maxWaitMs}ms = ${maxWaitMs / 1000}s): ${webhook.file_key}`);
 
     const startTime = Date.now();
     let attempt = 0;
@@ -230,11 +231,11 @@ export async function waitForFile(webhook, maxWaitMs = 120000) { // ✅ FIX: 2 m
             const result = await verifyFile(webhook);
 
             if (result.exists) {
-                console.log(`[Webhook Verifier] ✅ File available after ${Date.now() - startTime}ms (attempt ${attempt})`);
+                logger.info(`[Webhook Verifier] ✅ File available after ${Date.now() - startTime}ms (attempt ${attempt})`);
                 return result;
             }
         } catch (error) {
-            console.log(`[Webhook Verifier] ⚠️ Attempt ${attempt} failed: ${error.message}`);
+            logger.info(`[Webhook Verifier] ⚠️ Attempt ${attempt} failed: ${error.message}`);
         }
 
         // Exponential backoff with cap at 5 seconds
@@ -247,7 +248,7 @@ export async function waitForFile(webhook, maxWaitMs = 120000) { // ✅ FIX: 2 m
         }
     }
 
-    console.log(`[Webhook Verifier] ⏰ Timeout after ${maxWaitMs}ms (${attempt} attempts)`);
+    logger.info(`[Webhook Verifier] ⏰ Timeout after ${maxWaitMs}ms (${attempt} attempts)`);
     return { exists: false, metadata: null, timedOut: true };
 }
 

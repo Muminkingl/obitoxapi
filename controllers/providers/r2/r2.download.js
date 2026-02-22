@@ -8,6 +8,7 @@
 import { HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getR2Client, buildPublicUrl, formatR2Error, SIGNED_URL_EXPIRY } from './r2.config.js';
+import logger from '../../../utils/logger.js';
 
 // Quota check
 import { checkUserQuota } from '../shared/analytics.new.js';
@@ -127,7 +128,7 @@ export const downloadR2File = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('R2 download error:', error);
+        logger.error(`r2 error:`, { error });
 
         if (req.apiKeyId) {
             updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)

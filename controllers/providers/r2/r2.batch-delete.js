@@ -14,6 +14,7 @@ import { checkUserQuota } from '../shared/analytics.new.js';
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * Delete multiple R2 files in one request
@@ -109,7 +110,7 @@ export const batchDeleteR2Files = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 'r2', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ Batch delete: ${deletedCount}/${fileKeys.length} in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ Batch delete: ${deletedCount}/${fileKeys.length} in ${totalTime}ms`);
 
         return res.status(200).json({
             success: true,
@@ -141,7 +142,7 @@ export const batchDeleteR2Files = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] ❌ Batch delete error (${totalTime}ms):`, error.message);
+        logger.error(`r2 error:`, { error });
 
         if (req.apiKeyId) {
             updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)

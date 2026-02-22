@@ -6,6 +6,7 @@
  */
 
 import NodeCache from 'node-cache';
+import logger from '../../../../utils/logger.js';
 
 // In-memory cache configuration
 const memoryCache = new NodeCache({
@@ -179,7 +180,7 @@ export function setMemoryBucketAccess(userId, bucketName, hasAccess) {
  */
 export function clearMemoryCache() {
     memoryCache.flushAll();
-    console.log('✅ Memory cache cleared');
+    logger.info('✅ Memory cache cleared');
 }
 
 /**
@@ -211,7 +212,7 @@ export function warmupMemoryCache(userId, userData) {
         });
     }
 
-    console.log(`✅ Memory cache warmed up for user ${userId}`);
+    logger.info(`✅ Memory cache warmed up for user ${userId}`);
 }
 
 // Export cache instance for advanced usage

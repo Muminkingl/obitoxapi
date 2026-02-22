@@ -19,6 +19,7 @@ import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
 // Import memory guard
 import { checkMemoryRateLimit } from '../r2/cache/memory-guard.js';
+import logger from '../../../utils/logger.js';
 
 /**
  * List files in S3 bucket
@@ -140,7 +141,7 @@ export const listS3Files = async (req, res) => {
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        console.log(`[${requestId}] ✅ S3 list: ${result.KeyCount} files in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ S3 list: ${result.KeyCount} files in ${totalTime}ms`);
 
         const response = {
             success: true,
@@ -167,7 +168,7 @@ export const listS3Files = async (req, res) => {
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
-        console.error(`[${requestId}] 💥 S3 list error after ${totalTime}ms:`, error);
+        logger.error(`s3 error:`, { error });
 
         if (error.name === 'NoSuchBucket' || error.message.includes('NoSuchBucket')) {
             return res.status(404).json(formatS3Error(

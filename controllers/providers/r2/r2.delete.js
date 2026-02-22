@@ -7,6 +7,7 @@
 
 import { DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getR2Client, formatR2Error } from './r2.config.js';
+import logger from '../../../utils/logger.js';
 
 // Quota check
 import { checkUserQuota } from '../shared/analytics.new.js';
@@ -104,7 +105,7 @@ export const deleteR2File = async (req, res) => {
         });
 
     } catch (error) {
-        console.error('R2 delete error:', error);
+        logger.error(`r2 error:`, { error });
 
         if (req.apiKeyId) {
             updateRequestMetrics(req.apiKeyId, req.userId || req.apiKeyId, 'r2', false)
