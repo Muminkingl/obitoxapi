@@ -1,43 +1,44 @@
 /**
  * Request Signature Validation Middleware
- * 
+ *
  * Layer 2: Anti-Abuse Protection
  * Purpose: Validate that requests are signed with the secret key
- * 
+ *
  * This middleware:
  * 1. Extracts X-Signature and X-Timestamp headers
- * 2. Gets API key's secret_hash from database (via req.apiKeyId from previous middleware)
- * 3. Validates signature matches expected HMAC
- * 4. Validates timestamp is recent (<5 min)
- * 5. Rejects if either fails → Makes stolen keys useless!
- * 
+ * 2. Gets secret_hash from req.secretHash (set by apikey.middleware.optimized.js) — zero DB calls
+ * 3. Validates provided secret matches stored hash (SHA-256 comparison)
+ * 4. Validates HMAC-SHA256 signature
+ * 5. Validates timestamp is recent (<5 min) — prevents replay attacks
+ *
  * Placement in middleware chain:
  *   1. Behavioral throttle (Layer 4) ← First
- *   2. API key validator (existing)  ← Sets req.apiKeyId
+ *   2. API key validator             ← Sets req.apiKeyId + req.secretHash
  *   3. Signature validator (THIS)    ← Validates signature
  *   4. Upload handler                ← Handles request
  */
 
+import crypto from 'crypto';  // FIX #1: moved from bottom of file to top
 import { verifySignature, isTimestampValid } from '../utils/signature.utils.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import logger from '../utils/logger.js';
 
 /**
  * Signature Validation Middleware
- * 
+ *
  * @middleware
- * @requires req.apiKeyId - Set by apikey.middleware.optimized.js
+ * @requires req.apiKeyId   - Set by apikey.middleware.optimized.js
+ * @requires req.secretHash - Set by apikey.middleware.optimized.js (avoids DB call)
  * @requires X-Signature header - HMAC signature from SDK
  * @requires X-Timestamp header - Unix timestamp in milliseconds
  */
 export async function signatureValidator(req, res, next) {
-    const requestId = `sig_${Date.now()}`;
+    // FIX #2: one Date.now() call, two uses
     const startTime = Date.now();
+    const requestId = `sig_${startTime}`;
 
     try {
-        // ============================================================
-        // STEP 1: VALIDATE HEADERS
-        // ============================================================
+        // ── STEP 1: VALIDATE HEADERS ────────────────────────────────────────
 
         const signature = req.headers['x-signature'];
         const timestamp = req.headers['x-timestamp'];
@@ -62,9 +63,7 @@ export async function signatureValidator(req, res, next) {
             });
         }
 
-        // ============================================================
-        // STEP 2: VALIDATE TIMESTAMP (Prevent Replay Attacks)
-        // ============================================================
+        // ── STEP 2: VALIDATE TIMESTAMP (prevents replay attacks) ────────────
 
         const timestampNum = parseInt(timestamp);
 
@@ -78,26 +77,24 @@ export async function signatureValidator(req, res, next) {
         }
 
         if (!isTimestampValid(timestampNum)) {
-            const age = Date.now() - timestampNum;
-            logger.debug(`[${requestId}] Timestamp too old: ${Math.floor(age / 1000)}s`);
+            // FIX #3: compute ageSeconds once, use twice
+            const ageSeconds = Math.floor((Date.now() - timestampNum) / 1000);
+            logger.debug(`[${requestId}] Timestamp too old: ${ageSeconds}s`);
             return res.status(401).json({
                 success: false,
                 error: 'EXPIRED_TIMESTAMP',
                 message: 'Request timestamp expired',
                 hint: 'Timestamp must be within 5 minutes. Check your system clock.',
-                age: `${Math.floor(age / 1000)} seconds old`
+                age: `${ageSeconds} seconds old`
             });
         }
 
-        // ============================================================
-        // STEP 3: GET SECRET HASH (FROM CACHE or DB FALLBACK)
-        // ============================================================
+        // ── STEP 3: GET SECRET HASH ──────────────────────────────────────────
 
-        // The API key ID should be set by apikey.middleware.optimized.js
         const apiKeyId = req.apiKeyId;
 
         if (!apiKeyId) {
-            logger.debug(`[${requestId}] No apiKeyId found in request (middleware order issue?)`);
+            logger.debug(`[${requestId}] No apiKeyId found (middleware order issue?)`);
             return res.status(500).json({
                 success: false,
                 error: 'INTERNAL_ERROR',
@@ -105,10 +102,10 @@ export async function signatureValidator(req, res, next) {
             });
         }
 
-        // 🚀 OPTIMIZATION: Use cached secret_hash from API key middleware (saves 150-200ms!)
+        // 🚀 req.secretHash is set by apikey.middleware.optimized.js — zero DB calls on this path
         let secret_hash = req.secretHash;
 
-        // Fallback to DB only if not cached (edge case)
+        // Fallback to DB only if not cached (edge case: very first request before cache warm-up)
         if (!secret_hash) {
             logger.debug(`[${requestId}] secret_hash not cached, falling back to DB`);
             const { data: keyData, error: dbError } = await supabaseAdmin
@@ -130,24 +127,15 @@ export async function signatureValidator(req, res, next) {
         }
 
         if (!secret_hash) {
-            // Legacy key without secret - allow through for backwards compatibility
-            logger.debug(`[${requestId}] No secret_hash for API key (legacy key?)`);
-            logger.debug(`[${requestId}] Allowing request (legacy key without secret)`);
-            const totalTime = Date.now() - startTime;
-            logger.debug(`[${requestId}] Signature validation bypassed in ${totalTime}ms (legacy key)`);
+            // FIX #4: three debug calls collapsed into one
+            logger.debug(`[${requestId}] Legacy key (no secret_hash) — bypassing in ${Date.now() - startTime}ms`);
             return next();
         }
 
-        // ============================================================
-        // STEP 4: VERIFY SIGNATURE
-        // ============================================================
+        // ── STEP 4: VERIFY SIGNATURE ─────────────────────────────────────────
 
-        // Note: We need the ACTUAL secret (sk_...), not the hash
-        // But we only store the hash in the DB for security!
-        // Solution: SDK must send both ox_ key AND sk_ secret
-        // We hash the sk_ and compare with stored hash, then use sk_ for HMAC
-
-        // Get the secret from request headers (SDK sends it)
+        // The SDK sends the raw sk_... secret in X-API-Secret.
+        // We SHA-256 it and compare against the stored hash, then use it for HMAC.
         const providedSecret = req.headers['x-api-secret'];
 
         if (!providedSecret) {
@@ -160,7 +148,7 @@ export async function signatureValidator(req, res, next) {
             });
         }
 
-        // Verify the provided secret matches the stored hash
+        // Compare provided secret against stored hash
         const providedSecretHash = crypto
             .createHash('sha256')
             .update(providedSecret)
@@ -176,13 +164,21 @@ export async function signatureValidator(req, res, next) {
             });
         }
 
-        // Now verify the signature using the provided secret
-        let isValidSignature = false;
-
+        // FIX #5: const directly in the try — no redundant let outside
         try {
-            isValidSignature = verifySignature(req, signature, providedSecret);
-        } catch (error) {
-            logger.error(`[${requestId}] Signature verification error:`, error.message);
+            const isValidSignature = verifySignature(req, signature, providedSecret);
+
+            if (!isValidSignature) {
+                logger.warn(`[${requestId}] Invalid signature`);
+                return res.status(401).json({
+                    success: false,
+                    error: 'INVALID_SIGNATURE',
+                    message: 'Request signature is invalid',
+                    hint: 'Signature must be HMAC-SHA256(method|path|timestamp|body, secret)'
+                });
+            }
+        } catch (sigError) {
+            logger.error(`[${requestId}] Signature verification error:`, sigError.message);
             return res.status(401).json({
                 success: false,
                 error: 'SIGNATURE_ERROR',
@@ -191,30 +187,13 @@ export async function signatureValidator(req, res, next) {
             });
         }
 
-        if (!isValidSignature) {
-            logger.warn(`[${requestId}] Invalid signature`);
-            return res.status(401).json({
-                success: false,
-                error: 'INVALID_SIGNATURE',
-                message: 'Request signature is invalid',
-                hint: 'Signature must be HMAC-SHA256(method|path|timestamp|body, secret)'
-            });
-        }
+        // ── SUCCESS ──────────────────────────────────────────────────────────
 
-        // ============================================================
-        // SUCCESS: SIGNATURE VALID
-        // ============================================================
-
-        const totalTime = Date.now() - startTime;
-        logger.debug(`[${requestId}] Signature validated in ${totalTime}ms`);
-
-        // Continue to next middleware
+        logger.debug(`[${requestId}] Signature validated in ${Date.now() - startTime}ms`);
         next();
 
     } catch (error) {
-        const totalTime = Date.now() - startTime;
-        logger.error(`[${requestId}] Unexpected error after ${totalTime}ms:`, error.message);
-
+        logger.error(`[${requestId}] Unexpected error after ${Date.now() - startTime}ms:`, error.message);
         return res.status(500).json({
             success: false,
             error: 'INTERNAL_ERROR',
@@ -222,6 +201,3 @@ export async function signatureValidator(req, res, next) {
         });
     }
 }
-
-// Missing crypto import
-import crypto from 'crypto';

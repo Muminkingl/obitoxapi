@@ -50,135 +50,22 @@ const CONFIG = {
 
 // === HELPER FUNCTIONS ===
 
-async function getUserTier(userId) {
-    const cacheKey = `tier:${userId}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-        const cachedData = JSON.parse(cached);
-        return cachedData.tier;
-    }
-
-    try {
-        // ✅ NEW: Query profiles_with_tier view (computed tier + limits from subscription_plans)
-        const { data } = await supabaseAdmin
-            .from('profiles_with_tier')
-            .select('subscription_tier, subscription_tier_paid, is_subscription_expired, is_in_grace_period, api_requests_limit')
-            .eq('id', userId)
-            .single();
-
-        // subscription_tier is COMPUTED (respects expiration + grace period)
-        const tier = (data?.subscription_tier || 'free').toLowerCase();
-
-        // Cache richer data for potential use
-        const cacheData = {
-            tier,
-            tier_paid: data?.subscription_tier_paid || 'free',
-            is_expired: data?.is_subscription_expired || false,
-            is_in_grace: data?.is_in_grace_period || false,
-            api_requests_limit: data?.api_requests_limit || 1000
-        };
-
-        await redis.setex(cacheKey, 300, JSON.stringify(cacheData));
-        return tier;
-    } catch (err) {
-        logger.error('Error getting user tier:', err.message);
-        return 'free';
-    }
-}
-
-async function getUserIdFromApiKey(apiKey) {
-    if (!apiKey || !apiKey.startsWith('ox_')) return null;
-
-    const cacheKey = `apikey_user:${apiKey}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) return cached;
-
-    try {
-        const { data } = await supabaseAdmin
-            .from('api_keys')
-            .select('user_id')
-            .eq('key', apiKey)
-            .single();
-
-        if (data) {
-            await redis.setex(cacheKey, 3600, data.user_id);
-            return data.user_id;
-        }
-    } catch (err) {
-        logger.error('Error getting user_id from API key:', err.message);
-    }
-
-    return null;
-}
-
-async function checkBanStatus(identifier, requestId) {
-    const banKey = `ban:${identifier}`;
-    const permBanKey = `perm_ban:${identifier}`;
-
-    // 🔥 OPTIMIZATION: Single MGET call instead of 2
-    const [tempBan, permBan] = await redis.mget(banKey, permBanKey);
-
-    if (permBan) {
-        const banData = JSON.parse(permBan);
-        return {
-            isBanned: true,
-            isPermanent: true,
-            banLevel: 'PERMANENT',
-            reason: banData.reason || 'Permanent ban',
-            expiresAt: null,
-            remainingSeconds: null
-        };
-    }
-
-    if (tempBan) {
-        const banData = JSON.parse(tempBan);
-        const remainingSeconds = Math.ceil((banData.expiresAt - Date.now()) / 1000);
-
-        if (remainingSeconds > 0) {
-            return {
-                isBanned: true,
-                isPermanent: false,
-                banLevel: banData.banLevel,
-                reason: banData.reason,
-                expiresAt: banData.expiresAt,
-                remainingSeconds
-            };
-        } else {
-            // Ban expired - log asynchronously (don't block)
-            const userId = await getUserIdFromApiKey(identifier);
-            if (userId) {
-                logAudit({
-                    user_id: userId,
-                    resource_type: 'account',
-                    event_type: 'ban_expired',
-                    event_category: 'info',
-                    description: `${banData.banLevel} ban expired`,
-                    metadata: {
-                        ban_level: banData.banLevel,
-                        banned_at: new Date(banData.bannedAt).toISOString(),
-                        expired_at: new Date().toISOString(),
-                        total_violations: banData.violationCount || 0
-                    }
-                }).catch(() => { });
-            }
-
-            redis.del(banKey).catch(() => { }); // Non-blocking delete
-        }
-    }
-
-    return { isBanned: false };
-}
+// NOTE: getUserTier, getUserIdFromApiKey, checkBanStatus removed — dead code.
+// The main middleware reads tier from req.apiKeyData.profile (set by apikey middleware).
+// Ban checks are performed inline via the mega-pipeline in unifiedRateLimitMiddleware.
 
 async function trackViolationAndCheckBan(identifier, userId, requestId) {
     const violationsKey = `violations:${identifier}`;
     const banKey = `ban:${identifier}`;
 
-    const violationCount = await redis.incr(violationsKey);
-    await redis.expire(violationsKey, CONFIG.VIOLATION_TTL);
+    // FIX #2: pipeline 3 calls → 1 round-trip
+    const violPipeline = redis.pipeline();
+    violPipeline.incr(violationsKey);
+    violPipeline.expire(violationsKey, CONFIG.VIOLATION_TTL);
+    violPipeline.get(banKey);
+    const [[, violationCount], , [, existingBan]] = await violPipeline.exec();
 
     logger.debug(`[${requestId}] Lifetime violations: ${violationCount}`);
-
-    const existingBan = await redis.get(banKey);
 
     if (existingBan) {
         const banData = JSON.parse(existingBan);
@@ -205,13 +92,15 @@ async function trackViolationAndCheckBan(identifier, userId, requestId) {
             }
 
             if (shouldEscalate) {
-                const newExpiresAt = Date.now() + (newBanDuration * 1000);
+                // FIX #4: snapshot now once — bannedAt and expiresAt from same timestamp
+                const now = Date.now();
+                const newExpiresAt = now + (newBanDuration * 1000);
                 const newBanData = {
                     banLevel: newBanLevel,
                     isPermanent,
                     reason: `Rate limit exceeded ${violationCount} times (escalated)`,
                     violationCount,
-                    bannedAt: Date.now(),
+                    bannedAt: now,
                     expiresAt: newExpiresAt,
                     identifier
                 };
@@ -292,13 +181,15 @@ async function trackViolationAndCheckBan(identifier, userId, requestId) {
     }
 
     if (shouldBan) {
-        const expiresAt = Date.now() + (banDuration * 1000);
+        // FIX #4: snapshot now once — bannedAt and expiresAt from same timestamp
+        const now = Date.now();
+        const expiresAt = now + (banDuration * 1000);
         const banData = {
             banLevel,
             isPermanent,
             reason: `Rate limit exceeded ${violationCount} times`,
             violationCount,
-            bannedAt: Date.now(),
+            bannedAt: now,
             expiresAt,
             identifier
         };
@@ -396,8 +287,9 @@ async function savePermanentBan(identifier, userId, violationCount, requestId) {
  * Then processes results locally (0ms) and returns early if needed.
  */
 export async function unifiedRateLimitMiddleware(req, res, next) {
-    const requestId = `rate_${Date.now()}`;
+    // FIX #5: one Date.now() call, two uses
     const startTime = Date.now();
+    const requestId = `rate_${startTime}`;
 
     try {
         const apiKey = req.headers['x-api-key'];
@@ -586,10 +478,11 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
 
                 // Log quota exceeded (non-blocking)
                 if (userId) {
+                    // FIX #6: atomic SET NX EX — 1 Redis command instead of GET + SETEX
                     const blockedKey = `quota_blocked_logged:${userId}:${month}`;
-                    redis.get(blockedKey).then(alreadyLogged => {
-                        if (!alreadyLogged) {
-                            redis.setex(blockedKey, 30 * 24 * 60 * 60, '1').catch(() => { });
+                    redis.set(blockedKey, '1', 'EX', 30 * 24 * 60 * 60, 'NX').then(result => {
+                        if (result === 'OK') {
+                            // 'OK' means key didn't exist — first time logging this month
                             logCriticalAudit({
                                 user_id: userId,
                                 resource_type: 'usage_quota',

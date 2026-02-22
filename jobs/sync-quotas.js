@@ -25,10 +25,10 @@ import { supabaseAdmin } from '../config/supabase.js';
 import { getMonthKey } from '../utils/quota-manager.js';
 import logger from '../utils/logger.js';
 
-const WORKER_ID        = `quota-sync-${process.env.HOSTNAME || 'local'}_${process.pid}`;
+const WORKER_ID = `quota-sync-${process.env.HOSTNAME || 'local'}_${process.pid}`;
 const SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const STARTUP_DELAY_MS = 5 * 60 * 1000;  // 5 minutes
-const BATCH_SIZE       = 100;
+const BATCH_SIZE = 100;
 
 // FIX: Overlap guard — hourly sync should never run concurrently with itself
 let isRunning = false;
@@ -101,7 +101,7 @@ export async function syncQuotasToDatabase() {
         return;
     }
 
-    const month   = getMonthKey();
+    const month = getMonthKey();
     const pattern = `quota:*:${month}`;
 
     let synced = 0;
@@ -113,12 +113,13 @@ export async function syncQuotasToDatabase() {
 
         if (keys.length === 0) {
             logger.debug('[QUOTA SYNC] No quotas to sync');
+            // FIX #2: don't duplicate stats updates here — the code after the loop
+            // handles all stats; just mark as completed and exit the try block normally.
             stats.runsCompleted++;
             stats.lastRunAt = new Date().toISOString();
             stats.lastRunDurationMs = Date.now() - startTime;
             stats.lastRunSynced = 0;
-            isRunning = false;
-            return;
+            return; // finally block resets isRunning
         }
 
         for (let i = 0; i < keys.length; i += BATCH_SIZE) {
@@ -135,10 +136,11 @@ export async function syncQuotasToDatabase() {
                 continue;
             }
 
-            // Zip keys and values, validate, build upsert rows
+            // FIX #1: snapshot synced_at once per batch — all rows get the same timestamp
+            const syncedAt = new Date().toISOString();
             const validData = [];
             for (let j = 0; j < batch.length; j++) {
-                const key   = batch[j];
+                const key = batch[j];
                 const value = values[j];
 
                 try {
@@ -155,10 +157,10 @@ export async function syncQuotasToDatabase() {
                     const requestCount = parseInt(value || '0', 10);
 
                     validData.push({
-                        user_id:       userId,
+                        user_id: userId,
                         month,
                         request_count: isNaN(requestCount) ? 0 : requestCount,
-                        synced_at:     new Date().toISOString()
+                        synced_at: syncedAt
                     });
                 } catch (err) {
                     logger.error(`[QUOTA SYNC] Error processing key ${key}:`, { message: err.message });
@@ -184,11 +186,11 @@ export async function syncQuotasToDatabase() {
 
         // Update stats
         stats.runsCompleted++;
-        stats.totalSynced      += synced;
-        stats.totalErrors      += errors;
-        stats.lastRunAt        = new Date().toISOString();
+        stats.totalSynced += synced;
+        stats.totalErrors += errors;
+        stats.lastRunAt = new Date().toISOString();
         stats.lastRunDurationMs = duration;
-        stats.lastRunSynced    = synced;
+        stats.lastRunSynced = synced;
 
         logger.debug(`[QUOTA SYNC] Complete! Synced: ${synced}, Errors: ${errors}, Duration: ${duration}ms`);
 
@@ -215,8 +217,8 @@ export async function syncQuotasToDatabase() {
 export function getStats() {
     return {
         ...stats,
-        workerId:  WORKER_ID,
-        uptime:    process.uptime(),
+        workerId: WORKER_ID,
+        uptime: process.uptime(),
         isRunning
     };
 }
@@ -269,7 +271,7 @@ const shutdown = async (signal) => {
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // ─────────────────────────────────────────────
 // Main entry point

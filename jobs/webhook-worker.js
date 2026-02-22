@@ -7,36 +7,15 @@
  * - Multi-instance safe with Redis
  */
 
-import http from 'http'; // FIX: was require('http') — incompatible with ESM
+// FIX #4: replaced lazy dynamic imports with normal top-level ESM imports.
+// Lazy loading added complexity for no real benefit — if any of these fail,
+// we process.exit(1) anyway, same outcome as a top-level import failure.
+import http from 'http';
 import logger from '../utils/logger.js';
-
-// Lazy-load dependencies to handle startup errors gracefully
-let getRedis, supabaseAdmin, dequeueWebhooks, getQueueStats, processWebhook, processWebhookBatch, retryDeadLetters;
-
-async function loadDependencies() {
-    try {
-        const redisModule = await import('../config/redis.js');
-        getRedis = redisModule.getRedis;
-
-        const supabaseModule = await import('../config/supabase.js');
-        supabaseAdmin = supabaseModule.supabaseAdmin;
-
-        const queueModule = await import('../services/webhook/queue-manager.js');
-        dequeueWebhooks = queueModule.dequeueWebhooks;
-        getQueueStats = queueModule.getQueueStats;
-
-        const processorModule = await import('../services/webhook/processor.js');
-        processWebhook = processorModule.processWebhook;
-        processWebhookBatch = processorModule.processWebhookBatch;
-        retryDeadLetters = processorModule.retryDeadLetters;
-
-        logger.info('[Webhook Worker] Dependencies loaded successfully');
-        return true;
-    } catch (error) {
-        logger.error('[Webhook Worker] Failed to load dependencies:', { message: error.message, stack: error.stack });
-        return false;
-    }
-}
+import { getRedis } from '../config/redis.js';
+import { supabaseAdmin } from '../config/supabase.js';
+import { dequeueWebhooks, getQueueStats } from '../services/webhook/queue-manager.js';
+import { processWebhookBatch, retryDeadLetters } from '../services/webhook/processor.js';
 
 // FIX: Added hostname to WORKER_ID for uniqueness across containers/pods
 const WORKER_ID = `webhook_${process.env.HOSTNAME || 'local'}_${process.pid}`;
@@ -48,6 +27,10 @@ const CLEANUP_INTERVAL_MS = 60000;   // FIX: Run cleanup every 60s, not just on 
 // FIX: Dead letter retry backoff — track last run to avoid hammering
 let lastDeadLetterRun = 0;
 const DEAD_LETTER_MIN_INTERVAL_MS = 30000; // at most every 30s
+
+// FIX #2: isRunning guard prevents concurrent runWorker() calls
+// (e.g. when shutdown calls runWorker() while an interval tick is mid-flight)
+let isRunning = false;
 
 // Metrics tracking
 const workerMetrics = {
@@ -64,6 +47,12 @@ const workerMetrics = {
  * Main worker function
  */
 async function runWorker() {
+    // FIX #2: guard against concurrent runs (interval tick + shutdown final flush)
+    if (isRunning) {
+        logger.debug('[Webhook Worker] Previous run still in progress, skipping');
+        return;
+    }
+    isRunning = true;
     const startTime = Date.now();
 
     try {
@@ -83,10 +72,12 @@ async function runWorker() {
         logger.debug(`[Webhook Worker] Processing ${webhooks.length} webhooks...`);
 
         // 2. Get full webhook records from database
+        // FIX #3: SELECT only the columns processor/verifier actually need —
+        // avoids fetching large payload columns on up to 200 rows every 5 seconds
         const webhookIds = webhooks.map(w => w.id);
         const { data: webhookRecords } = await supabaseAdmin
             .from('upload_webhooks')
-            .select('*')
+            .select('id, status, trigger_mode, webhook_url, webhook_secret, attempt_count, provider, account_id, access_key_id, secret_access_key, region, endpoint, bucket, file_key, etag, file_size, content_type, expires_at')
             .in('id', webhookIds)
             .in('status', ['pending', 'verifying']);
 
@@ -127,6 +118,8 @@ async function runWorker() {
         workerMetrics.errors++;
         logger.error('[Webhook Worker] Error:', { message: error.message });
         throw error; // Re-throw to trigger restart logic
+    } finally {
+        isRunning = false;
     }
 }
 
@@ -151,12 +144,16 @@ async function handleAutoWebhooks() {
 
         logger.debug(`[Webhook Worker] Found ${autoWebhooks.length} auto-trigger webhooks needing verification`);
 
-        // FIX: Was doing N+1 individual selects inside a loop. Now a single batch update.
+        // FIX #4: add .eq('status', 'verifying') to the update as well —
+        // the SELECT already filters to verifying, but between SELECT and UPDATE
+        // another worker tick may have changed the status. Without this guard,
+        // we'd blindly set status = 'pending' and clobber mid-processing webhooks.
         const ids = autoWebhooks.map(w => w.id);
         await supabaseAdmin
             .from('upload_webhooks')
             .update({ status: 'pending' })
-            .in('id', ids);
+            .in('id', ids)
+            .eq('status', 'verifying');  // only update if still in verifying state
 
     } catch (error) {
         logger.error('[Webhook Worker] Auto-handler error:', { message: error.message });
@@ -227,13 +224,7 @@ export async function startWebhookWorker() {
     logger.info(`[Webhook Worker] Starting worker ${WORKER_ID}`);
     logger.info(`[Webhook Worker] Processing interval: ${SYNC_INTERVAL_MS}ms`);
 
-    // Load dependencies first
-    const loaded = await loadDependencies();
-    if (!loaded) {
-        logger.error('[Webhook Worker] Failed to load dependencies, exiting...');
-        process.exit(1);
-    }
-
+    // FIX #4: Normal top-level imports replaced lazy loadDependencies() — no call needed here
     let consecutiveErrors = 0;
     const maxConsecutiveErrors = 5;
 

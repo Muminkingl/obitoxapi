@@ -166,50 +166,39 @@ async function syncConsolidatedMetrics() {
     let providersProcessed = 0;
     let writesFailed = false;
 
-    // ── Update api_keys stats ──
-    // IMPORTANT: Use UPDATE not UPSERT.
-    // The metrics worker must never INSERT into api_keys — it only knows stats fields.
-    // The api_key MUST already exist in DB for any request to have written Redis metrics
-    // (auth validates the key). If somehow the key is missing, .update() silently no-ops.
-    //
+    // ── Increment api_keys stats (delta from this Redis batch) ──
+    // FIX: was .update({ total_requests: row.total_requests }) — a flat SET that
+    // replaced the DB value with only the current batch delta, losing all history.
+    // Now uses RPC that does: total_requests = total_requests + delta (SQL increment).
     const apiKeyBatch = Array.from(apiKeyRows.values());
     if (apiKeyBatch.length > 0) {
-        const updateOps = apiKeyBatch.map(row =>
-            supabaseAdmin
-                .from('api_keys')
-                .update({
-                    total_requests: row.total_requests,
-                    total_files_uploaded: row.total_files_uploaded,
-                    last_used_at: row.last_used_at
-                })
-                .eq('id', row.id)
-        );
-        const results = await Promise.all(updateOps);
-        for (const { error } of results) {
-            if (error) {
-                logger.error('[Metrics Worker] api_keys update error:', { message: error.message });
-                lifetimeStats.errors++;
-                windowStats.errors++;
-                writesFailed = true;
-            } else {
-                apiKeysProcessed++;
-            }
+        const { error } = await supabaseAdmin
+            .rpc('increment_api_key_stats_batch', { rows: JSON.stringify(apiKeyBatch) });
+
+        if (error) {
+            logger.error('[Metrics Worker] api_keys increment error:', { message: error.message });
+            lifetimeStats.errors++;
+            windowStats.errors++;
+            writesFailed = true;
+        } else {
+            apiKeysProcessed = apiKeyBatch.length;
         }
     }
 
-    // ── Batch upsert provider_usage ──
-    // Requires unique constraint on (api_key_id, provider)
+    // ── Increment provider_usage stats (delta from this Redis batch) ──
+    // FIX: was plain .upsert() which replaced upload_count on conflict.
+    // Now uses RPC with ON CONFLICT DO UPDATE SET upload_count = upload_count + EXCLUDED.upload_count
+    // so counts accumulate correctly across sync cycles.
     const providerBatch = Array.from(providerRows.values());
     if (providerBatch.length > 0) {
         const CHUNK = 500;
         for (let i = 0; i < providerBatch.length; i += CHUNK) {
             const chunk = providerBatch.slice(i, i + CHUNK);
             const { error } = await supabaseAdmin
-                .from('provider_usage')
-                .upsert(chunk, { onConflict: 'api_key_id,provider' });
+                .rpc('increment_provider_usage_batch', { rows: JSON.stringify(chunk) });
 
             if (error) {
-                logger.error('[Metrics Worker] provider_usage upsert error:', { message: error.message });
+                logger.error('[Metrics Worker] provider_usage increment error:', { message: error.message });
                 lifetimeStats.errors++;
                 windowStats.errors++;
                 writesFailed = true;

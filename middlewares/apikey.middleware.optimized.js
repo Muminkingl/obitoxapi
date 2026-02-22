@@ -3,31 +3,31 @@ import { getRedis } from '../config/redis.js';
 import logger from '../utils/logger.js';
 
 /**
- * Optimized API Key Validation Middleware with Redis Caching
- * 
- * Performance improvements:
- * - Cache HIT: ~2-5ms (Redis lookup)
- * - Cache MISS: ~80-100ms (DB lookup + cache write)
- * - Expected cache hit rate: 80-95%
- * 
- * Cache TTL: 5 minutes (300 seconds)
- * Cache key format: `apikey:{apiKey}`
+ * Optimized API Key Validation Middleware
+ *
+ * Layer    | Latency  | I/O
+ * ---------|----------|--------------------------
+ * L1 hit   | ~0ms     | 0 (in-process Map)
+ * L2 hit   | ~2-5ms   | 1 Redis GET
+ * L3 miss  | ~80ms    | 1 RPC (api_key + profile in one query)
+ *
+ * Cache TTL: L1 = 30s (per-process), L2 = 5min (Redis)
+ * Cache key: `apikey:{key_value}`
+ *
+ * FIX #1: last_used_at UPDATE removed — metrics-worker handles it every 5s
+ * FIX #2: Two sequential DB calls replaced by single RPC (get_api_key_with_profile)
+ * FIX #3: Dead rate-limit block removed (rate_limit_per_hour column gone)
+ * FIX #4: Redundant expires_at date comparison removed — Redis TTL is sufficient
+ * FIX #5: getRedis() hoisted — called once per middleware invocation
  */
 
-const CACHE_TTL = 300;          // Redis L2: 5 minutes
+const CACHE_TTL = 300;        // Redis L2: 5 minutes
 const CACHE_KEY_PREFIX = 'apikey:';
 
-// ─── Local Process Cache (L1) ────────────────────────────────────────────────
-// Sits in front of Redis (L2) and DB (L3).
-// Eliminates the Redis GET command on 95%+ of requests.
-//
-// TTL: 30s (much shorter than Redis 5min — stricter, not looser)
-// Max: 1000 entries (~500KB RAM) — LRU eviction via insertion-order Map
-//
-// Multi-instance (PM2): each instance has its own L1.
-// invalidateApiKeyCache clears Redis L2; L1 expires naturally in 30s.
+// ─── L1: In-Process Cache ─────────────────────────────────────────────────────
+// Zero Redis commands on hit. 30s TTL, max 1000 entries, LRU via Map insertion order.
 const LOCAL_CACHE = new Map();
-const LOCAL_TTL = 30 * 1000;  // 30 seconds
+const LOCAL_TTL = 30 * 1000;  // 30 seconds in ms
 const LOCAL_MAX = 1000;
 
 function getLocalCache(cacheKey) {
@@ -41,107 +41,84 @@ function getLocalCache(cacheKey) {
 }
 
 function setLocalCache(cacheKey, data) {
-  // Evict oldest entry when at capacity (insertion-order Map = cheap LRU)
   if (LOCAL_CACHE.size >= LOCAL_MAX) {
-    LOCAL_CACHE.delete(LOCAL_CACHE.keys().next().value);
+    LOCAL_CACHE.delete(LOCAL_CACHE.keys().next().value); // evict oldest
   }
   LOCAL_CACHE.set(cacheKey, { data, expiresAt: Date.now() + LOCAL_TTL });
 }
 
-/**
- * Fetch API key data from Supabase (cache miss scenario)
- */
+// ─── L3: DB Fetch (cache miss only) ──────────────────────────────────────────
+// FIX #2: Single RPC replaces two sequential SELECT queries.
+// get_api_key_with_profile() does a LEFT JOIN api_keys + profiles_with_tier
+// server-side and returns profile as nested JSONB — one round-trip total.
 const fetchApiKeyFromDatabase = async (apiKey) => {
-  // Select only fields that exist in the database
-  // Using * to get all fields, then we'll filter what we need
-  const { data: apiKeyData, error } = await supabaseAdmin
-    .from('api_keys')
-    .select('id, user_id, name, key_value, is_active, secret_hash, total_requests, total_files_uploaded, last_used_at, created_at, updated_at')
-    .eq('key_value', apiKey)
+  const { data: row, error } = await supabaseAdmin
+    .rpc('get_api_key_with_profile', { p_key_value: apiKey })
     .single();
 
   if (error) {
-    logger.error('Error fetching API key from database:', error.message);
-    logger.error('  Error code:', error.code);
-    logger.error('  Error details:', error.details || error.hint || 'No additional details');
+    logger.error('Error fetching API key via RPC:', error.message, error.code);
     return null;
   }
 
-  if (!apiKeyData) {
-    logger.warn('API key not found in database:', apiKey.substring(0, 20) + '...');
+  if (!row) {
+    logger.warn('API key not found:', apiKey.substring(0, 20) + '...');
     return null;
   }
 
-  // Log success in development
-  logger.debug('API key fetched from database:', apiKeyData.id);
+  logger.debug('API key fetched from database:', row.id);
 
-  // Get user profile data with computed tier (for caching)
-  // ✅ NEW: Query profiles_with_tier view for computed tier
-  const { data: profile } = await supabaseAdmin
-    .from('profiles_with_tier')
-    .select('subscription_tier, subscription_tier_paid, subscription_status, is_subscription_expired, is_in_grace_period, api_requests_limit, plan_name')
-    .eq('id', apiKeyData.user_id)
-    .single();
-
-  // Combine data for caching
+  // profile arrives as nested JSONB — matches old shape { ...apiKeyData, profile }
   return {
-    ...apiKeyData,
-    profile: profile || null,
+    ...row,
     cached_at: new Date().toISOString(),
   };
 };
 
-/**
- * Get API key from cache or database
- */
-const getApiKeyData = async (apiKey) => {
-  const redis = getRedis();
+// ─── Cache Orchestrator ───────────────────────────────────────────────────────
+// FIX #5: redis is passed in — getRedis() called once per request at the top.
+// FIX #4: No manual expires_at check — Redis TTL handles expiration natively.
+const getApiKeyData = async (apiKey, redis) => {
   const cacheKey = `${CACHE_KEY_PREFIX}${apiKey}`;
 
-  // L1: Local process cache — zero Redis commands on hit
+  // L1: Local process cache — zero I/O
   const localHit = getLocalCache(cacheKey);
-  if (localHit) {
-    return { data: localHit, fromCache: true };
-  }
+  if (localHit) return { data: localHit, fromCache: true };
 
-  // L2: Redis cache
+  // L2: Redis cache — 1 GET
   if (redis) {
     try {
       const cached = await redis.get(cacheKey);
       if (cached) {
         const data = JSON.parse(cached);
-        if (!data.expires_at || new Date(data.expires_at) >= new Date()) {
-          setLocalCache(cacheKey, data); // populate L1 for next requests
-          return { data, fromCache: true };
-        }
-        await redis.del(cacheKey); // expired — fall through to DB
+        setLocalCache(cacheKey, data); // warm L1 for subsequent requests
+        return { data, fromCache: true };
       }
     } catch (cacheError) {
       logger.warn('Redis cache read error:', cacheError.message);
     }
   }
 
-  // L3: Database
+  // L3: Database — 1 RPC (api_key + profile joined)
   const data = await fetchApiKeyFromDatabase(apiKey);
   if (!data) return null;
 
-  // Populate both caches
+  // Populate caches
   setLocalCache(cacheKey, data);
   if (redis) {
-    redis.setex(cacheKey, CACHE_TTL, JSON.stringify(data)).catch(err =>
-      logger.warn('Redis cache write error:', err.message)
-    );
+    redis.setex(cacheKey, CACHE_TTL, JSON.stringify(data))
+      .catch(err => logger.warn('Redis cache write error:', err.message));
   }
 
   return { data, fromCache: false };
 };
 
-/**
- * Optimized API Key Validation Middleware
- */
+// ─── Middleware ───────────────────────────────────────────────────────────────
 const validateApiKey = async (req, res, next) => {
+  // FIX #5: getRedis() called exactly once per request
+  const redis = getRedis();
+
   try {
-    // Get API key from header (support multiple header formats)
     const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
 
     if (!apiKey) {
@@ -152,7 +129,7 @@ const validateApiKey = async (req, res, next) => {
       });
     }
 
-    // Validate API key format (ox_randomstring) - fast, in-memory check
+    // Fast format check — no I/O
     if (!apiKey.startsWith('ox_') || apiKey.length < 10) {
       return res.status(401).json({
         success: false,
@@ -161,17 +138,10 @@ const validateApiKey = async (req, res, next) => {
       });
     }
 
-    // Get API key data (from cache or database)
-    const result = await getApiKeyData(apiKey);
+    const result = await getApiKeyData(apiKey, redis);
 
-    if (!result || !result.data) {
-      // Log for debugging
-      logger.debug('API key validation failed:', {
-        apiKey: apiKey.substring(0, 20) + '...',
-        hasResult: !!result,
-        hasData: result?.data ? true : false
-      });
-
+    if (!result?.data) {
+      logger.debug('API key validation failed:', apiKey.substring(0, 20) + '...');
       return res.status(401).json({
         success: false,
         message: 'Invalid API key',
@@ -181,7 +151,6 @@ const validateApiKey = async (req, res, next) => {
 
     const apiKeyData = result.data;
 
-    // Check if API key is active
     if (apiKeyData.is_active === false) {
       return res.status(401).json({
         success: false,
@@ -190,14 +159,10 @@ const validateApiKey = async (req, res, next) => {
       });
     }
 
-    // Check if API key is expired
-    if (apiKeyData.expires_at && new Date(apiKeyData.expires_at) < new Date()) {
-      // Invalidate cache if expired
-      const redis = getRedis();
-      if (redis) {
-        await redis.del(`${CACHE_KEY_PREFIX}${apiKey}`).catch(() => { });
-      }
-
+    if (apiKeyData.expires_at && new Date(apiKeyData.expires_at) < Date.now()) {
+      // Bust both cache layers — key has expired
+      LOCAL_CACHE.delete(`${CACHE_KEY_PREFIX}${apiKey}`);
+      if (redis) redis.del(`${CACHE_KEY_PREFIX}${apiKey}`).catch(() => { });
       return res.status(401).json({
         success: false,
         message: 'API key has expired',
@@ -205,76 +170,40 @@ const validateApiKey = async (req, res, next) => {
       });
     }
 
-    // Rate limiting check (we'll optimize this in next step with Redis)
-    // For now, keep the existing logic but make it non-blocking
-    if (apiKeyData.rate_limit_per_hour) {
-      // TODO: Move to Redis in next optimization step
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-      supabaseAdmin
-        .from('api_usage_logs')
-        .select('*', { count: 'exact', head: true })
-        .eq('api_key_id', apiKeyData.id)
-        .gte('created_at', oneHourAgo.toISOString())
-        .then(({ count }) => {
-          // This is async and won't block the request
-          // We'll optimize rate limiting in the next step
-        })
-        .catch(() => { });
-    }
+    // FIX #1: last_used_at UPDATE removed entirely.
+    // The metrics-worker syncs last_used_at from Redis every 5 seconds.
+    // Firing a DB UPDATE here on every request was 1 redundant write per request.
 
-    // Update last_used_at timestamp (non-blocking, async)
-    supabaseAdmin
-      .from('api_keys')
-      .update({ last_used_at: new Date().toISOString() })
-      .eq('id', apiKeyData.id)
-      .then(() => { })
-      .catch(err => logger.error('Failed to update last_used_at:', err.message));
+    // FIX #3: Dead rate-limit block removed.
+    // rate_limit_per_hour column no longer exists. Rate limiting is handled
+    // by the rate-limiter middleware using Redis counters.
 
-    // ✅ REMOVED: Direct api_usage_logs insert
-    // API usage is now logged via trackApiUsage() in controllers
-    // This prevents duplicate writes and database bottleneck at 10K+ req/min
-
-    // Attach user data to request
+    // Attach to request for downstream use
     req.userId = apiKeyData.user_id;
     req.apiKeyId = apiKeyData.id;
     req.apiKeyName = apiKeyData.name;
-    req.apiKeyData = apiKeyData; // Include full data for potential use
-    req.fromCache = result.fromCache; // Track if data came from cache (for monitoring)
-
-    // 🚀 OPTIMIZATION: Pass secret_hash to signature validator to avoid DB call
-    req.secretHash = apiKeyData.secret_hash;
-
-    // CRITICAL: Set consistent identifier for rate limiting & bans
-    // This ensures all middlewares (chaos, tier, behavioral) use the same identifier
-    req.rateLimitIdentifier = apiKeyData.user_id;
+    req.apiKeyData = apiKeyData;
+    req.fromCache = result.fromCache;
+    req.secretHash = apiKeyData.secret_hash;   // avoids extra DB call in signature validator
+    req.rateLimitIdentifier = apiKeyData.user_id;       // consistent ID for all rate-limit middlewares
 
     next();
   } catch (error) {
     logger.error('API key validation error:', error.message);
-
-    // Don't expose internal error details in production
-    const isDevelopment = process.env.NODE_ENV === 'development';
-
     res.status(500).json({
       success: false,
       message: 'Internal server error during API key validation',
       error: 'VALIDATION_ERROR',
-      ...(isDevelopment && { details: error.message })
+      ...(process.env.NODE_ENV === 'development' && { details: error.message })
     });
   }
 };
 
-/**
- * Invalidate API key cache
- * Call this when API key is updated, deleted, or deactivated
- */
+// ─── Cache Invalidation (exported) ───────────────────────────────────────────
+// Call when an API key is updated, deactivated, or deleted.
 export const invalidateApiKeyCache = async (apiKey) => {
   const cacheKey = `${CACHE_KEY_PREFIX}${apiKey}`;
-
-  // Clear L1 (local process)
   LOCAL_CACHE.delete(cacheKey);
-
-  // Clear L2 (Redis)
   const redis = getRedis();
   if (!redis) return;
   try {
@@ -285,4 +214,3 @@ export const invalidateApiKeyCache = async (apiKey) => {
 };
 
 export default validateApiKey;
-

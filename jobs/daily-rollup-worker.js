@@ -39,7 +39,8 @@ const WORKER_ID = `daily-rollup-${process.env.HOSTNAME || 'local'}_${process.pid
 // FIX: Distributed lock config — prevents double-run if PM2 spawns multiple instances
 // or if cron fires twice due to server time drift / restart
 const LOCK_KEY = 'audit:rollup:lock';
-const LOCK_TTL_SEC = 3600; // 1 hour max run time before lock auto-expires
+// FIX #3: reduced from 1 hour — crash recovery can't wait 1hr for tomorrow's cron
+const LOCK_TTL_SEC = 20 * 60; // 20 minutes — realistic ceiling for this job
 
 const stats = {
     runsCompleted: 0,
@@ -134,18 +135,27 @@ async function rollupConsolidatedMetrics(date) {
 
     if (redisKeys.length === 0) return { apiKeys: 0, providers: 0 };
 
-    // Collect all records first before any DB writes
-    const apiKeyRows = [];  // for api_key_usage_daily
-    const providerRows = [];  // for provider_usage_daily
-    const successfulKeys = [];  // only cleared after confirmed write
+    // FIX #1: pipeline all Redis reads — 1 round-trip instead of N sequential awaits
+    const redis = getRedis();
+    const readPipeline = redis.pipeline();
+    for (const key of redisKeys) readPipeline.hgetall(key);
+    const rawResults = await readPipeline.exec();
 
-    for (const key of redisKeys) {
+    // FIX #4: snapshot updated_at once before loop — all rows get same timestamp
+    const now = new Date().toISOString();
+
+    const apiKeyRows = [];
+    const providerRows = [];
+    const successfulKeys = [];
+
+    for (let i = 0; i < redisKeys.length; i++) {
+        const key = redisKeys[i];
         try {
             const parts = key.split(':');
             if (parts.length < 3 || parts[0] !== 'm') continue;
 
             const apiKeyId = parts[1];
-            const rawData = await getMetrics(key);
+            const rawData = rawResults[i]?.[1];  // [err, value] from pipeline
             if (!rawData) continue;
 
             const parsed = parseMetricsData(rawData);
@@ -160,7 +170,7 @@ async function rollupConsolidatedMetrics(date) {
                 usage_date: date,
                 total_requests: totalRequests,
                 total_files_uploaded: totalRequests,
-                updated_at: new Date().toISOString()
+                updated_at: now
             });
 
             // Provider rows
@@ -171,7 +181,7 @@ async function rollupConsolidatedMetrics(date) {
                     provider,
                     usage_date: date,
                     upload_count: count,
-                    updated_at: new Date().toISOString()
+                    updated_at: now
                 });
             }
 
@@ -183,8 +193,11 @@ async function rollupConsolidatedMetrics(date) {
         }
     }
 
+    // FIX #2: track writesFailed — if any chunk fails, skip Redis clear entirely
+    // to prevent deleting keys whose data was never written
+    let writesFailed = false;
+
     // ── Batch upsert api_key_usage_daily ──
-    // Requires unique constraint on (api_key_id, usage_date)
     let apiKeysProcessed = 0;
     if (apiKeyRows.length > 0) {
         const CHUNK = 500;
@@ -197,6 +210,7 @@ async function rollupConsolidatedMetrics(date) {
             if (error) {
                 logger.error('[Daily Rollup] ❌ api_key_usage_daily upsert error:', error.message);
                 stats.errors++;
+                writesFailed = true;
             } else {
                 apiKeysProcessed += chunk.length;
             }
@@ -204,7 +218,6 @@ async function rollupConsolidatedMetrics(date) {
     }
 
     // ── Batch upsert provider_usage_daily ──
-    // Requires unique constraint on (api_key_id, provider, usage_date)
     let providersProcessed = 0;
     if (providerRows.length > 0) {
         const CHUNK = 500;
@@ -217,21 +230,21 @@ async function rollupConsolidatedMetrics(date) {
             if (error) {
                 logger.error('[Daily Rollup] ❌ provider_usage_daily upsert error:', error.message);
                 stats.errors++;
+                writesFailed = true;
             } else {
                 providersProcessed += chunk.length;
             }
         }
     }
 
-    // Only clear Redis keys AFTER all DB writes succeed.
-    if (successfulKeys.length > 0) {
-        const redis = getRedis();
+    // Only clear Redis keys after ALL chunks succeed — any failure keeps all keys for retry
+    if (!writesFailed && successfulKeys.length > 0) {
         const pipeline = redis.pipeline();
-        for (const key of successfulKeys) {
-            pipeline.del(key);
-        }
+        for (const key of successfulKeys) pipeline.del(key);
         await pipeline.exec();
         logger.info(`[Daily Rollup] 🗑️  Cleared ${successfulKeys.length} Redis keys after successful write`);
+    } else if (writesFailed) {
+        logger.warn(`[Daily Rollup] ⚠️  Skipping Redis clear — write failures detected. ${successfulKeys.length} keys will retry next run.`);
     }
 
     return { apiKeys: apiKeysProcessed, providers: providersProcessed };

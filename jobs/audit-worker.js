@@ -32,9 +32,9 @@ const METRICS_KEY = `audit:metrics:${WORKER_ID}`;
 
 // Adaptive batch configuration
 const BATCH_CONFIG = {
-    small:  { size: 100,  threshold: 1000  },
-    medium: { size: 300,  threshold: 5000  },
-    large:  { size: 1000, threshold: 10000 }
+    small: { size: 100, threshold: 1000 },
+    medium: { size: 300, threshold: 5000 },
+    large: { size: 1000, threshold: 10000 }
 };
 
 const BATCH_INTERVAL_MS = 5000; // Max 5 seconds between flushes
@@ -61,7 +61,7 @@ let shuttingDown = false;
  * FIX: Removed unnecessary async — this is pure sync logic.
  */
 function getAdaptiveBatchSize(queueLength) {
-    if (queueLength > BATCH_CONFIG.large.threshold)  return BATCH_CONFIG.large.size;
+    if (queueLength > BATCH_CONFIG.large.threshold) return BATCH_CONFIG.large.size;
     if (queueLength > BATCH_CONFIG.medium.threshold) return BATCH_CONFIG.medium.size;
     return BATCH_CONFIG.small.size;
 }
@@ -84,9 +84,15 @@ async function startAuditWorker() {
     logger.info(`🔄 Audit worker started: ${WORKER_ID}`);
     logger.info(`📊 Initial batch size: ${batchSize}`);
 
-    // Start background metrics reporter and dead letter retrier
+    // Start background metrics reporter
     startMetricsReporter(redis);
-    startDeadLetterRetrier(redis);
+
+    // FIX #2: Only the primary PM2 instance (pm_id 0) runs the dead letter retrier.
+    // With 4 instances each doing 100 rpoplpush every 60s, the same failed items
+    // get re-queued up to 4x more aggressively than intended.
+    if (!process.env.pm_id || process.env.pm_id === '0') {
+        startDeadLetterRetrier(redis);
+    }
 
     // FIX: Graceful shutdown handlers — flush buffer before exiting
     const shutdown = async (signal) => {
@@ -110,20 +116,10 @@ async function startAuditWorker() {
     };
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT',  () => shutdown('SIGINT'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
 
     while (!shuttingDown) {
         try {
-            // Adaptive batching: check queue depth and adjust batch size
-            const queueLength = await redis.llen('audit:queue');
-            batchSize = getAdaptiveBatchSize(queueLength); // FIX: no longer async
-            metrics.queueLength = queueLength;
-            metrics.currentBatchSize = batchSize;
-
-            if (queueLength > 5000) {
-                logger.error(`🚨 [${WORKER_ID}] Queue backed up: ${queueLength} items! Using large batches (${batchSize}).`);
-            }
-
             // Blocking pop with 1-second timeout
             const result = await redis.brpop('audit:queue', 1);
 
@@ -134,9 +130,20 @@ async function startAuditWorker() {
 
             // Flush conditions: time elapsed OR buffer full
             const timeToFlush = Date.now() - lastFlush >= BATCH_INTERVAL_MS;
-            const bufferFull   = buffer.length >= batchSize;
+            const bufferFull = buffer.length >= batchSize;
 
             if ((timeToFlush || bufferFull) && buffer.length > 0) {
+                // FIX #1: llen moved inside flush condition — only check queue depth
+                // when about to flush, not on every loop tick (saves 1 Redis call/sec idle)
+                const queueLength = await redis.llen('audit:queue');
+                batchSize = getAdaptiveBatchSize(queueLength);
+                metrics.queueLength = queueLength;
+                metrics.currentBatchSize = batchSize;
+
+                if (queueLength > 5000) {
+                    logger.error(`\u{1F6A8} [${WORKER_ID}] Queue backed up: ${queueLength} items! Using large batches (${batchSize}).`);
+                }
+
                 // FIX: Snapshot the buffer before flushing so concurrent pushes
                 // and the subsequent clear don't race with the async DB insert.
                 const batch = buffer.splice(0, buffer.length);
@@ -148,7 +155,7 @@ async function startAuditWorker() {
                 metrics.insertsLastMinute += batch.length;
                 metrics.avgBatchTime = batchTime;
 
-                logger.info(`✅ [${WORKER_ID}] Flushed ${batch.length} logs in ${batchTime}ms`);
+                logger.info(`\u2705 [${WORKER_ID}] Flushed ${batch.length} logs in ${batchTime}ms`);
 
                 lastFlush = Date.now();
             }
@@ -194,12 +201,10 @@ async function flushBatch(redis, logs) {
             return;
         }
 
-        logger.info(`🔄 [${WORKER_ID}] Re-queuing ${logs.length} failed logs to audit:failed...`);
-        const pipeline = redis.pipeline();
-        for (const log of logs) {
-            pipeline.lpush('audit:failed', JSON.stringify(log));
-        }
-        await pipeline.exec();
+        logger.info(`\u{1F504} [${WORKER_ID}] Re-queuing ${logs.length} failed logs to audit:failed...`);
+        // FIX #3: variadic lpush — 1 Redis command instead of N pipeline commands
+        const serialized = logs.map(log => JSON.stringify(log));
+        await redis.lpush('audit:failed', ...serialized);
     }
 }
 
@@ -209,7 +214,7 @@ async function flushBatch(redis, logs) {
  */
 function startDeadLetterRetrier(redis) {
     const RETRY_INTERVAL_MS = 60000;  // Every 60 seconds
-    const RETRY_BATCH_SIZE  = 100;    // Re-queue up to 100 at a time
+    const RETRY_BATCH_SIZE = 100;    // Re-queue up to 100 at a time
 
     setInterval(async () => {
         if (shuttingDown) return;
@@ -248,25 +253,25 @@ function startMetricsReporter(redis) {
                 redis.llen('audit:failed')
             ]);
 
-            metrics.droppedEvents  = parseInt(dropped  || '0');
+            metrics.droppedEvents = parseInt(dropped || '0');
             metrics.overflowEvents = parseInt(overflow || '0');
 
             // FIX: Per-instance key — was 'audit:metrics' which caused all instances to overwrite each other
             await redis.setex(METRICS_KEY, 120, JSON.stringify({
                 ...metrics,
-                worker_id:        WORKER_ID,
+                worker_id: WORKER_ID,
                 failed_queue_depth: failedDepth,
-                timestamp:        new Date().toISOString()
+                timestamp: new Date().toISOString()
             }));
 
             logger.info(`📊 [${WORKER_ID}] Metrics:`, {
-                queue:          metrics.queueLength,
-                batch_size:     metrics.currentBatchSize,
-                inserts:        metrics.insertsLastMinute,   // items inserted this minute
-                failures:       metrics.failuresLastMinute,
-                dropped:        metrics.droppedEvents,
-                overflow:       metrics.overflowEvents,
-                failed_queue:   failedDepth,
+                queue: metrics.queueLength,
+                batch_size: metrics.currentBatchSize,
+                inserts: metrics.insertsLastMinute,   // items inserted this minute
+                failures: metrics.failuresLastMinute,
+                dropped: metrics.droppedEvents,
+                overflow: metrics.overflowEvents,
+                failed_queue: failedDepth,
                 avg_batch_time: `${metrics.avgBatchTime}ms`
             });
 
@@ -285,7 +290,7 @@ function startMetricsReporter(redis) {
             }
 
             // Reset per-minute counters
-            metrics.insertsLastMinute  = 0;
+            metrics.insertsLastMinute = 0;
             metrics.failuresLastMinute = 0;
 
         } catch (error) {
