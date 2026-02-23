@@ -173,7 +173,7 @@ async function syncConsolidatedMetrics() {
     const apiKeyBatch = Array.from(apiKeyRows.values());
     if (apiKeyBatch.length > 0) {
         const { error } = await supabaseAdmin
-            .rpc('increment_api_key_stats_batch', { rows: JSON.stringify(apiKeyBatch) });
+            .rpc('increment_api_key_stats_batch', { rows: apiKeyBatch });
 
         if (error) {
             logger.error('[Metrics Worker] api_keys increment error:', { message: error.message });
@@ -195,7 +195,7 @@ async function syncConsolidatedMetrics() {
         for (let i = 0; i < providerBatch.length; i += CHUNK) {
             const chunk = providerBatch.slice(i, i + CHUNK);
             const { error } = await supabaseAdmin
-                .rpc('increment_provider_usage_batch', { rows: JSON.stringify(chunk) });
+                .rpc('increment_provider_usage_batch', { rows: chunk });
 
             if (error) {
                 logger.error('[Metrics Worker] provider_usage increment error:', { message: error.message });
