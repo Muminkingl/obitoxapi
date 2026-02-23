@@ -89,16 +89,25 @@ async function syncConsolidatedMetrics() {
     if (redisKeys.length === 0) return { apiKeys: 0, providers: 0 };
 
     // Collect all rows before touching the DB
-    const apiKeyRows = new Map(); // apiKeyId → row (merge multiple keys for same ID)
-    const providerRows = new Map(); // `${apiKeyId}:${provider}` → row
+    const apiKeyRows = new Map();     // key -> { id, total_requests, total_files_uploaded, last_used_at }
+    const providerRows = new Map();   // key -> { api_key_id, user_id, provider, upload_count, last_used_at }
+    const apiKeyDailyRows = new Map();   // key -> { api_key_id, user_id, usage_date, total_requests, total_files_uploaded }
+    const providerDailyRows = new Map(); // key -> { api_key_id, user_id, provider, usage_date, upload_count }
     const successfulKeys = [];
 
-    for (const key of redisKeys) {
+    // Pipeline all Redis reads — 1 round-trip instead of N sequential awaits
+    const redis = getRedis();
+    const readPipeline = redis.pipeline();
+    for (const key of redisKeys) readPipeline.hgetall(key);
+    const rawResults = await readPipeline.exec();
+
+    for (let i = 0; i < redisKeys.length; i++) {
+        const key = redisKeys[i];
         try {
             const keyParts = parseMetricsKey(key);
             if (!keyParts) continue;
 
-            const rawData = await getMetrics(key);
+            const rawData = rawResults[i]?.[1]; // [err, value] from pipeline
             if (!rawData) continue;
 
             const parsed = parseMetricsData(rawData);
@@ -119,7 +128,7 @@ async function syncConsolidatedMetrics() {
             // FIX: validate timestamp before use
             const usedAt = safeTimestamp(lastUsedAt);
 
-            // ── API key row (merge if same apiKeyId appears in multiple Redis keys) ──
+            // ── API key row (lifetime) (merge if same apiKeyId appears in multiple Redis keys) ──
             const existingApiRow = apiKeyRows.get(apiKeyId);
             if (existingApiRow) {
                 existingApiRow.total_requests += totalRequests;
@@ -133,8 +142,25 @@ async function syncConsolidatedMetrics() {
                 });
             }
 
-            // ── Provider rows ──
+            // ── API key row (daily) ──
+            const dailyApiKey = `${apiKeyId}:${date}`;
+            const existingDailyApi = apiKeyDailyRows.get(dailyApiKey);
+            if (existingDailyApi) {
+                existingDailyApi.total_requests += totalRequests;
+                existingDailyApi.total_files_uploaded += totalRequests;
+            } else {
+                apiKeyDailyRows.set(dailyApiKey, {
+                    api_key_id: apiKeyId,
+                    user_id: userId,
+                    usage_date: date,
+                    total_requests: totalRequests,
+                    total_files_uploaded: totalRequests
+                });
+            }
+
+            // ── Provider rows (lifetime & daily) ──
             for (const [provider, count] of Object.entries(providers || {})) {
+                // Lifetime
                 const pKey = `${apiKeyId}:${provider}`;
                 const existingProvider = providerRows.get(pKey);
                 if (existingProvider) {
@@ -146,6 +172,21 @@ async function syncConsolidatedMetrics() {
                         provider,
                         upload_count: count,
                         last_used_at: usedAt
+                    });
+                }
+
+                // Daily
+                const dailyProvKey = `${apiKeyId}:${provider}:${date}`;
+                const existingDailyProv = providerDailyRows.get(dailyProvKey);
+                if (existingDailyProv) {
+                    existingDailyProv.upload_count += count;
+                } else {
+                    providerDailyRows.set(dailyProvKey, {
+                        api_key_id: apiKeyId,
+                        user_id: userId,
+                        provider,
+                        usage_date: date,
+                        upload_count: count
                     });
                 }
             }
@@ -204,6 +245,42 @@ async function syncConsolidatedMetrics() {
                 writesFailed = true;
             } else {
                 providersProcessed += chunk.length;
+            }
+        }
+    }
+
+    // ── Increment api_key_usage_daily (daily stats) ──
+    const apiDailyBatch = Array.from(apiKeyDailyRows.values());
+    if (apiDailyBatch.length > 0) {
+        const CHUNK = 500;
+        for (let i = 0; i < apiDailyBatch.length; i += CHUNK) {
+            const chunk = apiDailyBatch.slice(i, i + CHUNK);
+            const { error } = await supabaseAdmin
+                .rpc('increment_api_key_daily_batch', { rows: chunk });
+
+            if (error) {
+                logger.error('[Metrics Worker] api_key_daily increment error:', { message: error.message });
+                lifetimeStats.errors++;
+                windowStats.errors++;
+                writesFailed = true;
+            }
+        }
+    }
+
+    // ── Increment provider_usage_daily (daily stats) ──
+    const providerDailyBatch = Array.from(providerDailyRows.values());
+    if (providerDailyBatch.length > 0) {
+        const CHUNK = 500;
+        for (let i = 0; i < providerDailyBatch.length; i += CHUNK) {
+            const chunk = providerDailyBatch.slice(i, i + CHUNK);
+            const { error } = await supabaseAdmin
+                .rpc('increment_provider_usage_daily_batch', { rows: chunk });
+
+            if (error) {
+                logger.error('[Metrics Worker] provider_daily increment error:', { message: error.message });
+                lifetimeStats.errors++;
+                windowStats.errors++;
+                writesFailed = true;
             }
         }
     }
