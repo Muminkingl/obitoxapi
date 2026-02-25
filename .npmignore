@@ -1,0 +1,32 @@
+# Tests
+test/
+tests/
+coverage/
+
+# CI
+.github/
+
+# Config files
+.DS_Store
+.env*
+ecosystem.config.cjs
+nodemon.json
+jsconfig.json
+
+# Internal scripts and jobs
+scripts/
+jobs/
+reports/
+
+# App related (since it's an SDK but living with backend)
+controllers/
+middlewares/
+routes/
+utils/
+config/
+app.js
+server.js
+
+# Note: The SDK itself lives in src/ and is built to dist/.
+# We only want to publish dist/, package.json, README, etc.
+src/

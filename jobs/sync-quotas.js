@@ -170,6 +170,7 @@ export async function syncQuotasToDatabase() {
 
             if (validData.length === 0) continue;
 
+            // 1. Update the official monthly quota tracking table
             const { error } = await supabaseAdmin
                 .from('quota_usage')
                 .upsert(validData, { onConflict: 'user_id,month' });
@@ -177,9 +178,37 @@ export async function syncQuotasToDatabase() {
             if (error) {
                 logger.error('[QUOTA SYNC] Database upsert error:', { message: error.message });
                 errors += validData.length;
-            } else {
-                synced += validData.length;
+                continue;
             }
+
+            // 2. Mirror current active quota to the legacy `profiles` table
+            // The frontend "Monthly Quota Card" still fetches `api_requests_used` from `profiles`.
+            // We bulk update these using exactly what was stored in Redis to guarantee accuracy.
+            try {
+                // Determine current month string (e.g. '2026-02') to ensure we only sync
+                // the active billing cycle into the profiles table, ignoring past months.
+                const currentMonth = getMonthKey();
+                const activeProfiles = validData
+                    .filter(d => d.month === currentMonth)
+                    .map(d => ({
+                        id: d.user_id,
+                        api_requests_used: d.request_count
+                    }));
+
+                if (activeProfiles.length > 0) {
+                    const { error: profileError } = await supabaseAdmin
+                        .from('profiles')
+                        .upsert(activeProfiles, { onConflict: 'id' });
+
+                    if (profileError) {
+                        logger.error('[QUOTA SYNC] Profile sync error:', { message: profileError.message });
+                    }
+                }
+            } catch (err) {
+                logger.error('[QUOTA SYNC] Failed to mirror to profiles:', { message: err.message });
+            }
+
+            synced += validData.length;
         }
 
         const duration = Date.now() - startTime;

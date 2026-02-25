@@ -80,24 +80,5 @@ module.exports = {
             max_restarts: 10,
             restart_delay: 4000
         },
-        // ========================
-        // 📅 DAILY ROLLUP WORKER (Cron)
-        // ========================
-        // Syncs Redis daily metrics to daily tables at midnight UTC
-        // Runs once per day at 00:05 UTC
-        {
-            name: 'daily-rollup',
-            script: 'jobs/daily-rollup-worker.js',
-            instances: 1,
-            exec_mode: 'fork',
-            autorestart: false,  // Runs once, exits
-            cron_restart: '5 0 * * *',  // 00:05 UTC daily
-            watch: false,
-            max_memory_restart: '200M',
-            env: {
-                NODE_ENV: 'production'
-            },
-            log_date_format: 'YYYY-MM-DD HH:mm:ss'
-        }
     ]
 };
