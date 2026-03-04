@@ -134,7 +134,7 @@ export class ObitoX {
 
     this.apiKey = config.apiKey;
     this.apiSecret = config.apiSecret; // Optional for now (backwards compatibility)
-    this.baseUrl = config.baseUrl || 'http://localhost:5500';
+    this.baseUrl = config.baseUrl || 'https://api.obitox.dev';
 
     // Initialize provider registry with apiSecret for Layer 2 security
     this.providers = new ProviderRegistry(this.apiKey, this.baseUrl, this.apiSecret);

@@ -20,7 +20,7 @@
     "start": "node app.js",
     "dev": "nodemon app.js",
     "build": "rollup -c",
-    "prepublish Only": "npm run build",
+    "prepublishOnly": "npm run build",
     "test": "jest",
     "test:cors": "node test/cors/test-cors-middleware.js",
     "test:cors:docker": "docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit",
@@ -42,11 +42,11 @@
     "typescript",
     "javascript"
   ],
-  "author": "SubDub Team",
+  "author": "ObitoX Team",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/subdub-upload.git"
+    "url": "https://github.com/Muminkingl/obitoxapi.git"
   },
   "homepage": "https://obitox.com",
   "bugs": {
