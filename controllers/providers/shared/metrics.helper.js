@@ -100,10 +100,19 @@ async function flushMetricBuffer() {
   }
 }
 
-// Auto-start 1-second flush interval when module is first imported.
-// unref() prevents the interval from keeping the process alive on shutdown.
-const _flushTimer = setInterval(flushMetricBuffer, FLUSH_INTERVAL_MS);
-if (_flushTimer.unref) _flushTimer.unref();
+// Auto-flush timer: started lazily on first updateRequestMetrics() call.
+// CF Workers forbids setInterval/setTimeout at global scope (module eval time).
+// It's fine to call it within a request handler, which is what "lazy" ensures.
+let _flushTimer = null;
+function ensureFlushTimer() {
+  if (_flushTimer !== null) return;
+  try {
+    _flushTimer = setInterval(flushMetricBuffer, FLUSH_INTERVAL_MS);
+    if (_flushTimer.unref) _flushTimer.unref();
+  } catch {
+    _flushTimer = -1; // sentinel: CF Workers — no background timers, flush inline
+  }
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -122,6 +131,7 @@ if (_flushTimer.unref) _flushTimer.unref();
  */
 export const updateRequestMetrics = (apiKeyId, userId, provider, success = true, additionalData = {}) => {
   if (!apiKeyId) return Promise.resolve();
+  ensureFlushTimer(); // start interval lazily within handler context (CF Workers safe)
 
   const today = new Date().toISOString().split('T')[0];
   const key = `m:${apiKeyId}:${today}`;

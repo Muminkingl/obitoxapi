@@ -10,7 +10,7 @@ import NodeCache from 'node-cache';
 // In-memory cache configuration
 const memoryCache = new NodeCache({
     stdTTL: 60,           // Default 60 seconds TTL
-    checkperiod: 10,      // Check for expired keys every 10 seconds
+    checkperiod: 0,       // 0 = disabled (no setInterval — required for CF Workers)
     maxKeys: 10000,       // Prevent memory bloat (10k users max)
     useClones: false      // Performance optimization
 });
