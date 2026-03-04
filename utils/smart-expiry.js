@@ -95,7 +95,7 @@ function formatDuration(seconds) {
  */
 function calculateSmartExpiry(options) {
     const {
-        fileSize,
+        fileSize: _fileSize,
         networkInfo = {},
         bufferMultiplier = DEFAULT_CONFIG.bufferMultiplier,
         minExpirySeconds = DEFAULT_CONFIG.minExpirySeconds,
@@ -103,9 +103,7 @@ function calculateSmartExpiry(options) {
     } = options;
 
     // Validate inputs
-    if (!fileSize || fileSize <= 0) {
-        fileSize = 0;
-    }
+    let fileSize = (!_fileSize || _fileSize <= 0) ? 0 : _fileSize;
 
     // =========================================================================
     // 1. DETERMINE NETWORK SPEED

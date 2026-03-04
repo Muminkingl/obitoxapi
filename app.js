@@ -21,11 +21,6 @@ import errorMiddleware from './middlewares/error.middleware.js';
 import arcjetMiddleware from './middlewares/arcjet.middleware.js';
 import { getRedis, testRedisConnection } from './config/redis.js';
 
-// Import quota sync job (starts automatically on import)
-import './jobs/sync-quotas.js';
-
-// Import metrics worker
-import { startMetricsSyncWorker } from './jobs/metrics-worker.js';
 
 const app = express();
 
@@ -75,14 +70,6 @@ app.listen(PORT, async () => {
       const testResult = await testRedisConnection();
       if (testResult.success) {
         logger.info(`Redis: Connected (latency: ${testResult.latency}ms)`);
-
-        // Delay metrics sync worker by 1 minute to avoid startup Redis spike
-        // This prevents 60-90 Redis reads during app initialization
-        setTimeout(() => {
-          startMetricsSyncWorker();
-          logger.debug('Metrics sync worker started (was delayed 1 min to reduce startup load)');
-        }, 60 * 1000);
-        logger.debug('Metrics sync worker scheduled in 1 minute...');
       } else {
         logger.warn(`Redis: Connection test failed - ${testResult.error}. Caching will be disabled until Redis is available`);
       }

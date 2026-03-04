@@ -6,7 +6,7 @@
  * Jobs:
  *   1. audit-worker - Processes audit log queue (continuous)
  * 
- * Note: sync-quotas runs automatically via app.js import (hourly setInterval)
+ * Note: sync-quotas is a standalone PM2 process (removed from app.js for CF Workers compat)
  * 
  * Usage:
  *   pm2 start ecosystem.config.cjs
@@ -74,6 +74,27 @@ module.exports = {
             env: {
                 NODE_ENV: 'production',
                 WEBHOOK_HEALTH_SERVER: 'false' // Let PM2 handle health checks via process status
+            },
+            log_date_format: 'YYYY-MM-DD HH:mm:ss',
+            min_uptime: '10s',
+            max_restarts: 10,
+            restart_delay: 4000
+        },
+        // ========================
+        // 🔄 QUOTA SYNC WORKER (Hourly)
+        // ========================
+        // Syncs Redis quota counters → Supabase profiles table
+        // Moved here from app.js for Cloudflare Workers compatibility
+        {
+            name: 'sync-quotas',
+            script: 'jobs/sync-quotas.js',
+            instances: 1,
+            exec_mode: 'fork',
+            autorestart: true,
+            watch: false,
+            max_memory_restart: '150M',
+            env: {
+                NODE_ENV: 'production'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',

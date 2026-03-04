@@ -60,7 +60,7 @@
     "@aws-sdk/client-s3": "^3.958.0",
     "@aws-sdk/s3-request-presigner": "^3.958.0",
     "@supabase/supabase-js": "^2.56.1",
-    "@upstash/redis": "^1.36.2",
+    "@upstash/redis": "^1.36.3",
     "@upstash/workflow": "^0.2.7",
     "bcryptjs": "^2.4.3",
     "bull": "^4.16.5",
@@ -71,6 +71,7 @@
     "dotenv": "^16.6.1",
     "express": "~4.16.1",
     "form-data": "^4.0.5",
+    "hono": "^4.12.5",
     "ioredis": "^5.8.2",
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.13.0",
@@ -94,6 +95,7 @@
     "prettier": "^3.0.0",
     "rollup": "^4.0.0",
     "tslib": "^2.6.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "wrangler": "^4.70.0"
   }
 }
