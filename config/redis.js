@@ -34,41 +34,38 @@ async function initRedisAsync() {
     ? process.env?.UPSTASH_REDIS_REST_TOKEN
     : globalThis.UPSTASH_REDIS_REST_TOKEN;
 
-  // ── Shared Upstash Redis path (works for BOTH CF Workers AND Node.js) ───
-  // Priority: Use Upstash if configured (shared between CF Worker and DO)
-  if (UPSTASH_REST_URL && UPSTASH_REST_TOKEN) {
+  // ── Cloudflare Workers path ──────────────────────────────────────────────
+  // CF Workers cannot use TCP, so Upstash HTTP is the ONLY option.
+  if (IS_CF_WORKER) {
+    if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
+      logger.warn('[Redis] UPSTASH_REDIS_REST_URL / TOKEN missing — Redis disabled for CF Worker.');
+      return null;
+    }
     try {
       const { Redis } = await import('@upstash/redis');
       const client = new Redis({ url: UPSTASH_REST_URL, token: UPSTASH_REST_TOKEN });
-      const envLabel = IS_CF_WORKER ? 'CF Workers' : 'Node.js (shared)';
-      logger.info(`[Redis] @upstash/redis HTTP client ready (${envLabel})`);
+      logger.info('[Redis] @upstash/redis HTTP client ready (CF Workers)');
       return client;
     } catch (err) {
       logger.error(`[Redis] Failed to init Upstash client: ${err.message}`);
-      // If Upstash fails and we're in CF Worker, we can't fall back to ioredis
-      if (IS_CF_WORKER) return null;
-      // In Node.js, we can fall back to ioredis below
+      return null;
     }
   }
 
-  // ── Cloudflare Workers path ──────────────────────────────────────────
-  if (IS_CF_WORKER) {
-    logger.warn('[Redis] UPSTASH_REDIS_REST_URL / TOKEN missing — Redis disabled for CF Worker.');
-    return null;
-  }
-
-  // ── Node.js path with REDIS_URL (DigitalOcean, local dev) ────────────
+  // ── Node.js path (DigitalOcean PM2 workers, local dev) ──────────────────
+  // IMPORTANT: Always use ioredis in Node.js — it supports ALL Redis commands
+  // (brpop, zrangebyscore, etc.) that the workers need.
+  // NEVER use Upstash HTTP client in Node.js even if Upstash env vars are set,
+  // because Upstash HTTP does NOT support blocking commands like BRPOP.
   if (!REDIS_URL) {
-    logger.warn('[Redis] REDIS_URL not set — Redis disabled.');
+    logger.warn('[Redis] REDIS_URL not set — Redis disabled for Node.js.');
     return null;
   }
 
   try {
-    // ioredis works in Node.js via TCP — use createRequire so 'require' is
-    // available inside the CJS module, avoiding 'require is not defined'.
-    const { createRequire } = await import('module');
-    const _require = createRequire(import.meta.url);
-    const { Redis } = _require('ioredis');
+    // Use dynamic import — ioredis 5.x ships ESM-compatible builds
+    const ioredisModule = await import('ioredis');
+    const Redis = ioredisModule.Redis ?? ioredisModule.default ?? ioredisModule;
     const client = new Redis(REDIS_URL, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: false,
