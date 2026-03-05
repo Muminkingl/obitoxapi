@@ -4,23 +4,29 @@
  * Works in both Node.js (loads .env.local from disk via dotenv)
  * and Cloudflare Workers (env vars come from Wrangler secrets — no filesystem).
  *
- * The fileURLToPath / dotenv block is skipped in CF Workers automatically
- * because there is no filesystem and import.meta.url is not a file: URL.
+ * FIX: Use createRequire to load dotenv from an ESM file. The previous
+ * `await import('dotenv')` could throw 'require is not defined' in some PM2
+ * / Node.js ESM contexts because dotenv's CJS internals call require.
+ * createRequire is the Node.js standard API that gives ESM modules access
+ * to a CJS require() function safely.
+ *
+ * Guard: `import.meta` exists in ESM (Node.js) but NOT in CF Workers where
+ * env vars come from Wrangler secrets instead.
  */
 
-// ── Load .env.local on Node.js only (dotenv is a no-op if file doesn't exist) ──
-// In CF Workers this block is silently skipped — process.env is populated
-// by Wrangler secrets instead.
 try {
-  if (typeof process !== 'undefined' && process.env) {
-    // import() is evaluated at runtime so CF Workers bundler won't crash on this
-    const dotenvModule = await import('dotenv');
-    const dotenv = dotenvModule.default ?? dotenvModule;
-    // Use relative path for simplicity — works when CWD is the project root
+  // import.meta.url is available in Node.js ESM but NOT in CF Workers
+  if (typeof process !== 'undefined' && process.env && import.meta?.url?.startsWith('file:')) {
+    // Built-in 'module' package is always available in Node.js
+    const { createRequire } = await import('module');
+    const _require = createRequire(import.meta.url);
+    const dotenv = _require('dotenv');
+    // Load .env.local first (Next.js convention), then .env as fallback
     dotenv.config({ path: '.env.local' });
+    dotenv.config({ path: '.env' });
   }
 } catch {
-  // CF Workers or dotenv not installed — env vars provided by Wrangler secrets
+  // CF Workers / Deno / dotenv not installed — env vars provided externally
 }
 
 // ── Core environment variables ─────────────────────────────────────────────────

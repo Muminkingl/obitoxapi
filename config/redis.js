@@ -13,13 +13,10 @@ import logger from '../utils/logger.js';
 // ─── Environment: Cloudflare Workers have no `process` ───────────────────────
 const IS_CF_WORKER = typeof process === 'undefined';
 
-const REDIS_URL = typeof process !== 'undefined' ? process.env?.REDIS_URL : undefined;
-const UPSTASH_REST_URL = typeof process !== 'undefined'
-  ? process.env?.UPSTASH_REDIS_REST_URL
-  : globalThis.UPSTASH_REDIS_REST_URL;
-const UPSTASH_REST_TOKEN = typeof process !== 'undefined'
-  ? process.env?.UPSTASH_REDIS_REST_TOKEN
-  : globalThis.UPSTASH_REDIS_REST_TOKEN;
+// FIX: Read env vars LAZILY inside initRedisAsync() instead of at module load
+// time. Module-level reads run before dotenv has had a chance to populate
+// process.env, so REDIS_URL was always undefined, causing Redis to be
+// disabled and the worker to crash with '❌ Redis not available'.
 
 // ─── Initialise the right client once at module load ─────────────────────────
 let redis = null;
@@ -28,6 +25,15 @@ let redis = null;
 let redisPromise = null;
 
 async function initRedisAsync() {
+  // ── Read env vars at call time (AFTER dotenv has loaded) ────────────────
+  const REDIS_URL = typeof process !== 'undefined' ? process.env?.REDIS_URL : undefined;
+  const UPSTASH_REST_URL = typeof process !== 'undefined'
+    ? process.env?.UPSTASH_REDIS_REST_URL
+    : globalThis.UPSTASH_REDIS_REST_URL;
+  const UPSTASH_REST_TOKEN = typeof process !== 'undefined'
+    ? process.env?.UPSTASH_REDIS_REST_TOKEN
+    : globalThis.UPSTASH_REDIS_REST_TOKEN;
+
   // ── Cloudflare Workers path ──────────────────────────────────────────
   if (IS_CF_WORKER) {
     if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
@@ -35,14 +41,14 @@ async function initRedisAsync() {
       return null;
     }
     try {
-      // @upstash/redis is a pure-HTTP client — works in CF Workers
-      // We can use dynamic import here too
       const { Redis } = await import('@upstash/redis');
       const client = new Redis({ url: UPSTASH_REST_URL, token: UPSTASH_REST_TOKEN });
       logger.info('[Redis] @upstash/redis HTTP client ready (CF Workers)');
       return client;
     } catch (err) {
-      logger.error('[Redis] Failed to init Upstash client:', { message: err.message });
+      // FIX: log the full message directly instead of spreading into meta
+      // (spreading { message: err.message } overwrites the prefix in JSON logs)
+      logger.error(`[Redis] Failed to init Upstash client: ${err.message}`);
       return null;
     }
   }
@@ -54,9 +60,11 @@ async function initRedisAsync() {
   }
 
   try {
-    // ioredis works perfectly in Node.js via TCP
-    // Dynamic import works in ESM
-    const { Redis } = await import('ioredis');
+    // ioredis works in Node.js via TCP — use createRequire so 'require' is
+    // available inside the CJS module, avoiding 'require is not defined'.
+    const { createRequire } = await import('module');
+    const _require = createRequire(import.meta.url);
+    const { Redis } = _require('ioredis');
     const client = new Redis(REDIS_URL, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: false,
@@ -103,7 +111,7 @@ async function initRedisAsync() {
     logger.info('[Redis] ioredis TCP client ready (Node.js)');
     return client;
   } catch (err) {
-    logger.error('[Redis] Failed to init ioredis client:', { message: err.message });
+    logger.error(`[Redis] Failed to init ioredis client: ${err.message}`);
     return null;
   }
 }

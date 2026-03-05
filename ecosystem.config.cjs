@@ -19,22 +19,20 @@ module.exports = {
         // ========================
         // 🔥 AUDIT WORKER (Continuous)
         // ========================
-        // Processes audit log queue from Redis → Supabase
-        // Scale workers based on load (4-8 for 10K req/min)
         {
             name: 'audit-worker',
             script: 'jobs/audit-worker.js',
             instances: 1,
-            exec_mode: 'fork', // Fork mode for reliable log capture
+            exec_mode: 'fork',
             autorestart: true,
             watch: false,
             max_memory_restart: '500M',
-            // FIX: Load .env.local so REDIS_URL, SUPABASE keys etc. are available.
-            // Without this PM2 starts workers with no env vars → Redis returns null
-            // → "require is not defined" crash from ioredis environment detection.
-            env_file: '.env.local',
+            // FIX: --require dotenv/config pre-loads .env.local BEFORE any ESM
+            // module graph evaluates. env_file is not reliable across PM2 versions.
+            node_args: '--require dotenv/config',
             env: {
-                NODE_ENV: 'production'
+                NODE_ENV: 'production',
+                DOTENV_CONFIG_PATH: '.env.local'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
@@ -45,19 +43,18 @@ module.exports = {
         // ========================
         // 🚀 METRICS WORKER (Interval)
         // ========================
-        // Syncs Redis metrics to DB every 5 seconds
-        // Very low CPU - single instance is enough
         {
             name: 'metrics-worker',
             script: 'jobs/metrics-worker.js',
             instances: 1,
-            exec_mode: 'fork', // Single instance is fine
+            exec_mode: 'fork',
             autorestart: true,
             watch: false,
             max_memory_restart: '200M',
-            env_file: '.env.local',
+            node_args: '--require dotenv/config',
             env: {
-                NODE_ENV: 'production'
+                NODE_ENV: 'production',
+                DOTENV_CONFIG_PATH: '.env.local'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
@@ -68,20 +65,19 @@ module.exports = {
         // ========================
         // 🎣 WEBHOOK WORKER (Continuous)
         // ========================
-        // Processes outgoing webhooks from Redis queue
-        // Scale based on webhook volume
         {
             name: 'webhook-worker',
             script: 'jobs/webhook-worker.js',
             instances: 1,
-            exec_mode: 'fork', // Fork mode for reliable log capture (only 1 instance needed)
+            exec_mode: 'fork',
             autorestart: true,
             watch: false,
             max_memory_restart: '300M',
-            env_file: '.env.local',
+            node_args: '--require dotenv/config',
             env: {
                 NODE_ENV: 'production',
-                WEBHOOK_HEALTH_SERVER: 'false' // Let PM2 handle health checks via process status
+                DOTENV_CONFIG_PATH: '.env.local',
+                WEBHOOK_HEALTH_SERVER: 'false'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
@@ -92,8 +88,6 @@ module.exports = {
         // ========================
         // 🔄 QUOTA SYNC WORKER (Hourly)
         // ========================
-        // Syncs Redis quota counters → Supabase profiles table
-        // Moved here from app.js for Cloudflare Workers compatibility
         {
             name: 'sync-quotas',
             script: 'jobs/sync-quotas.js',
@@ -102,9 +96,10 @@ module.exports = {
             autorestart: true,
             watch: false,
             max_memory_restart: '150M',
-            env_file: '.env.local',
+            node_args: '--require dotenv/config',
             env: {
-                NODE_ENV: 'production'
+                NODE_ENV: 'production',
+                DOTENV_CONFIG_PATH: '.env.local'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
