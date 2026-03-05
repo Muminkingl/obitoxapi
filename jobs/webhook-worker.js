@@ -12,7 +12,7 @@
 // we process.exit(1) anyway, same outcome as a top-level import failure.
 import http from 'http';
 import logger from '../utils/logger.js';
-import { getRedis } from '../config/redis.js';
+import { getRedisAsync } from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { dequeueWebhooks, getQueueStats } from '../services/webhook/queue-manager.js';
 import { processWebhookBatch, retryDeadLetters } from '../services/webhook/processor.js';
@@ -345,7 +345,7 @@ export async function healthCheck(options = {}) {
 
     try {
         if (checkRedis) {
-            const redis = getRedis();
+            const redis = await getRedisAsync();
             if (redis?.status === 'ready') {
                 await redis.ping();
                 health.checks.redis = { status: 'healthy' };

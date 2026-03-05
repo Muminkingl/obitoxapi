@@ -24,7 +24,10 @@ const UPSTASH_REST_TOKEN = typeof process !== 'undefined'
 // ─── Initialise the right client once at module load ─────────────────────────
 let redis = null;
 
-function initRedis() {
+// Initialise lazily to support async dynamic imports
+let redisPromise = null;
+
+async function initRedisAsync() {
   // ── Cloudflare Workers path ──────────────────────────────────────────
   if (IS_CF_WORKER) {
     if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
@@ -33,7 +36,8 @@ function initRedis() {
     }
     try {
       // @upstash/redis is a pure-HTTP client — works in CF Workers
-      const { Redis } = require('@upstash/redis'); // bundler resolves this
+      // We can use dynamic import here too
+      const { Redis } = await import('@upstash/redis');
       const client = new Redis({ url: UPSTASH_REST_URL, token: UPSTASH_REST_TOKEN });
       logger.info('[Redis] @upstash/redis HTTP client ready (CF Workers)');
       return client;
@@ -51,7 +55,8 @@ function initRedis() {
 
   try {
     // ioredis works perfectly in Node.js via TCP
-    const { Redis } = ioredisModule();
+    // Dynamic import works in ESM
+    const { Redis } = await import('ioredis');
     const client = new Redis(REDIS_URL, {
       maxRetriesPerRequest: 3,
       enableReadyCheck: false,
@@ -103,26 +108,26 @@ function initRedis() {
   }
 }
 
-// Resolve ioredis only in Node.js environments to avoid CF Workers bundling it
-function ioredisModule() {
-  // eslint-disable-next-line
-  return require('ioredis');
-}
-
-// Initialise once
-redis = initRedis();
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/** Returns the Redis client (ioredis or @upstash/redis) or null */
+/** Returns the Redis client (ioredis or @upstash/redis) or null asynchronously */
+export const getRedisAsync = async () => {
+  if (redis) return redis;
+  if (!redisPromise) redisPromise = initRedisAsync();
+  redis = await redisPromise;
+  return redis;
+};
+
+/** Synchronous getter for legacy code (might return null if not initialized yet) */
 export const getRedis = () => redis;
 
 /** Pings Redis and returns latency info */
 export const testRedisConnection = async () => {
-  if (!redis) return { success: false, error: 'Redis not configured' };
+  const client = await getRedisAsync();
+  if (!client) return { success: false, error: 'Redis not configured' };
   try {
     const start = Date.now();
-    const result = await redis.ping();
+    const result = await client.ping();
     const latency = Date.now() - start;
     return result === 'PONG'
       ? { success: true, latency }

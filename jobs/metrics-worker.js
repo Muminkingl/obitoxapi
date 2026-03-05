@@ -19,7 +19,7 @@
  *   - Per-window stats (reset every 5 min) alongside lifetime totals
  */
 
-import { getRedis } from '../config/redis.js';
+import { getRedisAsync } from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import {
     getPendingMetrics,
@@ -96,7 +96,7 @@ async function syncConsolidatedMetrics() {
     const successfulKeys = [];
 
     // Pipeline all Redis reads — 1 round-trip instead of N sequential awaits
-    const redis = getRedis();
+    const redis = await getRedisAsync();
     const readPipeline = redis.pipeline();
     for (const key of redisKeys) readPipeline.hgetall(key);
     const rawResults = await readPipeline.exec();
@@ -289,7 +289,7 @@ async function syncConsolidatedMetrics() {
     // If any write failed, keep ALL keys in Redis so nothing is lost.
     // Next cycle will re-read and retry the full set.
     if (!writesFailed && successfulKeys.length > 0) {
-        const redis = getRedis();
+        const redis = await getRedisAsync();
         const pipeline = redis.pipeline();
         for (const key of successfulKeys) {
             pipeline.del(key);

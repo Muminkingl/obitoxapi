@@ -22,7 +22,7 @@
 
 import logger from '../utils/logger.js';
 import { supabaseAdmin } from '../config/supabase.js';
-import { getRedis } from '../config/redis.js';
+import { getRedisAsync } from '../config/redis.js';
 
 // FIX: Include hostname for uniqueness across containers/pods
 const WORKER_ID = `worker_${process.env.HOSTNAME || 'local'}_${process.pid}`;
@@ -70,7 +70,7 @@ function getAdaptiveBatchSize(queueLength) {
  * Main worker loop
  */
 async function startAuditWorker() {
-    const redis = getRedis();
+    const redis = await getRedisAsync();
 
     if (!redis) {
         logger.error('❌ Redis not available. Worker cannot start.');

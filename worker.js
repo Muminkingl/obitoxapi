@@ -87,6 +87,14 @@ app.use('*', cors({
     maxAge: 86400,
 }));
 
+// Polyfill process.env for Cloudflare Workers
+app.use('*', async (c, next) => {
+    // Cloudflare passes env bindings in c.env
+    globalThis.process = globalThis.process || {};
+    globalThis.process.env = { ...globalThis.process.env, ...c.env };
+    await next();
+});
+
 // =============================================================================
 // ADAPT — converts Hono context → Express-compatible req / res / next
 // =============================================================================
@@ -102,7 +110,7 @@ function chain(...handlers) {
         let body = {};
         try {
             const ct = c.req.header('content-type') || '';
-            if (['POST', 'PUT', 'PATCH'].includes(method) && ct.includes('application/json')) {
+            if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && ct.includes('application/json')) {
                 body = await c.req.json();
             }
         } catch { /* empty body or non-JSON */ }
@@ -111,11 +119,13 @@ function chain(...handlers) {
         const url = new URL(c.req.url);
         const req = {
             method,
-            url: c.req.url,
+            url: url.pathname + url.search,
+            originalUrl: url.pathname + url.search,
             headers: new Proxy({}, {
                 get: (_, key) => c.req.header(typeof key === 'string' ? key.toLowerCase() : key),
                 has: (_, key) => c.req.header(typeof key === 'string' ? key.toLowerCase() : key) !== undefined,
             }),
+            ip: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0] || '127.0.0.1',
             body,
             params: c.req.param(),
             query: Object.fromEntries(url.searchParams),

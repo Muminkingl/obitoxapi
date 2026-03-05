@@ -190,7 +190,7 @@ export async function signatureValidator(req, res, next) {
         // ── SUCCESS ──────────────────────────────────────────────────────────
 
         logger.debug(`[${requestId}] Signature validated in ${Date.now() - startTime}ms`);
-        next();
+        return next();
 
     } catch (error) {
         logger.error(`[${requestId}] Unexpected error after ${Date.now() - startTime}ms:`, error.message);

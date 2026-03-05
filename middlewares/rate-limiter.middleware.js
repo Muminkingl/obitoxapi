@@ -15,7 +15,7 @@
  * - Rate limited: 15-20ms
  */
 
-import redis from '../config/redis.js';
+import { getRedisAsync } from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { logAudit, logCriticalAudit } from '../utils/audit-logger.js';
 import { checkQuota } from '../utils/quota-manager.js';
@@ -57,6 +57,9 @@ const CONFIG = {
 async function trackViolationAndCheckBan(identifier, userId, requestId) {
     const violationsKey = `violations:${identifier}`;
     const banKey = `ban:${identifier}`;
+
+    const redis = await getRedisAsync();
+    if (!redis) return { isBanned: false, violationCount: 1 };
 
     // FIX #2: pipeline 3 calls → 1 round-trip
     const violPipeline = redis.pipeline();
@@ -249,13 +252,16 @@ async function savePermanentBan(identifier, userId, violationCount, requestId) {
 
         if (!error) {
             const permBanKey = `perm_ban:${identifier}`;
-            await redis.set(permBanKey, JSON.stringify({
-                level: 'PERMANENT',
-                reason: `Rate limit exceeded ${violationCount} times`,
-                userId,
-                bannedAt: new Date().toISOString(),
-                violationCount
-            }));
+            const redis = await getRedisAsync();
+            if (redis) {
+                await redis.set(permBanKey, JSON.stringify({
+                    level: 'PERMANENT',
+                    reason: `Rate limit exceeded ${violationCount} times`,
+                    userId,
+                    bannedAt: new Date().toISOString(),
+                    violationCount
+                }));
+            }
 
             logCriticalAudit({
                 user_id: userId,
@@ -293,7 +299,12 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
 
     try {
         const apiKey = req.headers['x-api-key'];
-        const ip = req.ip || req.connection.remoteAddress;
+        // Fallback robust IP matching for CF Workers
+        const ip = req.ip ||
+            req.headers['cf-connecting-ip'] ||
+            req.headers['x-forwarded-for']?.split(',')[0] ||
+            req.connection?.remoteAddress ||
+            'unknown';
         const identifier = apiKey || ip;
 
         if (!identifier) {
@@ -322,6 +333,8 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         }
 
         // Build the MEGA-PIPELINE
+        const redis = await getRedisAsync();
+        if (!redis) return next();
         const megaPipeline = redis.pipeline();
 
         // Only fetch userId from Redis if not available from middleware
@@ -599,12 +612,12 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         // Cleanup old requests (non-blocking)
         redis.zremrangebyscore(requestsKey, 0, windowStart).catch(() => { });
 
-        next();
+        return next();
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
         logger.error(`[${requestId}] Error (${totalTime}ms):`, error.message);
-        next(); // Fail open
+        return next(); // Fail open
     }
 }
 

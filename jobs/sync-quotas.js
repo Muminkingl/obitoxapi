@@ -20,7 +20,7 @@
  *   - getStats() exported for health check / metrics endpoints
  */
 
-import { getRedis } from '../config/redis.js';
+import { getRedisAsync } from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { getMonthKey } from '../utils/quota-manager.js';
 import logger from '../utils/logger.js';
@@ -94,7 +94,7 @@ export async function syncQuotasToDatabase() {
 
     // FIX: getRedis() at call time — consistent with all other workers,
     // avoids undefined client if Redis wasn't ready at import time
-    const redis = getRedis();
+    const redis = await getRedisAsync();
     if (!redis) {
         logger.error('[QUOTA SYNC] Redis not available, skipping sync');
         isRunning = false;

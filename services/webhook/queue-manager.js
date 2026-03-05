@@ -7,7 +7,7 @@
  * - Queue length monitoring
  */
 
-import { getRedis } from '../../config/redis.js';
+import { getRedisAsync } from '../../config/redis.js';
 import logger from '../../utils/logger.js';
 
 const WEBHOOK_QUEUE_KEY = 'webhook:queue';
@@ -63,7 +63,7 @@ export async function enqueueWebhook(webhookId, payload, priority = 0) {
  * @returns {Promise<Array>} Array of webhook queue items
  */
 export async function dequeueWebhooks(batchSize = 100) {
-    const redis = getRedis();
+    const redis = await getRedisAsync();
 
     if (!redis) {
         logger.warn('[Webhook Queue] Redis not available');
@@ -134,7 +134,7 @@ export async function dequeueWebhooks(batchSize = 100) {
  * @returns {Promise<number>} Total number of webhooks in queue
  */
 export async function getQueueLength() {
-    const redis = getRedis();
+    const redis = await getRedisAsync();
 
     if (!redis) return 0;
 
@@ -159,7 +159,7 @@ export async function getQueueLength() {
  * @returns {Promise<Object>} Queue stats
  */
 export async function getQueueStats() {
-    const redis = getRedis();
+    const redis = await getRedisAsync();
 
     if (!redis) {
         return { total: 0, normal: 0, priority: 0 };
@@ -195,7 +195,7 @@ export async function getQueueStats() {
  * @returns {Promise<boolean>} True if re-queued successfully
  */
 export async function requeueWebhook(webhookId, payload, delayMs = 5000) {
-    const redis = getRedis();
+    const redis = await getRedisAsync();
 
     if (!redis) {
         logger.error('[Webhook Queue] Redis not available');
@@ -233,7 +233,7 @@ export async function requeueWebhook(webhookId, payload, delayMs = 5000) {
  * @returns {Promise<boolean>} True if removed successfully
  */
 export async function removeWebhook(webhookId) {
-    const redis = getRedis();
+    const redis = await getRedisAsync();
 
     if (!redis) return false;
 
@@ -276,7 +276,7 @@ export async function removeWebhook(webhookId) {
  * @returns {Promise<boolean>} True if cleared successfully
  */
 export async function clearQueue() {
-    const redis = getRedis();
+    const redis = await getRedisAsync();
 
     if (!redis) return false;
 

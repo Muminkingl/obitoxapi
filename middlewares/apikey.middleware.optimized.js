@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '../database/supabase.js';
-import { getRedis } from '../config/redis.js';
+import { getRedis, getRedisAsync } from '../config/redis.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -115,8 +115,8 @@ const getApiKeyData = async (apiKey, redis) => {
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 const validateApiKey = async (req, res, next) => {
-  // FIX #5: getRedis() called exactly once per request
-  const redis = getRedis();
+  // FIX #5: getRedisAsync() called exactly once per request
+  const redis = await getRedisAsync();
 
   try {
     const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
@@ -187,10 +187,10 @@ const validateApiKey = async (req, res, next) => {
     req.secretHash = apiKeyData.secret_hash;   // avoids extra DB call in signature validator
     req.rateLimitIdentifier = apiKeyData.user_id;       // consistent ID for all rate-limit middlewares
 
-    next();
+    return next();
   } catch (error) {
     logger.error('API key validation error:', error.message);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Internal server error during API key validation',
       error: 'VALIDATION_ERROR',
@@ -204,7 +204,7 @@ const validateApiKey = async (req, res, next) => {
 export const invalidateApiKeyCache = async (apiKey) => {
   const cacheKey = `${CACHE_KEY_PREFIX}${apiKey}`;
   LOCAL_CACHE.delete(cacheKey);
-  const redis = getRedis();
+  const redis = await getRedisAsync();
   if (!redis) return;
   try {
     await redis.del(cacheKey);

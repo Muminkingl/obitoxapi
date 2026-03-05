@@ -19,7 +19,7 @@
  *   uid            — user ID (set once via HSETNX)
  */
 
-import { getRedis } from '../../../config/redis.js';
+import { getRedisAsync } from '../../../config/redis.js';
 import logger from '../../../utils/logger.js';
 
 const METRICS_TTL = 60 * 60 * 24 * 7; // 7 days
@@ -64,8 +64,8 @@ function mergeInto(dest, src) {
 async function flushMetricBuffer() {
   if (metricBuffer.size === 0) return;
 
-  const redis = getRedis();
-  if (!redis || redis.status !== 'ready') return; // retry next tick
+  const redis = await getRedisAsync();
+  if (!redis) return;
 
   // Swap buffer: hand off current buffer, new requests write to fresh Map
   const toFlush = metricBuffer;
