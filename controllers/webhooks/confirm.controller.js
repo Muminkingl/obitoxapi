@@ -7,7 +7,7 @@
  */
 
 import { supabaseAdmin } from '../../config/supabase.js';
-import { getRedis } from '../../config/redis.js';
+import { getRedisAsync } from '../../config/redis.js';
 import { enqueueWebhook } from '../../services/webhook/queue-manager.js';
 import { generateWebhookId, generateWebhookSecret, isValidWebhookUrl } from '../../utils/webhook/signature.js';
 
@@ -108,10 +108,10 @@ export async function confirmUploadWebhook(req, res) {
         }
 
         // ✅ ADDED: Idempotency check - prevent double-confirm
-        const redis = getRedis();
+        const redis = await getRedisAsync();
         const idempotencyKey = `${IDEMPOTENCY_PREFIX}${webhookId}`;
-        
-        if (redis?.status === 'ready') {
+
+        if (redis) {
             // Try to acquire lock with SETNX
             const acquired = await redis.set(idempotencyKey, '1', 'EX', IDEMPOTENCY_TTL, 'NX');
             if (!acquired) {

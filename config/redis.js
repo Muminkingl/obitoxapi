@@ -34,26 +34,30 @@ async function initRedisAsync() {
     ? process.env?.UPSTASH_REDIS_REST_TOKEN
     : globalThis.UPSTASH_REDIS_REST_TOKEN;
 
-  // ── Cloudflare Workers path ──────────────────────────────────────────
-  if (IS_CF_WORKER) {
-    if (!UPSTASH_REST_URL || !UPSTASH_REST_TOKEN) {
-      logger.warn('[Redis] UPSTASH_REDIS_REST_URL / TOKEN missing — Redis disabled for CF Worker.');
-      return null;
-    }
+  // ── Shared Upstash Redis path (works for BOTH CF Workers AND Node.js) ───
+  // Priority: Use Upstash if configured (shared between CF Worker and DO)
+  if (UPSTASH_REST_URL && UPSTASH_REST_TOKEN) {
     try {
       const { Redis } = await import('@upstash/redis');
       const client = new Redis({ url: UPSTASH_REST_URL, token: UPSTASH_REST_TOKEN });
-      logger.info('[Redis] @upstash/redis HTTP client ready (CF Workers)');
+      const envLabel = IS_CF_WORKER ? 'CF Workers' : 'Node.js (shared)';
+      logger.info(`[Redis] @upstash/redis HTTP client ready (${envLabel})`);
       return client;
     } catch (err) {
-      // FIX: log the full message directly instead of spreading into meta
-      // (spreading { message: err.message } overwrites the prefix in JSON logs)
       logger.error(`[Redis] Failed to init Upstash client: ${err.message}`);
-      return null;
+      // If Upstash fails and we're in CF Worker, we can't fall back to ioredis
+      if (IS_CF_WORKER) return null;
+      // In Node.js, we can fall back to ioredis below
     }
   }
 
-  // ── Node.js path (DigitalOcean, local dev) ───────────────────────────
+  // ── Cloudflare Workers path ──────────────────────────────────────────
+  if (IS_CF_WORKER) {
+    logger.warn('[Redis] UPSTASH_REDIS_REST_URL / TOKEN missing — Redis disabled for CF Worker.');
+    return null;
+  }
+
+  // ── Node.js path with REDIS_URL (DigitalOcean, local dev) ────────────
   if (!REDIS_URL) {
     logger.warn('[Redis] REDIS_URL not set — Redis disabled.');
     return null;
