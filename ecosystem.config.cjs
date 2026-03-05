@@ -29,13 +29,18 @@ module.exports = {
             autorestart: true,
             watch: false,
             max_memory_restart: '500M',
+            // FIX: Load .env.local so REDIS_URL, SUPABASE keys etc. are available.
+            // Without this PM2 starts workers with no env vars → Redis returns null
+            // → "require is not defined" crash from ioredis environment detection.
+            env_file: '.env.local',
             env: {
                 NODE_ENV: 'production'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
             max_restarts: 10,
-            restart_delay: 4000
+            restart_delay: 4000,
+            kill_timeout: 5000
         },
         // ========================
         // 🚀 METRICS WORKER (Interval)
@@ -50,13 +55,15 @@ module.exports = {
             autorestart: true,
             watch: false,
             max_memory_restart: '200M',
+            env_file: '.env.local',
             env: {
                 NODE_ENV: 'production'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
             max_restarts: 10,
-            restart_delay: 4000
+            restart_delay: 4000,
+            kill_timeout: 5000
         },
         // ========================
         // 🎣 WEBHOOK WORKER (Continuous)
@@ -71,6 +78,7 @@ module.exports = {
             autorestart: true,
             watch: false,
             max_memory_restart: '300M',
+            env_file: '.env.local',
             env: {
                 NODE_ENV: 'production',
                 WEBHOOK_HEALTH_SERVER: 'false' // Let PM2 handle health checks via process status
@@ -78,7 +86,8 @@ module.exports = {
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
             max_restarts: 10,
-            restart_delay: 4000
+            restart_delay: 4000,
+            kill_timeout: 5000
         },
         // ========================
         // 🔄 QUOTA SYNC WORKER (Hourly)
@@ -93,13 +102,15 @@ module.exports = {
             autorestart: true,
             watch: false,
             max_memory_restart: '150M',
+            env_file: '.env.local',
             env: {
                 NODE_ENV: 'production'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',
             max_restarts: 10,
-            restart_delay: 4000
+            restart_delay: 4000,
+            kill_timeout: 5000
         },
     ]
 };

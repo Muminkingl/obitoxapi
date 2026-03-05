@@ -23,7 +23,9 @@ const WEBHOOK_PRIORITY_KEY = 'webhook:priority';
  * @returns {Promise<boolean>} True if enqueued successfully
  */
 export async function enqueueWebhook(webhookId, payload, priority = 0) {
-    const redis = getRedis();
+    // FIX: was getRedis() (sync) which returns null before Redis is initialized.
+    // Always use getRedisAsync() so the connection is awaited properly.
+    const redis = await getRedisAsync();
 
     if (!redis) {
         logger.error('[Webhook Queue] Redis not available');
