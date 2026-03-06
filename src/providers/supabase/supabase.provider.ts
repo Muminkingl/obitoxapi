@@ -278,7 +278,7 @@ export class SupabaseProvider extends BaseProvider<
 
         try {
             // Call ObitoX API to get download URL (for private buckets)
-            const response = await this.makeRequest<{ downloadUrl: string }>('/api/v1/upload/supabase/download', {
+            const response = await this.makeRequest<{ success: boolean; data: { downloadUrl: string } }>('/api/v1/upload/supabase/download', {
                 method: 'POST',
                 body: JSON.stringify({
                     filename: mergedOptions.filename,
@@ -291,7 +291,7 @@ export class SupabaseProvider extends BaseProvider<
                 }),
             });
 
-            return response.downloadUrl;
+            return response.data.downloadUrl;
 
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
