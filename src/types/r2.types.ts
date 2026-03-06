@@ -239,13 +239,16 @@ export interface R2BatchUploadOptions extends Omit<R2UploadOptions, 'provider' |
      * Maximum: 100 files per batch
      */
     files: Array<{
+        /** File object (File, Blob, Buffer) */
+        file: any;
+
         /** Filename for each file */
         filename: string;
 
-        /** MIME type for each file */
-        contentType: string;
+        /** MIME type for each file (optional, auto-detected if available) */
+        contentType?: string;
 
-        /** File size in bytes (optional) */
+        /** File size in bytes (optional, auto-detected if available) */
         fileSize?: number;
     }>;
 

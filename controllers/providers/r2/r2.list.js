@@ -6,6 +6,7 @@
  */
 
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getR2Client, formatR2Error } from './r2.config.js';
 import logger from '../../../utils/logger.js';
 
@@ -78,7 +79,7 @@ export const listR2Files = async (req, res) => {
         // Get S3Client
         const s3Client = getR2Client(r2AccountId, r2AccessKey, r2SecretKey);
 
-        // List objects
+        // List objects via fetch to avoid DOMParser crash in CF Workers
         const command = new ListObjectsV2Command({
             Bucket: r2Bucket,
             Prefix: prefix,
@@ -86,7 +87,33 @@ export const listR2Files = async (req, res) => {
             ContinuationToken: continuationToken
         });
 
-        const response = await s3Client.send(command);
+        // Use presigned URL + manual fetch to handle the XML manually
+        const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+        const listResponse = await fetch(signedUrl);
+
+        if (!listResponse.ok) {
+            throw new Error(`R2 HTTP ${listResponse.status}: ${await listResponse.text()}`);
+        }
+
+        const xmlText = await listResponse.text();
+
+        // Very lightweight Regex-based XML parsing (CF edge compatible)
+        const files = [];
+        const contentsRegex = /<Contents>[\s\S]*?<\/Contents>/g;
+        let match;
+        while ((match = contentsRegex.exec(xmlText)) !== null) {
+            const item = match[0];
+            const key = item.match(/<Key>(.*?)<\/Key>/)?.[1] || '';
+            const size = parseInt(item.match(/<Size>(.*?)<\/Size>/)?.[1] || '0', 10);
+            const lastModified = new Date(item.match(/<LastModified>(.*?)<\/LastModified>/)?.[1] || new Date().toISOString());
+            const etag = item.match(/<ETag>(.*?)<\/ETag>/)?.[1]?.replace(/"/g, '') || '';
+
+            if (key) files.push({ key, size, lastModified, etag });
+        }
+
+        const isTruncated = xmlText.includes('<IsTruncated>true</IsTruncated>');
+        const nextContinuationTokenMatch = xmlText.match(/<NextContinuationToken>(.*?)<\/NextContinuationToken>/);
+        const nextContinuationToken = nextContinuationTokenMatch ? nextContinuationTokenMatch[1] : null;
 
         const totalTime = Date.now() - startTime;
 
@@ -100,15 +127,10 @@ export const listR2Files = async (req, res) => {
             data: {
                 bucket: r2Bucket,
                 prefix,
-                files: response.Contents?.map(file => ({
-                    key: file.Key,
-                    size: file.Size,
-                    lastModified: file.LastModified,
-                    etag: file.ETag
-                })) || [],
-                count: response.KeyCount || 0,
-                isTruncated: response.IsTruncated || false,
-                nextContinuationToken: response.NextContinuationToken || null
+                files: files,
+                count: files.length,
+                isTruncated,
+                nextContinuationToken
             },
             performance: {
                 totalTime: `${totalTime}ms`

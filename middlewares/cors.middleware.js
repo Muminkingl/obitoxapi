@@ -637,7 +637,8 @@ export async function getR2BucketCORS(r2AccessKey, r2SecretKey, r2Bucket, r2Acco
         const result = await r2.send(new GetBucketCorsCommand({ Bucket: r2Bucket }));
         return result.CORSRules || [];
     } catch (error) {
-        if (error.name === 'NoSuchCORSConfiguration') {
+        // Cloudflare Workers missing DOMParser in AWS SDK v3 XML deserializer
+        if (error.message?.includes('DOMParser is not defined') || error.name === 'NoSuchCORSConfiguration') {
             return null;
         }
         throw error;

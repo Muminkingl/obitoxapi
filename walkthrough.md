@@ -1,100 +1,128 @@
-### Supabase 
+### R2 
 
-Setup 
-// app/lib/obitox.ts
+
+
+Credints `
+const R2_ACCESS_KEY = '8105c2c257b314edbc01fa0667cac2da';
+const R2_SECRET_KEY = '23b01e76dde5d81b913a36473676c077149bacf79049f0ba894ca7db08858e31';
+const R2_ACCOUNT_ID = 'b0cab7bc004505800b231cb8f9a793f4';
+const R2_BUCKET = 'test';
+
+`
+
+
+
+Setup ;
 import ObitoX from '@obitox/upload';
 
 const client = new ObitoX({
-  apiKey: process.env.OBITOX_API_KEY!,
-  apiSecret: process.env.OBITOX_API_SECRET!
+  apiKey: process.env.OBITOX_API_KEY,
+  apiSecret: process.env.OBITOX_API_SECRET
 });
 
-export const supabase = client.supabase({
-  url: process.env.SUPABASE_URL!,
-  token: process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  bucket: 'avatars'
+const r2 = client.r2({
+  accessKey: process.env.R2_ACCESS_KEY,
+  secretKey: process.env.R2_SECRET_KEY,
+  accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+  bucket: 'my-bucket'
 });
 
 
-public bucket upliad 
-// app/api/upload/route.ts
-import { supabase } from '@/lib/obitox';
-import { NextRequest, NextResponse } from 'next/server';
+Basic upload ;
+const fileUrl = await r2.upload(fileBuffer, {
+  filename: 'document.pdf',
+  contentType: 'application/pdf'
+});
+console.log(fileUrl);
 
-export async function POST(request: NextRequest) {
-  const formData = await request.formData();
-  const file = formData.get('file') as File;
 
-  const fileUrl = await supabase.upload(file, {
-    filename: file.name
-  });
 
-  return NextResponse.json({ url: fileUrl });
-}
-
-progress tracki;
-// Client-side progress via XHR or fetch stream
-const fileUrl = await supabase.upload(file, {
-  filename: file.name,
-  onProgress: (percent) => console.log(`${percent}%`)
+prgress tracong ;
+const url = await r2.upload(stream, {
+  filename: 'video.mp4',
+  onProgress: (p, uploaded, total) => {
+    console.log(`${p}% - ${uploaded}/${total}`);
+  }
 });
 
-private bucket upload ; 
-// Server action or API route
-const privateBucket = client.supabase({
-  url: process.env.SUPABASE_URL!,
-  token: process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  bucket: 'private-docs'
+
+
+smart expire ; 
+Network-aware signed URL expiration
+
+Automatically adjusts signed URL expiry based on connection speed to ensure uploads complete even on slow networks.
+
+const url = await r2.upload(file, {
+  filename: 'temp.zip',
+  networkInfo: { type: '3g', downlink: 1.5, rtt: 300 }
 });
 
-const signedUrl = await privateBucket.upload(file, {
-  filename: 'contract.pdf'
-});
 
-file validation; 
-
-const url = await supabase.upload(file, {
-  filename: 'photo.jpg',
+file validation ; 
+const url = await r2.upload(file, {
+  filename: 'img.jpg',
   validation: 'images'
 });
 
 
-delete file ; 
-await supabase.delete({
-  fileUrl: 'https://...supabase.co/storage/v1/object/public/avatars/photo.jpg'
+
+batch upload ;
+
+const result = await r2.batchUpload({
+  files: [
+    { buffer: buf1, filename: '1.jpg' },
+    { buffer: buf2, filename: '2.jpg' }
+  ]
 });
-
-download url ; 
-const { downloadUrl } = await supabase.download({
-  filename: 'photo.jpg',
-  expiresIn: 60 // 1 minute
-});
+console.log(result.summary);
 
 
-
-list bucket ; 
-const buckets = await supabase.listBuckets();
-return NextResponse.json(buckets); 
-
-webhook auto trigger ; const url = await supabase.upload(file, {
-  filename: 'report.jpg',
-  webhook: {
-    url: 'https://myapp.com/webhooks/upload',
-    trigger: 'auto',
-    metadata: { userId: '123' }
-  }
+Accesse token jwt ;
+const { token } = await r2.generateAccessToken({
+  bucket: 'my-bucket',
+  permissions: ['read', 'write'],
+  expiresIn: 3600
 });
 
 
-manual trigger ;
-const url = await supabase.upload(file, {
-  filename: 'invoice.jpg',
-  webhook: {
-    url: 'https://myapp.com/webhooks/upload',
-    secret: 's_123',
-    trigger: 'manual',
-    autoConfirm: false,
-    metadata: { userId: '123' }
-  }
+download url ; const { downloadUrl } = await r2.getSignedDownloadUrl({
+  fileKey: 'private.pdf',
+  expiresIn: 60
 });
+
+list files ; 
+const { files } = await r2.list({
+  prefix: 'photos/',
+  limit: 100
+});
+
+delete files; 
+await r2.delete({
+  fileUrl: 'https://...'
+});
+
+Auto cors configration ; await r2.configureCors({
+  origins: ['https://example.com'],
+  allowedMethods: ['GET']
+});
+
+
+
+
+
+check cors conf ; 
+const result = await r2.verifyCors();
+if (result.isValid) console.log('CORS OK');
+
+
+auto trigger webhook ; const url = await r2.upload(file, {
+  webhook: { url: '...', trigger: 'auto' }
+});
+
+
+manual trigger ; 
+const url = await r2.upload(file, {
+  webhook: { url: '...', trigger: 'manual' }
+});
+
 

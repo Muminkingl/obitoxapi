@@ -411,11 +411,16 @@ export class R2Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        files: files.map((f) => ({
-                            filename: f.filename,
-                            contentType: f.contentType,
-                            fileSize: f.fileSize
-                        })),
+                        files: files.map((f) => {
+                            const contentType = f.contentType || (f.file as any).type || 'application/octet-stream';
+                            const fileSize = f.fileSize || (f.file as any).size || (f.file instanceof Buffer ? f.file.length : undefined);
+
+                            return {
+                                filename: f.filename,
+                                contentType,
+                                fileSize
+                            };
+                        }),
                         ...credentials,
                         // ✅ NEW: Validation preset
                         ...(validation && { validation }),
