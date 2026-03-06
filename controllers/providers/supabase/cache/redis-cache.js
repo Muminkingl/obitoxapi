@@ -5,7 +5,7 @@
  * Fallback: Database if Redis fails
  */
 
-import redis from '../../../../config/redis.js';
+import { getRedisAsync } from '../../../../config/redis.js';
 import { supabaseAdmin } from '../../../../config/supabase.js';
 
 // Redis key prefixes
@@ -32,6 +32,11 @@ export async function getQuotaFromRedis(userId) {
     const key = `${REDIS_KEYS.QUOTA}:${userId}`;
 
     try {
+        const redis = await getRedisAsync();
+        if (!redis) {
+            throw new Error('Redis not available');
+        }
+
         const cached = await redis.get(key);
 
         if (cached) {
@@ -50,7 +55,9 @@ export async function getQuotaFromRedis(userId) {
         const dbQuota = await fetchQuotaFromDatabase(userId);
 
         // Cache the result
-        await redis.setex(key, TTL.QUOTA, JSON.stringify(dbQuota));
+        if (redis) {
+            await redis.setex(key, TTL.QUOTA, JSON.stringify(dbQuota));
+        }
 
         return {
             allowed: dbQuota.current < dbQuota.limit,
@@ -80,6 +87,11 @@ export async function checkBucketAccessRedis(userId, bucketName, developerSupaba
     const key = `${REDIS_KEYS.BUCKET}:${userId}:${bucketName}`;
 
     try {
+        const redis = await getRedisAsync();
+        if (!redis) {
+            throw new Error('Redis not available');
+        }
+
         const cached = await redis.get(key);
 
         if (cached !== null) {
@@ -93,7 +105,9 @@ export async function checkBucketAccessRedis(userId, bucketName, developerSupaba
         const hasAccess = await checkSupabaseBucketAccessDirect(bucketName, developerSupabase);
 
         // Cache the result
-        await redis.setex(key, TTL.BUCKET, hasAccess ? '1' : '0');
+        if (redis) {
+            await redis.setex(key, TTL.BUCKET, hasAccess ? '1' : '0');
+        }
 
         return {
             allowed: hasAccess,
@@ -118,6 +132,9 @@ export async function checkBucketAccessRedis(userId, bucketName, developerSupaba
  */
 export async function invalidateUserCache(userId) {
     try {
+        const redis = await getRedisAsync();
+        if (!redis) return false;
+
         const patterns = [
             `${REDIS_KEYS.QUOTA}:${userId}`,
             `${REDIS_KEYS.BUCKET}:${userId}:*`,
@@ -151,6 +168,9 @@ export async function invalidateUserCache(userId) {
  */
 export async function warmupRedisCache(userId, userData) {
     try {
+        const redis = await getRedisAsync();
+        if (!redis) return false;
+
         if (userData.quota) {
             const key = `${REDIS_KEYS.QUOTA}:${userId}`;
             await redis.setex(key, TTL.QUOTA, JSON.stringify(userData.quota));
@@ -249,6 +269,9 @@ async function checkSupabaseBucketAccessDirect(bucketName, developerSupabase) {
  */
 export async function getRedisCacheStats() {
     try {
+        const redis = await getRedisAsync();
+        if (!redis) throw new Error('Redis not available');
+
         const info = await redis.info('stats');
         const dbsize = await redis.dbsize();
 

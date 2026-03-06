@@ -1,110 +1,100 @@
-Your `webhook-worker.js` already has `startHealthCheckServer()` built in! You just need to:
+### Supabase 
 
-**1. Enable it in `ecosystem.config.cjs`** — change one line:
+Setup 
+// app/lib/obitox.ts
+import ObitoX from '@obitox/upload';
 
-```javascript
-// In the webhook-worker section, change:
-WEBHOOK_HEALTH_SERVER: 'false'
-// TO:
-WEBHOOK_HEALTH_SERVER: 'true'
-```
+const client = new ObitoX({
+  apiKey: process.env.OBITOX_API_KEY!,
+  apiSecret: process.env.OBITOX_API_SECRET!
+});
 
-But that's just the health check on port 3001. You also need to **add the inbound webhook receiver route** to that same HTTP server. It's already there in `startHealthCheckServer()`, just add one route.
+export const supabase = client.supabase({
+  url: process.env.SUPABASE_URL!,
+  token: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  bucket: 'avatars'
+});
 
-Open `jobs/webhook-worker.js` and find this block inside `startHealthCheckServer`:
 
-```javascript
-res.writeHead(404);
-res.end(JSON.stringify({ error: 'Not found' }));
-```
+public bucket upliad 
+// app/api/upload/route.ts
+import { supabase } from '@/lib/obitox';
+import { NextRequest, NextResponse } from 'next/server';
 
-Add this **above** that 404 block:
+export async function POST(request: NextRequest) {
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
 
-```javascript
-// Inbound webhook from Uploadcare
-if (req.method === 'POST' && req.url === '/api/v1/webhooks/uploadcare/inbound') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', async () => {
-        try {
-            const payload = JSON.parse(body);
-            const webhookId = `uc_${payload.webhookId || payload.file?.key || Date.now()}`;
-            const redis = await getRedisAsync();
-            if (redis) {
-                await redis.lpush('webhook:queue', JSON.stringify({
-                    id: webhookId,
-                    payload: { ...payload, provider: 'UPLOADCARE' },
-                    priority: 0,
-                    enqueuedAt: new Date().toISOString()
-                }));
-                logger.info(`[Webhook Worker] Inbound enqueued: ${webhookId}`);
-                res.writeHead(200);
-                res.end(JSON.stringify({ success: true, webhookId }));
-            } else {
-                res.writeHead(500);
-                res.end(JSON.stringify({ error: 'Redis unavailable' }));
-            }
-        } catch (err) {
-            res.writeHead(400);
-            res.end(JSON.stringify({ error: 'Invalid JSON' }));
-        }
-    });
-    return;
+  const fileUrl = await supabase.upload(file, {
+    filename: file.name
+  });
+
+  return NextResponse.json({ url: fileUrl });
 }
-```
 
-**2. Change the port to 4000** (so Nginx can proxy it), update `startHealthCheckServer` call at the bottom:
+progress tracki;
+// Client-side progress via XHR or fetch stream
+const fileUrl = await supabase.upload(file, {
+  filename: file.name,
+  onProgress: (percent) => console.log(`${percent}%`)
+});
 
-```javascript
-// Change:
-startHealthCheckServer();
-// TO:
-startHealthCheckServer(4000);
-```
+private bucket upload ; 
+// Server action or API route
+const privateBucket = client.supabase({
+  url: process.env.SUPABASE_URL!,
+  token: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  bucket: 'private-docs'
+});
 
-**3. Update `ecosystem.config.cjs`:**
-```javascript
-WEBHOOK_HEALTH_SERVER: 'true'   // was 'false'
-```
+const signedUrl = await privateBucket.upload(file, {
+  filename: 'contract.pdf'
+});
 
-**4. On your DO server:**
-```bash
-cd /app/obitoxapi
-# pull your changes then:
-pm2 restart webhook-worker
-pm2 save
-```
+file validation; 
 
-**5. Install Nginx:**
-```bash
-sudo apt install nginx -y
+const url = await supabase.upload(file, {
+  filename: 'photo.jpg',
+  validation: 'images'
+});
 
-sudo tee /etc/nginx/sites-available/webhook.obitox.dev << 'EOF'
-server {
-    listen 80;
-    server_name webhook.obitox.dev;
-    location / {
-        proxy_pass http://localhost:4000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-EOF
 
-sudo ln -s /etc/nginx/sites-available/webhook.obitox.dev /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
+delete file ; 
+await supabase.delete({
+  fileUrl: 'https://...supabase.co/storage/v1/object/public/avatars/photo.jpg'
+});
 
-**6. Test:**
-```bash
-curl https://webhook.obitox.dev/health
-# {"status":"healthy"...}
-```
+download url ; 
+const { downloadUrl } = await supabase.download({
+  filename: 'photo.jpg',
+  expiresIn: 60 // 1 minute
+});
 
-**7. Update your SDK** — change the webhook URL from `webhook.site/...` to:
-```
-https://webhook.obitox.dev/api/v1/webhooks/uploadcare/inbound
-```
 
-That's it — no new files, just edits to files you already have!
+
+list bucket ; 
+const buckets = await supabase.listBuckets();
+return NextResponse.json(buckets); 
+
+webhook auto trigger ; const url = await supabase.upload(file, {
+  filename: 'report.jpg',
+  webhook: {
+    url: 'https://myapp.com/webhooks/upload',
+    trigger: 'auto',
+    metadata: { userId: '123' }
+  }
+});
+
+
+manual trigger ;
+const url = await supabase.upload(file, {
+  filename: 'invoice.jpg',
+  webhook: {
+    url: 'https://myapp.com/webhooks/upload',
+    secret: 's_123',
+    trigger: 'manual',
+    autoConfirm: false,
+    metadata: { userId: '123' }
+  }
+});
+
