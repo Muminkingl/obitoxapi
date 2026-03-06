@@ -177,7 +177,7 @@ export class SupabaseProvider extends BaseProvider<
                 } catch (error) {
                     console.warn('⚠️  Failed to get signed URL, constructing path:', error);
                     // Fallback: construct path-based response
-                    finalFileUrl = `${options.bucket}/${uploadedFilename}`;
+                    finalFileUrl = `${options.supabaseUrl}/storage/v1/object/public/${options.bucket}/${uploadedFilename}`;
                 }
             }
 
