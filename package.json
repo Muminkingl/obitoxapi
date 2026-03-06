@@ -1,6 +1,6 @@
 {
   "name": "@obitox/upload",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "description": "Simple file upload API - Upload files in 3-7 lines of code with zero bandwidth costs",
   "main": "dist/index.js",
