@@ -112,8 +112,8 @@ export async function confirmUploadWebhook(req, res) {
         const idempotencyKey = `${IDEMPOTENCY_PREFIX}${webhookId}`;
 
         if (redis) {
-            // Try to acquire lock with SETNX
-            const acquired = await redis.set(idempotencyKey, '1', 'EX', IDEMPOTENCY_TTL, 'NX');
+            // Try to acquire lock with SETNX using Upstash object syntax
+            const acquired = await redis.set(idempotencyKey, '1', { ex: IDEMPOTENCY_TTL, nx: true });
             if (!acquired) {
                 // Another request is already processing this webhook
                 console.warn(`[Webhook Confirm] ⏭️ Duplicate confirm request for ${webhookId}`);

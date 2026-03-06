@@ -15,6 +15,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 
+// Patch globalThis.fetch to strip CF-unsupported 'cache' field
+const _nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init = {}) => {
+    const { cache, credentials, integrity, ...safeInit } = init ?? {};
+    return _nativeFetch(input, safeInit);
+};
+
 // ─── Middlewares (no Express import in these files!) ──────────────────────────
 import apiKeyMiddleware from './middlewares/apikey.middleware.optimized.js';
 import { signatureValidator } from './middlewares/signature-validator.middleware.js';

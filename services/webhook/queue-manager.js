@@ -43,7 +43,14 @@ export async function enqueueWebhook(webhookId, payload, priority = 0) {
         if (priority > 5) {
             // High priority: add to sorted set with current timestamp as score
             // Lower score = higher priority
-            await redis.zadd(WEBHOOK_PRIORITY_KEY, Date.now(), queueItem);
+            const now = Date.now();
+            if (redis.constructor.name === 'Redis' || typeof redis.zadd === 'function' && !redis.baseUrl) {
+                // ioredis TCP client (Node.js)
+                await redis.zadd(WEBHOOK_PRIORITY_KEY, now, queueItem);
+            } else {
+                // Upstash HTTP client (Cloudflare Workers) expects { score, member }
+                await redis.zadd(WEBHOOK_PRIORITY_KEY, { score: now, member: queueItem });
+            }
             logger.debug(`[Webhook Queue] Enqueued ${webhookId} (HIGH PRIORITY)`);
         } else {
             // Normal priority: add to list (FIFO)
@@ -79,7 +86,13 @@ export async function dequeueWebhooks(batchSize = 100) {
         // FIX #2: Drain expired retry items back to main queue.
         // requeueWebhook now stores retries in a sorted set (score = execute-after ms).
         // Any item with score ≤ now is ready for re-processing.
-        const retryItems = await redis.zrangebyscore('webhook:retry', 0, now);
+        let retryItems;
+        if (typeof redis.zrangebyscore === 'function') {
+            retryItems = await redis.zrangebyscore('webhook:retry', 0, now);
+        } else {
+            retryItems = await redis.zrange('webhook:retry', 0, now, { byScore: true });
+        }
+
         if (retryItems && retryItems.length > 0) {
             const pipeline = redis.pipeline();
             for (const item of retryItems) {
@@ -92,12 +105,22 @@ export async function dequeueWebhooks(batchSize = 100) {
         }
 
         // Check priority queue (sorted set)
-        const priorityItems = await redis.zrangebyscore(
-            WEBHOOK_PRIORITY_KEY,
-            0,
-            now,
-            'LIMIT', 0, Math.min(batchSize, 10)
-        );
+        let priorityItems;
+        if (typeof redis.zrangebyscore === 'function') {
+            priorityItems = await redis.zrangebyscore(
+                WEBHOOK_PRIORITY_KEY,
+                0,
+                now,
+                'LIMIT', 0, Math.min(batchSize, 10)
+            );
+        } else {
+            priorityItems = await redis.zrange(
+                WEBHOOK_PRIORITY_KEY,
+                0,
+                now,
+                { byScore: true, limit: { offset: 0, count: Math.min(batchSize, 10) } }
+            );
+        }
 
         if (priorityItems.length > 0) {
             for (const item of priorityItems) {
@@ -218,7 +241,11 @@ export async function requeueWebhook(webhookId, payload, delayMs = 5000) {
         // ever read those keys back — retried webhooks expired silently and were
         // permanently lost. Now dequeueWebhooks() drains this set on each tick.
         const executeAfter = Date.now() + delayMs;
-        await redis.zadd('webhook:retry', executeAfter, queueItem);
+        if (redis.constructor.name === 'Redis' || typeof redis.zadd === 'function' && !redis.baseUrl) {
+            await redis.zadd('webhook:retry', executeAfter, queueItem);
+        } else {
+            await redis.zadd('webhook:retry', { score: executeAfter, member: queueItem });
+        }
 
         logger.debug(`[Webhook Queue] Requeued ${webhookId} for retry in ${delayMs}ms`);
         return true;

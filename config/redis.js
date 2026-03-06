@@ -10,8 +10,12 @@
 
 import logger from '../utils/logger.js';
 
-// ─── Environment: Cloudflare Workers have no `process` ───────────────────────
-const IS_CF_WORKER = typeof process === 'undefined';
+// ─── Environment: Accurate Cloudflare Workers detection ───────────────────────
+// When `nodejs_compat` is true in wrangler.toml, `process` might be minimally defined.
+// The most reliable way to detect Cloudflare Workers is checking for `WebSocketPair`
+// or checking the navigator user agent if available.
+const IS_CF_WORKER = typeof navigator !== 'undefined' && navigator.userAgent === 'Cloudflare-Workers'
+  || typeof WebSocketPair !== 'undefined';
 
 // FIX: Read env vars LAZILY inside initRedisAsync() instead of at module load
 // time. Module-level reads run before dotenv has had a chance to populate
@@ -26,13 +30,13 @@ let redisPromise = null;
 
 async function initRedisAsync() {
   // ── Read env vars at call time (AFTER dotenv has loaded) ────────────────
-  const REDIS_URL = typeof process !== 'undefined' ? process.env?.REDIS_URL : undefined;
-  const UPSTASH_REST_URL = typeof process !== 'undefined'
-    ? process.env?.UPSTASH_REDIS_REST_URL
-    : globalThis.UPSTASH_REDIS_REST_URL;
-  const UPSTASH_REST_TOKEN = typeof process !== 'undefined'
-    ? process.env?.UPSTASH_REDIS_REST_TOKEN
-    : globalThis.UPSTASH_REDIS_REST_TOKEN;
+  // In Node.js, process.env is naturally available.
+  // In CF Workers, worker.js polyfills c.env into globalThis.process.env.
+  const env = typeof process !== 'undefined' ? process.env : (globalThis.process?.env || {});
+
+  const REDIS_URL = env.REDIS_URL;
+  const UPSTASH_REST_URL = env.UPSTASH_REDIS_REST_URL || globalThis.UPSTASH_REDIS_REST_URL;
+  const UPSTASH_REST_TOKEN = env.UPSTASH_REDIS_REST_TOKEN || globalThis.UPSTASH_REDIS_REST_TOKEN;
 
   // ── Cloudflare Workers path ──────────────────────────────────────────────
   // CF Workers cannot use TCP, so Upstash HTTP is the ONLY option.
@@ -43,7 +47,18 @@ async function initRedisAsync() {
     }
     try {
       const { Redis } = await import('@upstash/redis');
-      const client = new Redis({ url: UPSTASH_REST_URL, token: UPSTASH_REST_TOKEN });
+      const client = new Redis({
+        url: UPSTASH_REST_URL,
+        token: UPSTASH_REST_TOKEN,
+        // Cloudflare Workers fetch() throws an error if unsupported fields are passed
+        fetch: (input, init) => {
+          if (init) {
+            const { cache, credentials, integrity, keepalive, ...safeInit } = init;
+            return fetch(input, safeInit);
+          }
+          return fetch(input, init);
+        }
+      });
       logger.info('[Redis] @upstash/redis HTTP client ready (CF Workers)');
       return client;
     } catch (err) {

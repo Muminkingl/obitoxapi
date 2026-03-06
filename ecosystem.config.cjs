@@ -77,7 +77,7 @@ module.exports = {
             env: {
                 NODE_ENV: 'production',
                 DOTENV_CONFIG_PATH: '.env.local',
-                WEBHOOK_HEALTH_SERVER: 'false'
+                WEBHOOK_HEALTH_SERVER: 'true'
             },
             log_date_format: 'YYYY-MM-DD HH:mm:ss',
             min_uptime: '10s',

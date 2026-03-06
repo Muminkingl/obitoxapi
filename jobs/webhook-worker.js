@@ -398,7 +398,7 @@ export async function healthCheck(options = {}) {
 /**
  * Start HTTP server for health checks (optional)
  */
-export function startHealthCheckServer(port = 3001) {
+export function startHealthCheckServer(port = 4000) {
     // FIX: Removed require('http') — now uses ESM import at top of file
 
     const server = http.createServer(async (req, res) => {
@@ -427,6 +427,37 @@ export function startHealthCheckServer(port = 3001) {
             return;
         }
 
+        // Inbound webhook from Uploadcare
+        if (req.method === 'POST' && req.url === '/api/v1/webhooks/uploadcare/inbound') {
+            let body = '';
+            req.on('data', chunk => { body += chunk; });
+            req.on('end', async () => {
+                try {
+                    const payload = JSON.parse(body);
+                    const webhookId = `uc_${payload.webhookId || payload.file?.key || Date.now()}`;
+                    const redis = await getRedisAsync();
+                    if (redis) {
+                        await redis.lpush('webhook:queue', JSON.stringify({
+                            id: webhookId,
+                            payload: { ...payload, provider: 'UPLOADCARE' },
+                            priority: 0,
+                            enqueuedAt: new Date().toISOString()
+                        }));
+                        logger.info(`[Webhook Worker] Inbound enqueued: ${webhookId}`);
+                        res.writeHead(200);
+                        res.end(JSON.stringify({ success: true, webhookId }));
+                    } else {
+                        res.writeHead(500);
+                        res.end(JSON.stringify({ error: 'Redis unavailable' }));
+                    }
+                } catch (err) {
+                    res.writeHead(400);
+                    res.end(JSON.stringify({ error: 'Invalid JSON' }));
+                }
+            });
+            return;
+        }
+
         res.writeHead(404);
         res.end(JSON.stringify({ error: 'Not found' }));
     });
@@ -442,7 +473,7 @@ export function startHealthCheckServer(port = 3001) {
 const withHealthServer = process.env.WEBHOOK_HEALTH_SERVER === 'true';
 if (withHealthServer) {
     startWebhookWorker();
-    startHealthCheckServer();
+    startHealthCheckServer(4000);
 } else {
     startWebhookWorker();
 }

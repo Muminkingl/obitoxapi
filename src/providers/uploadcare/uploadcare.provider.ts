@@ -202,6 +202,25 @@ export class UploadcareProvider extends BaseProvider<
                 fileSize: file.size,
             });
 
+            // Step 7: Webhook Confirmation
+            const webhookData = (signedUrlResult as any).webhook;
+            if (options.webhook && webhookData && webhookData.webhookId) {
+                try {
+                    console.log(`   🔄 Confirming webhook delivery for ${webhookData.webhookId}...`);
+                    await this.makeRequest('/api/v1/webhooks/confirm', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            webhookId: webhookData.webhookId,
+                            fileUrl: finalFileUrl
+                        })
+                    });
+                    console.log('   ✅ Webhook confirmed and queued for delivery');
+                } catch (webhookError) {
+                    const errMsg = webhookError instanceof Error ? webhookError.message : String(webhookError);
+                    console.warn(`   ⚠️ Webhook confirmation failed: ${errMsg}`);
+                }
+            }
+
             return finalFileUrl;
         } catch (error) {
             // Track failure

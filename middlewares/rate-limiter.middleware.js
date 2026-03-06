@@ -372,9 +372,14 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         megaPipeline.mget(...mgetKeys);
 
         // Rate limit operations (still separate commands — different types)
-        megaPipeline.zadd(requestsKey, timestamp, `${timestamp}`);
+        megaPipeline.zadd(requestsKey, { score: timestamp, member: `${timestamp}` });
         megaPipeline.expire(requestsKey, CONFIG.WINDOW_SIZE * 2);
-        megaPipeline.zrangebyscore(requestsKey, windowStart, timestamp);
+
+        if (typeof megaPipeline.zrangebyscore === 'function') {
+            megaPipeline.zrangebyscore(requestsKey, windowStart, timestamp);
+        } else {
+            megaPipeline.zrange(requestsKey, windowStart, timestamp, { byScore: true });
+        }
 
         // 🔥 SINGLE REDIS CALL for everything!
         const results = await megaPipeline.exec();
@@ -423,7 +428,8 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
         // ZADD result, EXPIRE result, ZRANGEBYSCORE result
         resultIndex++; // Skip ZADD result
         resultIndex++; // Skip EXPIRE result
-        const recentRequests = results[resultIndex]?.[1] || [];
+
+        let recentRequests = results[resultIndex]?.[1] || [];
         const requestCount = recentRequests.length;
 
         // =========================================================================
