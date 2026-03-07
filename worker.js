@@ -99,6 +99,7 @@ app.use('*', async (c, next) => {
     // Cloudflare passes env bindings in c.env
     globalThis.process = globalThis.process || {};
     globalThis.process.env = { ...globalThis.process.env, ...c.env };
+    globalThis.RATE_LIMITER = c.env.RATE_LIMITER;
     await next();
 });
 
@@ -317,4 +318,5 @@ app.notFound((c) => c.json({ error: 'Route not found', path: new URL(c.req.url).
 // =============================================================================
 // EXPORT — CF Workers fetch handler
 // =============================================================================
+export { RateLimiter } from './src/durable-objects/RateLimiter.js';
 export default app;

@@ -10,7 +10,7 @@ import { getR2Client, formatR2Error } from './r2.config.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 
 // Quota check
-import { checkUserQuota } from '../shared/analytics.new.js';
+
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -47,7 +47,7 @@ export const batchDeleteR2Files = async (req, res) => {
         }
 
         // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(403).json(formatR2Error(
                 'QUOTA_EXCEEDED',

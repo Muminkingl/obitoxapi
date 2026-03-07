@@ -854,8 +854,18 @@ export class S3Provider extends BaseProvider<
     async getMetadata(options: S3MetadataOptions): Promise<S3MetadataResponse> {
         const startTime = Date.now();
 
+        // Merge config credentials
+        const mergedOptions: S3MetadataOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+        } as S3MetadataOptions;
+
         // Validate S3 credentials
-        const validation = validateS3Credentials(options);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
@@ -866,13 +876,13 @@ export class S3Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        key: options.key,
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint,
-                        versionId: options.versionId
+                        key: mergedOptions.key,
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint,
+                        versionId: mergedOptions.versionId
                     }),
                 }
             );

@@ -27,8 +27,8 @@ import {
 import { buildS3PublicUrl, isValidRegion } from '../../../utils/aws/s3-regions.js';
 import { isValidStorageClass as validateStorageClassName, getInvalidStorageClassError } from '../../../utils/aws/s3-storage-classes.js';
 import { getCloudFrontUrl, isValidCloudFrontDomain, getCloudFrontValidationError } from '../../../utils/aws/s3-cloudfront.js';
-import { checkUserQuota } from '../shared/analytics.new.js';
-import { incrementQuota } from '../../../utils/quota-manager.js';
+
+
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -92,7 +92,7 @@ export const generateS3BatchSignedUrls = async (req, res) => {
         }
 
         // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -343,7 +343,7 @@ export const generateS3BatchSignedUrls = async (req, res) => {
         }).catch(() => { });
 
         // Increment quota
-        incrementQuota(userId, successCount).catch(() => { });
+
 
         logger.info(`[${requestId}] ✅ Batch complete: ${successCount}/${files.length} in ${totalTime}ms`);
 

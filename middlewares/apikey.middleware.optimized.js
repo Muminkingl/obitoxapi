@@ -90,7 +90,7 @@ const getApiKeyData = async (apiKey, redis) => {
     try {
       const cached = await redis.get(cacheKey);
       if (cached) {
-        const data = JSON.parse(cached);
+        const data = typeof cached === 'string' ? JSON.parse(cached) : cached;
         setLocalCache(cacheKey, data); // warm L1 for subsequent requests
         return { data, fromCache: true };
       }

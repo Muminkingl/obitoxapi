@@ -26,8 +26,8 @@ import {
 import { buildS3PublicUrl, isValidRegion } from '../../../utils/aws/s3-regions.js';
 import { isValidStorageClass as validateStorageClassName } from '../../../utils/aws/s3-storage-classes.js';
 import { getCloudFrontUrl, isValidCloudFrontDomain } from '../../../utils/aws/s3-cloudfront.js';
-import { checkUserQuota } from '../shared/analytics.new.js';
-import { incrementQuota } from '../../../utils/quota-manager.js';
+
+
 
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
@@ -185,7 +185,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
         }
 
         // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -283,7 +283,7 @@ export const initiateS3MultipartUpload = async (req, res) => {
         };
 
         res.status(200).json(response);
-        incrementQuota(userId, 1).catch(() => { });
+
 
     } catch (error) {
         const totalTime = Date.now() - startTime;

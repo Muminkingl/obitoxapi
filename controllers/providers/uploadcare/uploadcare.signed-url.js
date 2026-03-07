@@ -22,7 +22,7 @@ import { validateFileMetadata } from '../../../utils/file-validator.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 
 // Quota check (OPT-2: prefer req.quotaChecked from MW2, fallback to Redis)
-import { checkUserQuota } from '../shared/analytics.new.js';
+
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -79,7 +79,7 @@ export const generateUploadcareSignedUrl = async (req, res) => {
         }
 
         // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json({
                 success: false,

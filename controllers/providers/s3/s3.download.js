@@ -16,8 +16,8 @@ import {
 } from './s3.config.js';
 import { buildS3PublicUrl, isValidRegion, getInvalidRegionError } from '../../../utils/aws/s3-regions.js';
 import { getCloudFrontUrl, isValidCloudFrontDomain, getCloudFrontValidationError } from '../../../utils/aws/s3-cloudfront.js';
-import { checkUserQuota } from '../shared/analytics.new.js';
-import { incrementQuota } from '../../../utils/quota-manager.js';
+
+
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -71,7 +71,7 @@ export const generateS3DownloadUrl = async (req, res) => {
         }
 
         // LAYER 2: Quota Check (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -188,7 +188,7 @@ export const generateS3DownloadUrl = async (req, res) => {
         };
 
         res.status(200).json(response);
-        incrementQuota(userId, 1).catch(() => { });
+
 
     } catch (error) {
         const totalTime = Date.now() - startTime;

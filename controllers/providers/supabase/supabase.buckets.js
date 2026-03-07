@@ -7,7 +7,7 @@ import { createClient } from '@supabase/supabase-js';
 import { updateSupabaseMetrics } from './supabase.helpers.js';
 import logger from '../../../utils/logger.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
-import { checkUserQuota } from '../shared/analytics.new.js';
+
 
 /**
  * List available buckets for Supabase Storage
@@ -62,7 +62,7 @@ export const listSupabaseBuckets = async (req, res) => {
         }
 
         // Quota check (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(403).json({
                 success: false,

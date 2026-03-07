@@ -21,7 +21,7 @@ import {
     checkBucketAccessRedis
 } from './cache/redis-cache.js';
 // NEW: Analytics & Quota
-import { checkUserQuota } from '../shared/analytics.new.js';
+
 
 // 🚀 REDIS METRICS: Use Redis-backed metrics for 70% less DB load
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -113,7 +113,7 @@ export const generateSupabaseSignedUrl = async (req, res) => {
         // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback) 💰
         // ========================================================================
         const quotaStart = Date.now();
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         const quotaTime = Date.now() - quotaStart;
 
         if (!quotaCheck.allowed) {

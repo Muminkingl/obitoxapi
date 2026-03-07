@@ -20,7 +20,7 @@ import {
 
 
 // NEW: Analytics & Quota
-import { checkUserQuota } from '../shared/analytics.new.js';
+
 
 /**
  * Upload file to Supabase Storage
@@ -117,7 +117,7 @@ export const uploadToSupabaseStorage = async (req, res) => {
         // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback) 💰
         // ========================================================================
         const quotaStart = Date.now();
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         const quotaTime = Date.now() - quotaStart;
 
         if (!quotaCheck.allowed) {

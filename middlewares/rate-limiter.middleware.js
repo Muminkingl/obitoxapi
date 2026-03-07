@@ -299,331 +299,43 @@ export async function unifiedRateLimitMiddleware(req, res, next) {
 
     try {
         const apiKey = req.headers['x-api-key'];
-        // Fallback robust IP matching for CF Workers
-        const ip = req.ip ||
-            req.headers['cf-connecting-ip'] ||
-            req.headers['x-forwarded-for']?.split(',')[0] ||
-            req.connection?.remoteAddress ||
-            'unknown';
+        const ip = req.ip || req.headers['cf-connecting-ip'] || 'unknown';
         const identifier = apiKey || ip;
-
-        if (!identifier) {
-            return next();
-        }
-
-        logger.debug(`[${requestId}] Checking: ${identifier.substring(0, 20)}...`);
-
-        // =========================================================================
-        // 🚀 MEGA-PIPELINE: Get ALL data in ONE Redis round-trip!
-        // =========================================================================
-
+        const userId = req.userId || req.apiKeyData?.userId;
+        const tier = req.apiKeyData?.profile?.subscription_tier?.toLowerCase() || 'free';
         const month = new Date().toISOString().substring(0, 7);
-        const timestamp = Date.now();
-        const windowStart = timestamp - (CONFIG.WINDOW_SIZE * 1000);
-        const requestsKey = `requests:${identifier}`;
 
-        // Get userId and tier from API key middleware first (no Redis call needed!)
-        let userId = req.userId;
-        let tier = null;
+        // Get Durable Object for this identifier
+        // Each user gets their own DO instance — isolated, no conflicts
+        const doId = globalThis.RATE_LIMITER.idFromName(identifier);
+        const stub = globalThis.RATE_LIMITER.get(doId);
 
-        // Try to get tier from API key middleware's cached profile
-        const profile = req.apiKeyData?.profile;
-        if (profile?.subscription_tier) {
-            tier = profile.subscription_tier.toLowerCase();
+        const response = await stub.fetch('https://do/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ identifier, tier, userId, month })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+            // Pass quota/rate info to response headers
+            res.setHeader('X-RateLimit-Remaining', 0);
+            return res.status(response.status).json(result);
         }
 
-        // Build the MEGA-PIPELINE
-        const redis = await getRedisAsync();
-        if (!redis) return next();
-        const megaPipeline = redis.pipeline();
-
-        // Only fetch userId from Redis if not available from middleware
-        const apiKeyCacheKey = apiKey ? `apikey_user:${apiKey}` : null;
-        if (!userId && apiKeyCacheKey) {
-            megaPipeline.get(apiKeyCacheKey);  // Pipeline[0]: userId
-        }
-
-        // Build cache keys
-        const tierCacheKey = userId ? `tier:${userId}` : null;
-        const quotaKey = userId ? `quota:${userId}:${month}` : null;
-        const banKey = `ban:${identifier}`;
-        const permBanKey = `perm_ban:${identifier}`;
-
-        // OPT-3: Use MGET to fetch multiple keys in ONE command instead of individual GETs
-        // This saves 1-3 Upstash commands (billed per command, not per pipeline)
-        const mgetKeys = [];
-        const mgetKeyMap = {}; // track which index corresponds to which key
-        let mgetIdx = 0;
-
-        if (!tier && tierCacheKey) {
-            mgetKeyMap.tier = mgetIdx++;
-            mgetKeys.push(tierCacheKey);
-        }
-        if (quotaKey) {
-            mgetKeyMap.quota = mgetIdx++;
-            mgetKeys.push(quotaKey);
-        }
-        mgetKeyMap.tempBan = mgetIdx++;
-        mgetKeys.push(banKey);
-        mgetKeyMap.permBan = mgetIdx++;
-        mgetKeys.push(permBanKey);
-
-        // Single MGET for all lookup keys (1 command instead of 2-4)
-        megaPipeline.mget(...mgetKeys);
-
-        // Rate limit operations (still separate commands — different types)
-        megaPipeline.zadd(requestsKey, { score: timestamp, member: `${timestamp}` });
-        megaPipeline.expire(requestsKey, CONFIG.WINDOW_SIZE * 2);
-
-        if (typeof megaPipeline.zrangebyscore === 'function') {
-            megaPipeline.zrangebyscore(requestsKey, windowStart, timestamp);
-        } else {
-            megaPipeline.zrange(requestsKey, windowStart, timestamp, { byScore: true });
-        }
-
-        // 🔥 SINGLE REDIS CALL for everything!
-        const results = await megaPipeline.exec();
-
-        // =========================================================================
-        // Process results (all local, 0ms)
-        // =========================================================================
-
-        let resultIndex = 0;
-
-        // Extract userId if we fetched it
-        if (!userId && apiKeyCacheKey) {
-            userId = results[resultIndex]?.[1];
-            resultIndex++;
-
-            // If we got userId, we need tier from cache or fallback
-            if (userId && !tier) {
-                tier = 'free';
-            }
-        }
-
-        // Extract MGET results (single array with all values)
-        const mgetResults = results[resultIndex]?.[1] || [];
-        resultIndex++;
-
-        // Extract tier from MGET if we fetched it
-        if ('tier' in mgetKeyMap) {
-            const cachedTier = mgetResults[mgetKeyMap.tier];
-            if (cachedTier) {
-                try {
-                    tier = JSON.parse(cachedTier).tier;
-                } catch (e) {
-                    tier = 'free';
-                }
-            }
-        }
-
-        // Extract quota from MGET
-        const currentQuota = ('quota' in mgetKeyMap) ? mgetResults[mgetKeyMap.quota] : null;
-
-        // Extract ban data from MGET
-        const tempBan = mgetResults[mgetKeyMap.tempBan];
-        const permBan = mgetResults[mgetKeyMap.permBan];
-
-        // Extract rate limit data (last 3 results)
-        // ZADD result, EXPIRE result, ZRANGEBYSCORE result
-        resultIndex++; // Skip ZADD result
-        resultIndex++; // Skip EXPIRE result
-
-        let recentRequests = results[resultIndex]?.[1] || [];
-        const requestCount = recentRequests.length;
-
-        // =========================================================================
-        // CHECK 1: Permanent Ban (fastest rejection)
-        // =========================================================================
-
-        if (permBan) {
-            try {
-                const banData = JSON.parse(permBan);
-                logger.debug(`[${requestId}] FAST REJECT: Permanent ban`);
-                return res.status(429).json({
-                    success: false,
-                    error: 'BANNED',
-                    message: 'You have been permanently banned',
-                    banInfo: {
-                        level: 'PERMANENT',
-                        isPermanent: true,
-                        reason: banData.reason
-                    }
-                });
-            } catch (e) { }
-        }
-
-        // =========================================================================
-        // CHECK 2: Temporary Ban
-        // =========================================================================
-
-        if (tempBan) {
-            try {
-                const banData = JSON.parse(tempBan);
-                const remainingSeconds = Math.ceil((banData.expiresAt - Date.now()) / 1000);
-
-                if (remainingSeconds > 0) {
-                    logger.debug(`[${requestId}] FAST REJECT: ${banData.banLevel} ban`);
-                    return res.status(429).json({
-                        success: false,
-                        error: 'BANNED',
-                        message: `You are banned for ${banData.banLevel}`,
-                        banInfo: {
-                            level: banData.banLevel,
-                            isPermanent: false,
-                            expiresAt: new Date(banData.expiresAt).toISOString(),
-                            remainingSeconds
-                        }
-                    });
-                }
-            } catch (e) { }
-        }
-
-        // =========================================================================
-        // CHECK 3: Quota Exceeded
-        // =========================================================================
-
-        tier = tier || 'free';
-        const limits = TIER_LIMITS[tier] || TIER_LIMITS.free;
-        const tierLimit = limits.requestsPerMonth;
-
-        logger.debug(`[${requestId}] Tier: ${limits.label}`);
-
-        if (tierLimit !== -1 && currentQuota) {
-            const quota = parseInt(currentQuota);
-
-            if (quota >= tierLimit) {
-                logger.warn(`[${requestId}] FAST REJECT: Quota exceeded ${quota}/${tierLimit}`);
-
-                // Log quota exceeded (non-blocking)
-                if (userId) {
-                    // FIX #6: atomic SET NX EX — 1 Redis command instead of GET + SETEX
-                    const blockedKey = `quota_blocked_logged:${userId}:${month}`;
-                    redis.set(blockedKey, '1', 'EX', 30 * 24 * 60 * 60, 'NX').then(result => {
-                        if (result === 'OK') {
-                            // 'OK' means key didn't exist — first time logging this month
-                            logCriticalAudit({
-                                user_id: userId,
-                                resource_type: 'usage_quota',
-                                event_type: 'usage_limit_reached',
-                                event_category: 'critical',
-                                description: `Monthly quota limit reached (${quota}/${tierLimit})`,
-                                metadata: { tier, limit: tierLimit, current: quota }
-                            }).catch(() => { });
-                        }
-                    }).catch(() => { });
-                }
-
-                return res.status(429).json({
-                    success: false,
-                    error: 'QUOTA_EXCEEDED',
-                    message: `Monthly quota limit reached. You've used ${quota} of ${tierLimit} requests.`,
-                    hint: tier === 'free' ? 'Upgrade to PRO for 50,000 requests/month' : 'Quota resets next month'
-                });
-            }
-        }
-
-        // =========================================================================
-        // CHECK 4: Enterprise (unlimited)
-        // =========================================================================
-
-        if (limits.requestsPerMinute === -1) {
-            const totalTime = Date.now() - startTime;
-            logger.debug(`[${requestId}] OK: Enterprise (unlimited) (${totalTime}ms)`);
-
-            // OPT-2: Pass quota data to controllers (avoid redundant Redis fetch)
-            req.quotaChecked = {
-                allowed: true,
-                current: currentQuota ? parseInt(currentQuota) : 0,
-                limit: tierLimit,
-                tier
-            };
-            req.userTier = tier;
-
-            return next();
-        }
-
-        // =========================================================================
-        // CHECK 5: Rate Limit Exceeded
-        // =========================================================================
-
-        logger.debug(`[${requestId}] Rate: ${requestCount}/${limits.requestsPerMinute} per minute`);
-
-        if (requestCount > limits.requestsPerMinute) {
-            logger.warn(`[${requestId}] RATE LIMIT EXCEEDED!`);
-
-            const result = await trackViolationAndCheckBan(identifier, userId, requestId);
-
-            // Log rate limit exceeded asynchronously
-            if (userId) {
-                logAudit({
-                    user_id: userId,
-                    resource_type: 'usage_quota',
-                    event_type: 'rate_limit_exceeded',
-                    event_category: result.isBanned ? 'warning' : 'info',
-                    description: `Rate limit exceeded: ${requestCount}/${limits.requestsPerMinute}`,
-                    metadata: {
-                        tier,
-                        limit: limits.requestsPerMinute,
-                        actual: requestCount,
-                        violation_count: result.violationCount,
-                        ban_applied: result.isBanned
-                    }
-                }).catch(() => { });
-            }
-
-            if (result.isBanned) {
-                return res.status(429).json({
-                    success: false,
-                    error: 'BANNED',
-                    message: result.isPermanent ? 'Permanently banned' : `Banned for ${result.banLevel}`,
-                    banInfo: {
-                        level: result.banLevel,
-                        isPermanent: result.isPermanent,
-                        reason: result.reason,
-                        expiresAt: result.expiresAt ? new Date(result.expiresAt).toISOString() : null,
-                        remainingSeconds: result.remainingSeconds,
-                        violationCount: result.violationCount
-                    }
-                });
-            } else {
-                return res.status(429).json({
-                    success: false,
-                    error: 'RATE_LIMIT_EXCEEDED',
-                    message: `Rate limit exceeded for ${limits.label} tier`,
-                    limit: limits.requestsPerMinute,
-                    current: requestCount,
-                    violationCount: result.violationCount,
-                    hint: `${BAN_THRESHOLDS.FIRST_BAN - result.violationCount} more violations = BAN`
-                });
-            }
-        }
-
-        // =========================================================================
-        // SUCCESS! Request allowed
-        // =========================================================================
-
-        const totalTime = Date.now() - startTime;
-        logger.debug(`[${requestId}] OK: ${requestCount}/${limits.requestsPerMinute} (${totalTime}ms)`);
-
-        // OPT-2: Pass quota data to controllers (avoid redundant Redis fetch)
-        req.quotaChecked = {
-            allowed: true,
-            current: currentQuota ? parseInt(currentQuota) : 0,
-            limit: tierLimit,
-            tier
-        };
+        // Attach quota info for controllers
+        req.quotaChecked = { ...result.quota, allowed: true };
         req.userTier = tier;
 
-        // Cleanup old requests (non-blocking)
-        redis.zremrangebyscore(requestsKey, 0, windowStart).catch(() => { });
+        const totalTime = Date.now() - startTime;
+        logger.debug(`[${requestId}] OK (${totalTime}ms)`);
 
         return next();
 
     } catch (error) {
-        const totalTime = Date.now() - startTime;
-        logger.error(`[${requestId}] Error (${totalTime}ms):`, error.message);
-        return next(); // Fail open
+        logger.error(`[${requestId}] Error:`, error.message);
+        return next(); // fail open
     }
 }
 

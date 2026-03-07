@@ -23,8 +23,8 @@ import {
 import { buildS3PublicUrl, isValidRegion, getInvalidRegionError } from '../../../utils/aws/s3-regions.js';
 import { isValidStorageClass as validateStorageClassName, getInvalidStorageClassError } from '../../../utils/aws/s3-storage-classes.js';
 import { getCloudFrontUrl, isValidCloudFrontDomain, getCloudFrontValidationError } from '../../../utils/aws/s3-cloudfront.js';
-import { checkUserQuota } from '../shared/analytics.new.js';
-import { incrementQuota } from '../../../utils/quota-manager.js';
+
+
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -103,7 +103,7 @@ export const generateS3SignedUrl = async (req, res) => {
         }
 
         // LAYER 2: Quota Check (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -267,7 +267,7 @@ export const generateS3SignedUrl = async (req, res) => {
             // Override expiresIn with smart calculated value
             expiresIn = smartExpiryResult.expirySeconds;
 
-            logger.debug('Smart expiry calculated', { 
+            logger.debug('Smart expiry calculated', {
                 requestId,
                 fileSize: smartExpiryResult.reasoning.fileSize,
                 networkType: smartExpiryResult.networkType,
@@ -316,9 +316,9 @@ export const generateS3SignedUrl = async (req, res) => {
         const totalTime = Date.now() - startTime;
 
         // 🚀 SINGLE METRICS CALL (Redis-backed) - includes file type tracking
-        updateRequestMetrics(apiKeyId, userId, 's3', true, { 
+        updateRequestMetrics(apiKeyId, userId, 's3', true, {
             fileSize: fileSize || 0,
-            contentType: contentType 
+            contentType: contentType
         })
             .catch(() => { });
 
@@ -430,7 +430,7 @@ export const generateS3SignedUrl = async (req, res) => {
         res.status(200).json(response);
 
         // Increment quota (fire-and-forget)
-        incrementQuota(userId, 1).catch(() => { });
+
 
     } catch (error) {
         const totalTime = Date.now() - startTime;

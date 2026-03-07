@@ -12,8 +12,8 @@ import {
     formatS3Error
 } from './s3.config.js';
 import { isValidRegion, getInvalidRegionError } from '../../../utils/aws/s3-regions.js';
-import { checkUserQuota } from '../shared/analytics.new.js';
-import { incrementQuota } from '../../../utils/quota-manager.js';
+
+
 
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
 
@@ -94,7 +94,7 @@ export const deleteS3File = async (req, res) => {
         }
 
         // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -141,7 +141,7 @@ export const deleteS3File = async (req, res) => {
         };
 
         res.status(200).json(response);
-        incrementQuota(userId, 1).catch(() => { });
+
 
     } catch (error) {
         const totalTime = Date.now() - startTime;
@@ -257,7 +257,7 @@ export const batchDeleteS3Files = async (req, res) => {
         }
 
         // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatS3Error(
                 'QUOTA_EXCEEDED',
@@ -305,7 +305,7 @@ export const batchDeleteS3Files = async (req, res) => {
         };
 
         res.status(200).json(response);
-        incrementQuota(userId, 1).catch(() => { });
+
 
     } catch (error) {
         const totalTime = Date.now() - startTime;

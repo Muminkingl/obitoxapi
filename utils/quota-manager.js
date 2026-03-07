@@ -9,7 +9,7 @@
  */
 
 import { createHash } from 'crypto';
-import redis from '../config/redis.js';
+import { getRedisAsync } from '../config/redis.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { logAudit } from './audit-logger.js';
 import logger from './logger.js';
@@ -34,9 +34,13 @@ export const MONTHLY_QUOTAS = {
  * Get user's subscription tier from cache or database
  */
 async function getUserTier(userId) {
-    const cacheKey = `tier:${userId}`;
-    const cached = await redis.get(cacheKey);
-    if (cached) return JSON.parse(cached).tier;
+    const redis = await getRedisAsync();
+
+    if (redis) {
+        const cacheKey = `tier:${userId}`;
+        const cached = await redis.get(cacheKey);
+        if (cached) return JSON.parse(cached).tier;
+    }
 
     try {
         // ✅ NEW: Query profiles_with_tier view for computed tier (respects expiration + grace period)
@@ -48,7 +52,9 @@ async function getUserTier(userId) {
 
         // subscription_tier is COMPUTED (not subscription_tier_paid)
         const tier = (data?.subscription_tier || 'free').toLowerCase();
-        await redis.setex(cacheKey, 300, JSON.stringify({ tier }));
+        if (redis) {
+            await redis.setex(`tier:${userId}`, 300, JSON.stringify({ tier }));
+        }
         return tier;
     } catch (err) {
         logger.error(`quota manager error:`, { error: err });
@@ -121,6 +127,20 @@ export async function checkQuota(userId, tier) {
             };
         }
 
+        const redis = await getRedisAsync();
+        if (!redis) {
+            return {
+                allowed: true, // Fail open if Redis is down
+                quotaExceeded: false,
+                current: 0,
+                limit: limits.requestsPerMonth,
+                percentage: 0,
+                tier,
+                resetAt: null,
+                resetIn: null
+            };
+        }
+
         // Get current count
         const current = parseInt(await redis.get(quotaKey) || '0');
 
@@ -158,49 +178,7 @@ export async function checkQuota(userId, tier) {
     }
 }
 
-/**
- * Increment quota AFTER successful request
- * 🔥 FIXED: Now CALLS checkUsageWarnings!
- * 🔥 FIXED: Gets tier automatically (no parameter needed)
- */
-export async function incrementQuota(userId, count = 1) {
-    try {
-        if (!redis) {
-            logger.error(`[QUOTA] ❌ Redis not available - quota NOT incremented!`);
-            return 0;
-        }
 
-        const month = getMonthKey();
-        const quotaKey = `quota:${userId}:${month}`;
-
-        logger.info(`[QUOTA] 📝 Incrementing quota for user ${userId}, key: ${quotaKey}, count: ${count}`);
-
-        // Increment atomically
-        const newCount = await redis.incrby(quotaKey, count);
-
-        logger.info(`[QUOTA] ✅ Quota incremented! New count: ${newCount}`);
-
-        // Restore TTL if missing
-        const currentTTL = await redis.ttl(quotaKey);
-
-        if (currentTTL === -1) {
-            await redis.expire(quotaKey, getMonthEndTTL());
-            logger.info(`[QUOTA] 🔧 TTL was missing! Restored to ${getMonthEndTTL()} seconds`);
-        } else if (newCount === count) {
-            await redis.expire(quotaKey, getMonthEndTTL());
-            logger.info(`[QUOTA] ⏰ TTL set for ${quotaKey}: ${getMonthEndTTL()} seconds`);
-        }
-
-        // 🔥 FIX: Get tier and CALL checkUsageWarnings
-        const tier = await getUserTier(userId);
-        await checkUsageWarnings(userId, tier, newCount);
-
-        return newCount;
-    } catch (error) {
-        logger.error(`quota increment error:`, { error });
-        throw error;
-    }
-}
 
 /**
  * Check and send usage warnings (50%, 80%, 100%)
@@ -208,6 +186,9 @@ export async function incrementQuota(userId, count = 1) {
  */
 export async function checkUsageWarnings(userId, tier, currentCount) {
     try {
+        const redis = await getRedisAsync();
+        if (!redis) return;
+
         const limits = MONTHLY_QUOTAS[tier];
 
         // Skip for unlimited tiers
@@ -337,10 +318,11 @@ async function queueEmail(userId, template, data) {
  */
 export async function getQuotaUsage(userId, tier) {
     try {
+        const redis = await getRedisAsync();
         const month = getMonthKey();
         const quotaKey = `quota:${userId}:${month}`;
         const limits = MONTHLY_QUOTAS[tier] || MONTHLY_QUOTAS.free;
-        const current = parseInt(await redis.get(quotaKey) || '0');
+        const current = redis ? parseInt(await redis.get(quotaKey) || '0') : 0;
 
         return {
             current,

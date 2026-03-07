@@ -19,8 +19,6 @@ import { updateUploadcareMetrics } from './uploadcare.helpers.js';
 import { checkMemoryRateLimit } from './cache/memory-guard.js';
 import redis from '../../../config/redis.js';
 
-// Quota check
-import { checkUserQuota } from '../shared/analytics.new.js';
 import logger from '../../../utils/logger.js';
 
 /**
@@ -64,8 +62,8 @@ export const validateUploadcareFile = async (req, res) => {
             });
         }
 
-        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        // LAYER 2: QUOTA CHECK (Handled by RateLimiter DO middleware)
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(403).json({
                 success: false,
@@ -352,8 +350,8 @@ export const validateUploadcareSvg = async (req, res) => {
             });
         }
 
-        // LAYER 2: QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        // LAYER 2: QUOTA CHECK (Handled by RateLimiter DO middleware)
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(403).json({
                 success: false,

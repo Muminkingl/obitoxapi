@@ -17,8 +17,8 @@ import {
     SIGNED_URL_EXPIRY
 } from './r2.config.js';
 import { generateR2Filename } from './r2.helpers.js';
-import { checkUserQuota } from '../shared/analytics.new.js';
-import { incrementQuota, checkUsageWarnings } from '../../../utils/quota-manager.js';
+
+import { checkUsageWarnings } from '../../../utils/quota-manager.js';
 
 // 🚀 REDIS METRICS: Single source of truth
 import { updateRequestMetrics } from '../shared/metrics.helper.js';
@@ -90,8 +90,9 @@ export const generateR2SignedUrl = async (req, res) => {
             ));
         }
 
-        // QUOTA CHECK (OPT-2: use MW2 data if available, else fallback)
-        const quotaCheck = req.quotaChecked || await checkUserQuota(userId);
+        // QUOTA CHECK
+        // Opt-2: Already verified by Rate Limiter Middleware. We extract the verified status!
+        const quotaCheck = req.quotaChecked || { allowed: true };
         if (!quotaCheck.allowed) {
             return res.status(429).json(formatR2Error(
                 'QUOTA_EXCEEDED',
@@ -212,7 +213,7 @@ export const generateR2SignedUrl = async (req, res) => {
             // Override expiresIn with smart calculated value
             expiresIn = smartExpiryResult.expirySeconds;
 
-            logger.debug('Smart expiry calculated', { 
+            logger.debug('Smart expiry calculated', {
                 requestId,
                 fileSize: smartExpiryResult.reasoning.fileSize,
                 networkType: smartExpiryResult.networkType,
@@ -250,14 +251,14 @@ export const generateR2SignedUrl = async (req, res) => {
         const totalTime = Date.now() - startTime;
 
         // 🚀 SINGLE METRICS CALL (Redis-backed, non-blocking) - includes file type tracking
-        updateRequestMetrics(apiKeyId, userId, 'r2', true, { 
+        updateRequestMetrics(apiKeyId, userId, 'r2', true, {
             fileSize: fileSize || 0,
-            contentType: contentType 
+            contentType: contentType
         })
             .catch(() => { });
 
         // ✅ INCREMENT QUOTA (fire-and-forget, non-blocking)
-        incrementQuota(userId, 1).catch(() => { });
+
 
         logger.info('R2 signed URL generated', { requestId, totalTime, signingTime });
 

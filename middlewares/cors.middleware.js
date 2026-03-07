@@ -631,16 +631,81 @@ export async function configureR2BucketCORS(r2AccessKey, r2SecretKey, r2Bucket, 
  * Get current CORS configuration for an R2 bucket
  */
 export async function getR2BucketCORS(r2AccessKey, r2SecretKey, r2Bucket, r2AccountId) {
-    const r2 = getR2Client(r2AccessKey, r2SecretKey, r2AccountId);
+    // Custom S3Client with fetch interceptor to completely bypass DOMParser limits in CF Workers
+    const r2 = new S3Client({
+        region: 'auto',
+        credentials: { accessKeyId: r2AccessKey, secretAccessKey: r2SecretKey },
+        endpoint: r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : undefined,
+        forcePathStyle: true,
+        requestHandler: {
+            handle: async (request) => {
+                let queryString = '';
+                if (request.query) {
+                    const params = new URLSearchParams();
+                    for (const [key, value] of Object.entries(request.query)) {
+                        if (value === null) params.append(key, '');
+                        else if (Array.isArray(value)) value.forEach(v => params.append(key, v));
+                        else params.append(key, value);
+                    }
+                    const qs = params.toString();
+                    if (qs) queryString = `?${qs}`;
+                }
+                const protocol = request.protocol.endsWith(':') ? request.protocol : `${request.protocol}:`;
+                let hostname = request.hostname;
+                if (request.port) hostname = `${hostname}:${request.port}`;
+                const url = `${protocol}//${hostname}${request.path}${queryString}`;
+
+                const fetchRes = await fetch(url, {
+                    method: request.method,
+                    headers: request.headers,
+                    body: request.body
+                });
+
+                const text = await fetchRes.text();
+                throw new Error(JSON.stringify({
+                    type: 'INTERCEPTED',
+                    status: fetchRes.status,
+                    xml: text
+                }));
+            }
+        }
+    });
 
     try {
-        const result = await r2.send(new GetBucketCorsCommand({ Bucket: r2Bucket }));
-        return result.CORSRules || [];
+        await r2.send(new GetBucketCorsCommand({ Bucket: r2Bucket }));
+        return null; // Should ideally never reach here
     } catch (error) {
-        // Cloudflare Workers missing DOMParser in AWS SDK v3 XML deserializer
-        if (error.message?.includes('DOMParser is not defined') || error.name === 'NoSuchCORSConfiguration') {
-            return null;
+        try {
+            const data = JSON.parse(error.message);
+            if (data.type === 'INTERCEPTED') {
+                if (data.status === 404 || data.xml.includes('NoSuchCORSConfiguration')) {
+                    return null;
+                }
+                if (data.status >= 400) {
+                    throw new Error(`R2 HTTP ${data.status}: ${data.xml}`);
+                }
+
+                const rules = [];
+                const ruleRegex = /<CORSRule>([\s\S]*?)<\/CORSRule>/g;
+                let match;
+
+                while ((match = ruleRegex.exec(data.xml)) !== null) {
+                    const ruleXml = match[1];
+                    rules.push({
+                        AllowedHeaders: [...ruleXml.matchAll(/<AllowedHeader>(.*?)<\/AllowedHeader>/g)].map(m => m[1]),
+                        AllowedMethods: [...ruleXml.matchAll(/<AllowedMethod>(.*?)<\/AllowedMethod>/g)].map(m => m[1]),
+                        AllowedOrigins: [...ruleXml.matchAll(/<AllowedOrigin>(.*?)<\/AllowedOrigin>/g)].map(m => m[1]),
+                        ExposeHeaders: [...ruleXml.matchAll(/<ExposeHeader>(.*?)<\/ExposeHeader>/g)].map(m => m[1]),
+                        MaxAgeSeconds: parseInt(ruleXml.match(/<MaxAgeSeconds>(.*?)<\/MaxAgeSeconds>/)?.[1] || 0)
+                    });
+                }
+
+                return rules.length > 0 ? rules : null;
+            }
+        } catch (e) {
+            // Not our intercepted JSON error, let it fall through
         }
+
         throw error;
     }
 }
