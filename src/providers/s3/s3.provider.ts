@@ -957,7 +957,7 @@ export class S3Provider extends BaseProvider<
 
         try {
             const response = await this.makeRequest<S3CorsConfigResponse>(
-                '/api/v1/upload/s3/cors/configure',
+                '/api/v1/upload/s3/cors/setup',
                 {
                     method: 'POST',
                     body: JSON.stringify({
