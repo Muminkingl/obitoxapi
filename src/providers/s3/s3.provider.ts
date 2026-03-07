@@ -936,14 +936,24 @@ export class S3Provider extends BaseProvider<
     async configureCors(options: S3CorsConfigOptions): Promise<S3CorsConfigResponse> {
         const startTime = Date.now();
 
+        // Merge config credentials
+        const mergedOptions: S3CorsConfigOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+        } as S3CorsConfigOptions;
+
         // Validate S3 credentials
-        const validation = validateS3Credentials(options);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
 
         // Support both 'origins' and 'allowedOrigins' for flexibility
-        const finalOrigins = options.origins || options.allowedOrigins;
+        const finalOrigins = mergedOptions.origins || mergedOptions.allowedOrigins;
 
         try {
             const response = await this.makeRequest<S3CorsConfigResponse>(
@@ -951,19 +961,19 @@ export class S3Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint,
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint,
                         // Pass both for API compatibility
                         origins: finalOrigins,
                         allowedOrigins: finalOrigins || ['*'],
-                        allowedMethods: options.allowedMethods || ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
-                        allowedHeaders: options.allowedHeaders || ['*'],
-                        maxAgeSeconds: options.maxAgeSeconds || 3600,
-                        exposeHeaders: options.exposeHeaders || [],
-                        optionsSuccessStatus: options.optionsSuccessStatus || 204
+                        allowedMethods: mergedOptions.allowedMethods || ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
+                        allowedHeaders: mergedOptions.allowedHeaders || ['*'],
+                        maxAgeSeconds: mergedOptions.maxAgeSeconds || 3600,
+                        exposeHeaders: mergedOptions.exposeHeaders || [],
+                        optionsSuccessStatus: mergedOptions.optionsSuccessStatus || 204
                     }),
                 }
             );
@@ -1013,8 +1023,18 @@ export class S3Provider extends BaseProvider<
     async verifyCors(options: S3CorsVerifyOptions): Promise<S3CorsVerifyResponse> {
         const startTime = Date.now();
 
+        // Merge config credentials
+        const mergedOptions: S3CorsVerifyOptions = {
+            ...options,
+            s3AccessKey: options.s3AccessKey || this.config.accessKey || '',
+            s3SecretKey: options.s3SecretKey || this.config.secretKey || '',
+            s3Bucket: options.s3Bucket || this.config.bucket || '',
+            s3Region: options.s3Region || this.config.region || 'us-east-1',
+            s3Endpoint: (options as any).s3Endpoint || this.config.endpoint,
+        } as S3CorsVerifyOptions;
+
         // Validate S3 credentials
-        const validation = validateS3Credentials(options);
+        const validation = validateS3Credentials(mergedOptions);
         if (!validation.valid) {
             throw new Error(`S3 Credentials Invalid: ${validation.error}`);
         }
@@ -1025,11 +1045,11 @@ export class S3Provider extends BaseProvider<
                 {
                     method: 'POST',
                     body: JSON.stringify({
-                        s3AccessKey: options.s3AccessKey,
-                        s3SecretKey: options.s3SecretKey,
-                        s3Bucket: options.s3Bucket,
-                        s3Region: options.s3Region || 'us-east-1',
-                        s3Endpoint: (options as any).s3Endpoint
+                        s3AccessKey: mergedOptions.s3AccessKey,
+                        s3SecretKey: mergedOptions.s3SecretKey,
+                        s3Bucket: mergedOptions.s3Bucket,
+                        s3Region: mergedOptions.s3Region || 'us-east-1',
+                        s3Endpoint: (mergedOptions as any).s3Endpoint
                     }),
                 }
             );

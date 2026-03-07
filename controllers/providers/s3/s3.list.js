@@ -6,6 +6,7 @@
  */
 
 import { ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
     validateS3Credentials,
     getS3Client,
@@ -122,38 +123,61 @@ export const listS3Files = async (req, res) => {
         }
 
         const command = new ListObjectsV2Command(commandParams);
-        const result = await s3Client.send(command);
+        
+        // Use presigned URL + manual fetch to handle the XML manually without DOMParser
+        const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+        const listResponse = await fetch(signedUrl);
 
+        if (!listResponse.ok) {
+            throw new Error(`S3 HTTP ${listResponse.status}: ${await listResponse.text()}`);
+        }
+
+        const xmlText = await listResponse.text();
         const apiCallTime = Date.now() - apiCallStart;
         const totalTime = Date.now() - startTime;
 
-        // FORMAT FILES
-        const files = (result.Contents || []).map(obj => ({
-            key: obj.Key,
-            size: obj.Size,
-            lastModified: obj.LastModified.toISOString(),
-            etag: obj.ETag,
-            storageClass: obj.StorageClass || 'STANDARD',
-            owner: obj.Owner?.DisplayName || null
-        }));
+        // FORMAT FILES (lightweight regex parsing)
+        const files = [];
+        const contentsRegex = /<Contents>[\s\S]*?<\/Contents>/g;
+        let match;
+        let keyCount = 0;
+        
+        while ((match = contentsRegex.exec(xmlText)) !== null) {
+            const item = match[0];
+            const key = item.match(/<Key>(.*?)<\/Key>/)?.[1] || '';
+            const size = parseInt(item.match(/<Size>(.*?)<\/Size>/)?.[1] || '0', 10);
+            const lastModified = item.match(/<LastModified>(.*?)<\/LastModified>/)?.[1] || new Date().toISOString();
+            const etag = item.match(/<ETag>(.*?)<\/ETag>/)?.[1]?.replace(/"/g, '') || '';
+            const storageClass = item.match(/<StorageClass>(.*?)<\/StorageClass>/)?.[1] || 'STANDARD';
+            const owner = item.match(/<DisplayName>(.*?)<\/DisplayName>/)?.[1] || null;
+
+            if (key) {
+                files.push({ key, size, lastModified, etag, storageClass, owner });
+                keyCount++;
+            }
+        }
+
+        const isTruncated = xmlText.includes('<IsTruncated>true</IsTruncated>');
+        const nextContinuationTokenMatch = xmlText.match(/<NextContinuationToken>(.*?)<\/NextContinuationToken>/);
+        const nextContinuationToken = nextContinuationTokenMatch ? nextContinuationTokenMatch[1] : null;
 
         // 🚀 SINGLE METRICS CALL (Redis-backed)
         updateRequestMetrics(apiKeyId, userId, 's3', true)
             .catch(() => { });
 
-        logger.info(`[${requestId}] ✅ S3 list: ${result.KeyCount} files in ${totalTime}ms`);
+        logger.info(`[${requestId}] ✅ S3 list: ${keyCount} files in ${totalTime}ms`);
 
         const response = {
             success: true,
             files,
-            count: result.KeyCount || 0,
-            isTruncated: result.IsTruncated || false,
-            nextContinuationToken: result.NextContinuationToken || null,
+            count: keyCount,
+            isTruncated,
+            nextContinuationToken,
             prefix: prefix || null,
             maxKeys,
             provider: 's3',
             region: s3Region,
-            hint: result.IsTruncated
+            hint: isTruncated
                 ? 'More files available. Use nextContinuationToken for pagination.'
                 : 'All files returned',
             performance: {
@@ -194,7 +218,7 @@ export const listS3Files = async (req, res) => {
         return res.status(500).json(formatS3Error(
             'S3_LIST_ERROR',
             'Failed to list files',
-            process.env.NODE_ENV === 'development' ? error.message : null
+            error.stack
         ));
     }
 };
