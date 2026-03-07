@@ -412,17 +412,78 @@ export function getOptimalS3CorsConfig(allowedOrigins = ['*']) {
 }
 
 /**
+ * Get S3 client with fetch interceptor to completely bypass DOMParser limits in CF Workers
+ */
+function getInterceptedS3Client(s3AccessKey, s3SecretKey, s3Region, s3Endpoint = null) {
+    const config = {
+        region: s3Region || 'us-east-1',
+        credentials: { accessKeyId: s3AccessKey, secretAccessKey: s3SecretKey },
+        maxAttempts: 3,
+        requestHandler: {
+            handle: async (request) => {
+                let queryString = '';
+                if (request.query) {
+                    const params = new URLSearchParams();
+                    for (const [key, value] of Object.entries(request.query)) {
+                        if (value === null) params.append(key, '');
+                        else if (Array.isArray(value)) value.forEach(v => params.append(key, v));
+                        else params.append(key, value);
+                    }
+                    const qs = params.toString();
+                    if (qs) queryString = `?${qs}`;
+                }
+                const protocol = request.protocol.endsWith(':') ? request.protocol : `${request.protocol}:`;
+                let hostname = request.hostname;
+                if (request.port) hostname = `${hostname}:${request.port}`;
+                const url = `${protocol}//${hostname}${request.path}${queryString}`;
+
+                const fetchRes = await fetch(url, {
+                    method: request.method,
+                    headers: request.headers,
+                    body: request.body
+                });
+
+                const text = await fetchRes.text();
+                throw new Error(JSON.stringify({
+                    type: 'INTERCEPTED',
+                    status: fetchRes.status,
+                    xml: text
+                }));
+            }
+        }
+    };
+
+    if (s3Endpoint) {
+        config.endpoint = s3Endpoint;
+        config.forcePathStyle = true;
+    }
+
+    return new S3Client(config);
+}
+
+/**
  * Configure CORS on an S3 bucket
  */
-export async function configureBucketCORS(s3AccessKey, s3SecretKey, s3Bucket, s3Region, allowedOrigins) {
-    const s3 = getS3Client(s3AccessKey, s3SecretKey, s3Region);
+export async function configureBucketCORS(s3AccessKey, s3SecretKey, s3Bucket, s3Region, allowedOrigins, s3Endpoint = null) {
+    const s3 = getInterceptedS3Client(s3AccessKey, s3SecretKey, s3Region, s3Endpoint);
 
     const corsConfig = getOptimalS3CorsConfig(allowedOrigins);
 
-    await s3.send(new PutBucketCorsCommand({
-        Bucket: s3Bucket,
-        CORSConfiguration: corsConfig,
-    }));
+    try {
+        await s3.send(new PutBucketCorsCommand({
+            Bucket: s3Bucket,
+            CORSConfiguration: corsConfig,
+        }));
+    } catch (error) {
+        try {
+            const data = JSON.parse(error.message);
+            if (data.type === 'INTERCEPTED') {
+                if (data.status >= 400) throw new Error(`S3 HTTP ${data.status}: ${data.xml}`);
+                return corsConfig;
+            }
+        } catch (e) { }
+        throw error;
+    }
 
     return corsConfig;
 }
@@ -430,16 +491,44 @@ export async function configureBucketCORS(s3AccessKey, s3SecretKey, s3Bucket, s3
 /**
  * Get current CORS configuration for a bucket
  */
-export async function getBucketCORS(s3AccessKey, s3SecretKey, s3Bucket, s3Region) {
-    const s3 = getS3Client(s3AccessKey, s3SecretKey, s3Region);
+export async function getBucketCORS(s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3Endpoint = null) {
+    const s3 = getInterceptedS3Client(s3AccessKey, s3SecretKey, s3Region, s3Endpoint);
 
     try {
-        const result = await s3.send(new GetBucketCorsCommand({ Bucket: s3Bucket }));
-        return result.CORSRules || [];
+        await s3.send(new GetBucketCorsCommand({ Bucket: s3Bucket }));
+        return null; // Should ideally never reach here
     } catch (error) {
-        if (error.name === 'NoSuchCORSConfiguration') {
-            return null;
+        try {
+            const data = JSON.parse(error.message);
+            if (data.type === 'INTERCEPTED') {
+                if (data.status === 404 || data.xml.includes('NoSuchCORSConfiguration')) {
+                    return null;
+                }
+                if (data.status >= 400) {
+                    throw new Error(`S3 HTTP ${data.status}: ${data.xml}`);
+                }
+
+                const rules = [];
+                const ruleRegex = /<CORSRule>([\s\S]*?)<\/CORSRule>/g;
+                let match;
+
+                while ((match = ruleRegex.exec(data.xml)) !== null) {
+                    const ruleXml = match[1];
+                    rules.push({
+                        AllowedHeaders: [...ruleXml.matchAll(/<AllowedHeader>(.*?)<\/AllowedHeader>/g)].map(m => m[1]),
+                        AllowedMethods: [...ruleXml.matchAll(/<AllowedMethod>(.*?)<\/AllowedMethod>/g)].map(m => m[1]),
+                        AllowedOrigins: [...ruleXml.matchAll(/<AllowedOrigin>(.*?)<\/AllowedOrigin>/g)].map(m => m[1]),
+                        ExposeHeaders: [...ruleXml.matchAll(/<ExposeHeader>(.*?)<\/ExposeHeader>/g)].map(m => m[1]),
+                        MaxAgeSeconds: parseInt(ruleXml.match(/<MaxAgeSeconds>(.*?)<\/MaxAgeSeconds>/)?.[1] || 0)
+                    });
+                }
+
+                return rules.length > 0 ? rules : null;
+            }
+        } catch (e) {
+            // Not our intercepted JSON error, let it fall through
         }
+
         throw error;
     }
 }
@@ -454,6 +543,7 @@ export const setupS3BucketCors = async (req, res) => {
             s3SecretKey,
             s3Bucket,
             s3Region = 'us-east-1',
+            s3Endpoint = null,
             // Accept both 'origins' and 'allowedOrigins' for compatibility
             origins,
             allowedOrigins
@@ -475,7 +565,8 @@ export const setupS3BucketCors = async (req, res) => {
             s3SecretKey,
             s3Bucket,
             s3Region,
-            finalOrigins || ['*']
+            finalOrigins || ['*'],
+            s3Endpoint
         );
 
         res.json({
@@ -508,9 +599,9 @@ export const setupS3BucketCors = async (req, res) => {
  */
 export const verifyS3BucketCors = async (req, res) => {
     try {
-        const { s3AccessKey, s3SecretKey, s3Bucket, s3Region = 'us-east-1' } = req.body;
+        const { s3AccessKey, s3SecretKey, s3Bucket, s3Region = 'us-east-1', s3Endpoint = null } = req.body;
 
-        const currentConfig = await getBucketCORS(s3AccessKey, s3SecretKey, s3Bucket, s3Region);
+        const currentConfig = await getBucketCORS(s3AccessKey, s3SecretKey, s3Bucket, s3Region, s3Endpoint);
 
         if (!currentConfig) {
             return res.json({
