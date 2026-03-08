@@ -329,10 +329,7 @@ export async function startWebhookWorker() {
         logger.error('[Webhook Worker] Unhandled rejection:', { reason });
         shutdown('unhandledRejection');
     });
-
-    return intervalId;
 }
-
 /**
  * Get worker metrics for monitoring
  */
