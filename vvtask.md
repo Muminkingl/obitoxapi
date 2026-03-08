@@ -1,134 +1,108 @@
-### S3 docs
 
-setup; import ObitoX from '@obitox/upload';
+---
 
-const client = new ObitoX({
-  apiKey: process.env.OBITOX_API_KEY,
-  apiSecret: process.env.OBITOX_API_SECRET
-});
+## audit-worker.js
 
-const s3 = client.s3({
-  accessKey: process.env.S3_ACCESS_KEY,
-  secretKey: process.env.S3_SECRET_KEY,
-  bucket: 'my-bucket',
-  region: 'us-east-1'
-});
+```javascript
+// FIND:
+const result = await redis.brpop('audit:queue', 1);
+// CHANGE TO:
+const result = await redis.brpop('audit:queue', 30);
+```
 
+```javascript
+// FIND and DELETE these 3 lines:
+const [dropped, overflow, failedDepth] = await Promise.all([
+    redis.get('audit:dropped_count'),
+    redis.get('audit:overflow_count'),
+    redis.llen('audit:failed')
+]);
+// REPLACE WITH:
+const failedDepth = await redis.llen('audit:failed');
+```
 
-custom endpoint s3; const s3 = client.s3({
-  accessKey: 'minioadmin',
-  secretKey: 'minioadmin123',
-  bucket: 'local-bucket',
-  endpoint: 'http://localhost:9000',
-  region: 'us-east-1'
-});
+```javascript
+// FIND (end of startMetricsReporter setInterval):
+}, 60000);
+// CHANGE TO:
+}, 300000);
+```
 
+---
 
-basic upload; const url = await s3.upload(file, {
-  filename: 'document.txt'
-});
+## metrics-worker.js
 
+```javascript
+// FIND in main():
+setInterval(async () => {
+    await startMetricsSyncWorker();
+}, SYNC_INTERVAL_MS);
 
-progress tracing ; const url = await s3.upload(file, {
-  filename: 'video.mp4',
-  onProgress: (percent, uploaded, total) => {
-    console.log(`${percent}% — ${uploaded}/${total} bytes`);
-  }
-});
+// REPLACE WITH:
+let metricsBackoff = 5000;
+const MIN_INTERVAL = 5000;
+const MAX_INTERVAL = 300000;
 
+const adaptiveMetricsLoop = async () => {
+    const result = await startMetricsSyncWorker().catch(() => null);
+    const hadWork = (lifetimeStats.apiKeysProcessed > 0);
+    metricsBackoff = hadWork
+        ? MIN_INTERVAL
+        : Math.min(metricsBackoff * 2, MAX_INTERVAL);
+    setTimeout(adaptiveMetricsLoop, metricsBackoff);
+};
+setTimeout(adaptiveMetricsLoop, MIN_INTERVAL);
+```
 
-singed url expire; 
-const url = await s3.upload(file, {
-  filename: 'doc.txt',
-  expiresIn: 3600
-});
+---
 
-smart expire ;
-// 1. Auto-Detect (Default in Browser)
-// SDK automatically uses navigator.connection
-const url = await s3.upload(file, {
-  filename: 'video.mp4'
-});
+## webhook-worker.js
 
-// 2. Manual Override (Server-side or custom)
-const url = await s3.upload(file, {
-  filename: 'video.mp4',
-  networkInfo: {
-    type: '4g',
-    downlink: 10,  // Mbps
-    rtt: 50        // ms
-  }
-});
+```javascript
+// FIND:
+const intervalId = setInterval(async () => {
+    try {
+        await runWorker();
+        consecutiveErrors = 0;
+    } catch (error) {
+        consecutiveErrors++;
+        logger.error(`[Webhook Worker] Consecutive errors: ${consecutiveErrors}`);
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+            logger.error('[Webhook Worker] Too many errors, restarting...');
+            clearInterval(intervalId);
+            process.exit(1);
+        }
+    }
+}, SYNC_INTERVAL_MS);
 
-Automatic: In the browser, the SDK automatically uses navigator.connection to optimize timeouts.
+// REPLACE WITH:
+let webhookBackoff = 5000;
+const MIN_WEBHOOK_INTERVAL = 5000;
+const MAX_WEBHOOK_INTERVAL = 300000;
 
+const adaptiveWebhookLoop = async () => {
+    try {
+        const webhooks = await dequeueWebhooks(BATCH_SIZE);
+        const hadWork = webhooks.length > 0;
+        if (hadWork) {
+            await runWorker();
+            consecutiveErrors = 0;
+            webhookBackoff = MIN_WEBHOOK_INTERVAL;
+        } else {
+            webhookBackoff = Math.min(webhookBackoff * 2, MAX_WEBHOOK_INTERVAL);
+        }
+    } catch (error) {
+        consecutiveErrors++;
+        logger.error(`[Webhook Worker] Consecutive errors: ${consecutiveErrors}`);
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+            logger.error('[Webhook Worker] Too many errors, restarting...');
+            process.exit(1);
+        }
+        webhookBackoff = MIN_WEBHOOK_INTERVAL;
+    }
+    setTimeout(adaptiveWebhookLoop, webhookBackoff);
+};
+setTimeout(adaptiveWebhookLoop, MIN_WEBHOOK_INTERVAL);
+```
 
-
-
-
-
-
-magic byte validation ; const url = await s3.upload(file, {
-  filename: 'photo.jpg',
-  validation: 'images'
-});
-
-automatic multipart ; 
-// Automatic for large files
-const url = await s3.upload(largeFile, {
-  filename: 'archive.zip',
-  onProgress: (p) => console.log(p)
-});
-
-
-
-batch upload ; 
-const result = await s3.batchUpload({
-  files: [
-    { filename: 'a.txt', contentType: 'text/plain', fileSize: 100 },
-    { filename: 'b.jpg', contentType: 'image/jpeg', fileSize: 500 }
-  ]
-});
-console.log(result.summary);
-
-
-
-
-
-
-
-download url ; const url = await s3.getSignedDownloadUrl({
-  fileKey: 'doc.txt',
-  expiresIn: 3600
-});
-
-
-list files; 
-const res = await s3.list({ maxKeys: 100 });
-res.files.forEach(f => console.log(f.key));
-
-
-delete files ; 
-await s3.delete({ fileKey: 'doc.txt' });
-
-
-conf cors; 
-await s3.configureCors({
-  origins: ['https://example.com'],
-  allowedMethods: ['GET', 'POST']
-});
-
-
-file metadata; 
-
-const meta = await s3.getMetadata({ key: 'doc.txt' });
-
-
-
-webhook auto trigger ; const url = await s3.upload(file, {
-  filename: 'report.pdf',
-  webhook: {
-    url: 'https://api.myapp.com/hooks',
-    trigger: 'auto'
-  }
-});
+---

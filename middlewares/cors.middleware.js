@@ -410,7 +410,6 @@ export function getOptimalS3CorsConfig(allowedOrigins = ['*']) {
         }]
     };
 }
-
 /**
  * Get S3 client with fetch interceptor to completely bypass DOMParser limits in CF Workers
  */

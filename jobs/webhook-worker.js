@@ -234,21 +234,37 @@ export async function startWebhookWorker() {
     logger.debug(`[Webhook Worker] Applied ${jitter}ms startup jitter`);
 
     // Main processing interval
-    const intervalId = setInterval(async () => {
+    let webhookBackoff = 5000;
+    const MIN_WEBHOOK_INTERVAL = 5000;
+    const MAX_WEBHOOK_INTERVAL = 300000;
+
+    const adaptiveWebhookLoop = async () => {
         try {
+            const beforeCount = workerMetrics.webhooksProcessed;
             await runWorker();
-            consecutiveErrors = 0;
+            const afterCount = workerMetrics.webhooksProcessed;
+
+            const hadWork = (afterCount > beforeCount);
+
+            if (hadWork) {
+                consecutiveErrors = 0;
+                webhookBackoff = MIN_WEBHOOK_INTERVAL;
+            } else {
+                webhookBackoff = Math.min(webhookBackoff * 2, MAX_WEBHOOK_INTERVAL);
+            }
         } catch (error) {
             consecutiveErrors++;
             logger.error(`[Webhook Worker] Consecutive errors: ${consecutiveErrors}`);
 
             if (consecutiveErrors >= maxConsecutiveErrors) {
                 logger.error('[Webhook Worker] Too many errors, restarting...');
-                clearInterval(intervalId);
                 process.exit(1);
             }
+            webhookBackoff = MIN_WEBHOOK_INTERVAL;
         }
-    }, SYNC_INTERVAL_MS);
+        setTimeout(adaptiveWebhookLoop, webhookBackoff);
+    };
+    setTimeout(adaptiveWebhookLoop, MIN_WEBHOOK_INTERVAL);
 
     // Auto-webhook handler (less frequent)
     const autoIntervalId = setInterval(async () => {
@@ -272,7 +288,6 @@ export async function startWebhookWorker() {
     const shutdown = async (signal) => {
         logger.info(`[Webhook Worker] Received ${signal}, shutting down...`);
 
-        clearInterval(intervalId);
         clearInterval(autoIntervalId);
         clearInterval(cleanupIntervalId);
         clearInterval(metricsIntervalId);

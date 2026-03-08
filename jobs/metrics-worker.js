@@ -31,7 +31,7 @@ import {
 import logger from '../utils/logger.js';
 
 const WORKER_ID = `metrics-worker-${process.env.HOSTNAME || 'local'}_${process.pid}`;
-const SYNC_INTERVAL_MS = 5000;   // 5 seconds
+const SYNC_INTERVAL_MS = 200000;
 const STATS_LOG_INTERVAL = 300000; // 5 minutes
 
 // FIX: Overlap guard — prevents a slow run from piling up with the next interval tick
@@ -403,9 +403,22 @@ async function main() {
 
     // FIX: Overlap-safe interval — isRunning guard inside startMetricsSyncWorker
     // ensures a slow sync doesn't pile up with the next tick
-    setInterval(async () => {
-        await startMetricsSyncWorker();
-    }, SYNC_INTERVAL_MS);
+    let metricsBackoff = 5000;
+    const MIN_INTERVAL = 5000;
+    const MAX_INTERVAL = 300000; // max 5 min
+
+    let prevApiKeysProcessed = 0;
+
+    const adaptiveMetricsLoop = async () => {
+        const result = await startMetricsSyncWorker().catch(() => null);
+        const hadWork = (lifetimeStats.apiKeysProcessed > prevApiKeysProcessed);
+        prevApiKeysProcessed = lifetimeStats.apiKeysProcessed;
+        metricsBackoff = hadWork
+            ? MIN_INTERVAL
+            : Math.min(metricsBackoff * 2, MAX_INTERVAL);
+        setTimeout(adaptiveMetricsLoop, metricsBackoff);
+    };
+    setTimeout(adaptiveMetricsLoop, MIN_INTERVAL);
 
     // FIX: Log both window (recent) and lifetime stats, then reset window
     setInterval(() => {

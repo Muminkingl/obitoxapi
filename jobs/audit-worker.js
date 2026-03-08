@@ -120,8 +120,8 @@ async function startAuditWorker() {
 
     while (!shuttingDown) {
         try {
-            // Blocking pop with 1-second timeout
-            const result = await redis.brpop('audit:queue', 1);
+            // Blocking pop with 30-second timeout
+            const result = await redis.brpop('audit:queue', 30);
 
             if (result) {
                 const [, item] = result;
@@ -247,14 +247,10 @@ function startMetricsReporter(redis) {
         if (shuttingDown) return;
 
         try {
-            const [dropped, overflow, failedDepth] = await Promise.all([
-                redis.get('audit:dropped_count'),
-                redis.get('audit:overflow_count'),
-                redis.llen('audit:failed')
-            ]);
+            const failedDepth = await redis.llen('audit:failed');
 
-            metrics.droppedEvents = parseInt(dropped || '0');
-            metrics.overflowEvents = parseInt(overflow || '0');
+            metrics.droppedEvents = 0; // Removed from redis fetching
+            metrics.overflowEvents = 0; // Removed from redis fetching
 
             // FIX: Per-instance key — was 'audit:metrics' which caused all instances to overwrite each other
             await redis.setex(METRICS_KEY, 120, JSON.stringify({
@@ -296,7 +292,7 @@ function startMetricsReporter(redis) {
         } catch (error) {
             logger.error('Metrics reporter error:', error.message);
         }
-    }, 60000);
+    }, 300000);
 }
 
 function sleep(ms) {
